@@ -25,9 +25,8 @@ from .errors import (
     MaxStepsExceeded,
     NodeFailed,
 )
+from .codegen import generate_once
 from .expr import is_true
-from .grammar import schema_to_grammar
-from .render import render
 
 __all__ = ["RunResult", "run"]
 
@@ -92,18 +91,12 @@ def run(pack, model, inputs=None, run_id=None, max_steps=None):
 
 
 def execute_generate(node, state, model):
-    """Render, generate, and parse one node's output. Returns the committed object.
+    """Generate and parse one node's output. Returns the object to commit.
 
-    T5 replaces the single call with think->emit and T6 wraps it in the retry ladder;
-    both keep this signature, because the walker should not care how many model calls a
-    node costs.
+    The walker deliberately does not know whether this cost one model call or two —
+    that is `codegen`'s business (T5), and T6 wraps it in the retry ladder.
     """
-    text = model.generate(
-        render(node.prompt, state),
-        grammar=schema_to_grammar(node.grammar) if node.grammar else None,
-        max_tokens=node.max_tokens,
-    )
-    return parse_output(node, text)
+    return parse_output(node, generate_once(node, state, model).text)
 
 
 def parse_output(node, text):

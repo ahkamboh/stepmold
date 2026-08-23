@@ -35,7 +35,7 @@ model downloads.** Real-backend work is T11 and is code-only (not executed).
   DONE: `tests/test_graph.py` — linear 3-node path, a conditional branch, a loop-with-max-iterations
   guard, dangling-edge error. Uses FakeModel only.
 
-- [ ] **T5 — Two-stage codegen (think → emit)**
+- [x] **T5 — Two-stage codegen (think → emit)**
   `jig/codegen.py`. For nodes with `two_stage: true`: first an unconstrained `think` generation
   (capped tokens, result kept only in a scratchpad var, never in final output), then a constrained
   `emit` conditioned on the scratchpad. Single-stage nodes skip straight to emit.

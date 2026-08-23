@@ -192,3 +192,33 @@ plans" property from PLAN.md §3, and it is why a graph is auditable.
 8. **Non-object generations are rejected** — a node must emit a JSON object, not a bare
    string or array, because state is a mapping. This currently raises `NodeFailed` on the
    first attempt; T6 turns that into the retry ladder.
+
+## 2026-08-24 — T5: Two-stage codegen (think -> emit)
+
+**Files changed:** `jig/codegen.py`, `jig/graph.py` (now delegates), `tests/test_codegen.py`.
+
+**Tests:** 167 passing total (17 new).
+
+`generate_once(node, state, model, error=None, scratchpad=None) -> Attempt`. Two-stage
+nodes make exactly 2 calls (unconstrained think capped at `think_max_tokens`, then
+constrained emit); single-stage nodes make 1. `Attempt.scratchpad` is returned to the
+caller and **never written to state** — `graph.commit` only ever writes `Attempt.text`.
+Two tests pin that: the scratchpad string is absent from the final state *and* from a
+later node's prompt.
+
+**Decisions I made alone — please review:**
+1. **A re-sample re-rolls the emit stage only, reusing the scratchpad** (that is what the
+   `scratchpad=` argument is for). PLAN.md §3 says the ladder is cheap-first, and the emit
+   half is the cheap half. The cost: if the *thinking* is what was wrong, re-emitting
+   repeats the mistake. If measurement later shows retries failing for that reason, the
+   fix is a `rethink_on_retry: true` node flag — deliberately not built on speculation.
+2. **Scratchpad placement is prompt-cache-aware.** By default the notes are appended after
+   the rendered node prompt, and a correction after that — stable content first, volatile
+   last, per PLAN.md §2's prefix-ordering rule. A prompt that contains `{scratchpad}`
+   explicitly overrides that and places it wherever the author wants.
+3. **The think stage renders `{scratchpad}` as empty** when the default think template is
+   derived from an emit prompt that references it. Found by a test failure, not by
+   reading — there are no notes yet at think time, so empty is the honest value.
+4. **The walker no longer knows how many calls a node costs.** `graph.execute_generate` is
+   now three lines that call `codegen`. Keeping the call-count policy in one module is what
+   will let T6 wrap the ladder around it without touching the walk.
