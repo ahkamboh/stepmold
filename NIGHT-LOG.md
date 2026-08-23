@@ -222,3 +222,44 @@ later node's prompt.
 4. **The walker no longer knows how many calls a node costs.** `graph.execute_generate` is
    now three lines that call `codegen`. Keeping the call-count policy in one module is what
    will let T6 wrap the ladder around it without touching the walk.
+
+## 2026-08-24 — T6: Verify-before-commit + retry ladder
+
+**Files changed:** `jig/verify.py`, `jig/graph.py` (ladder + `Failure` record),
+`tests/test_verify.py`, `tests/test_graph.py` (one test updated, see below).
+
+**Tests:** 193 passing total (26 new).
+
+`verify(node, text, state)` parses, schema-validates, and evaluates the node's optional
+`assert` — against a **trial copy** of state, so a candidate that fails is discarded whole
+and the real state never saw it. `run_node` is the ladder: attempt, plain re-sample,
+re-sample with the rejection appended, then `on_fail` or `NodeFailed`. Three tests pin the
+anti-self-conditioning property directly: the rejected value is absent from final state,
+absent from the output, and absent from the next node's prompt.
+
+**Decisions I made alone — please review:**
+1. **The first re-sample deliberately carries no error text**, exactly as TASKS.md
+   describes the ladder. Cheap-first: a different sample often just works, and appending a
+   rejection costs tokens and biases the model toward the field it just got wrong. The
+   error text appears from rung 3 on.
+2. **`extract_json` is forgiving about *finding* JSON, and verification stays merciless
+   about what is in it.** It tries the raw text, then a ``` fence, then the first balanced
+   `{...}` span (string-aware, so a `}` inside a string does not truncate it). With a real
+   constrained decoder none of that fires; without one (llama.cpp in loose modes, any
+   server that ignores `response_format`) it is the difference between working and not.
+3. **A diverted failure is recorded on `RunResult.failures`**, not swallowed. When a node
+   exhausts its ladder and `on_fail` sends the run somewhere else, the run "succeeds" —
+   and without a record, T8 could never attribute that. `Failure(node, reason, attempts)`.
+4. **`retries` counts re-samples, not attempts.** Default 2 = the three-rung ladder.
+   `retries: 0` means one attempt and no ladder, which is what you want for a node whose
+   failure should route immediately.
+5. **A node-level `assert` sees the candidate placed exactly where it would be committed**
+   — merged at top level, or under `output:` — so the expression reads the same as one in
+   a downstream `assert` node.
+6. **I changed one T4 test.** `test_a_non_object_generation_is_rejected` scripted a single
+   bad response and expected an immediate `NodeFailed`; that was pinning the T4 placeholder
+   behaviour, which T6 was always going to replace. It now scripts three and asserts the
+   ladder spent all three. No other test needed touching.
+
+**No frontier fallback.** PLAN.md §3 rules it out for v1 and I did not add one — a silent
+escalation to a big model would make every cost number in the README a lie.

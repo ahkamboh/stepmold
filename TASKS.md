@@ -42,7 +42,7 @@ model downloads.** Real-backend work is T11 and is code-only (not executed).
   DONE: `tests/test_codegen.py` — two-stage node makes exactly 2 model calls and the scratchpad does
   NOT appear in committed state; single-stage makes 1.
 
-- [ ] **T6 — Verify-before-commit + retry ladder**
+- [x] **T6 — Verify-before-commit + retry ladder**
   `jig/verify.py`, wired into the walker. Output must pass (a) grammar validation, (b) optional
   `assert` expression declared on the node. On failure: re-sample → re-sample with the error text
   appended → follow the node's `on_fail` edge (or raise `NodeFailed`).

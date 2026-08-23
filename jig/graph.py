@@ -13,7 +13,6 @@ node's grammar, and commits the parsed object. `assert` evaluates a deterministi
 expression and either continues or diverts to `on_fail`. `end` stops and returns.
 """
 
-import json
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -25,10 +24,19 @@ from .errors import (
     MaxStepsExceeded,
     NodeFailed,
 )
-from .codegen import generate_once
 from .expr import is_true
+from .verify import run_node
 
-__all__ = ["RunResult", "run"]
+__all__ = ["Failure", "RunResult", "run"]
+
+
+@dataclass
+class Failure:
+    """A node that exhausted its retry ladder and was diverted by `on_fail`."""
+
+    node: str
+    reason: str
+    attempts: int
 
 
 @dataclass
@@ -42,6 +50,7 @@ class RunResult:
     steps: int = 0
     provenance: Dict[str, str] = field(default_factory=dict)
     end_node: Optional[str] = None
+    failures: List["Failure"] = field(default_factory=list)
 
 
 def run(pack, model, inputs=None, run_id=None, max_steps=None):
@@ -49,6 +58,7 @@ def run(pack, model, inputs=None, run_id=None, max_steps=None):
     state = dict(inputs or {})
     provenance = {}
     path = []
+    failures = []
     budget = max_steps if max_steps is not None else pack.max_steps
 
     node = _node(pack, pack.entry, "entry node")
@@ -71,10 +81,23 @@ def run(pack, model, inputs=None, run_id=None, max_steps=None):
                 steps=steps,
                 provenance=provenance,
                 end_node=node.name,
+                failures=failures,
             )
 
         if node.type == "generate":
-            commit(node, execute_generate(node, state, model), state, provenance)
+            try:
+                value = run_node(node, state, model)
+            except NodeFailed as exc:
+                # The ladder is spent. Divert if the node declares where to go; the
+                # rejected output is dropped either way and never touches state.
+                if not node.on_fail:
+                    raise
+                failures.append(
+                    Failure(node=exc.node, reason=exc.reason, attempts=exc.attempts)
+                )
+                node = _node(pack, node.on_fail, "on_fail of %r" % node.name)
+                continue
+            commit(node, value, state, provenance)
             node = _node(pack, _next(pack, node, state), "edge from %r" % node.name)
             continue
 
@@ -88,30 +111,6 @@ def run(pack, model, inputs=None, run_id=None, max_steps=None):
             continue
 
         raise DeadEnd("node %r has unknown type %r" % (node.name, node.type))
-
-
-def execute_generate(node, state, model):
-    """Generate and parse one node's output. Returns the object to commit.
-
-    The walker deliberately does not know whether this cost one model call or two —
-    that is `codegen`'s business (T5), and T6 wraps it in the retry ladder.
-    """
-    return parse_output(node, generate_once(node, state, model).text)
-
-
-def parse_output(node, text):
-    """Parse a generation into the object a node commits."""
-    try:
-        value = json.loads(text)
-    except ValueError as exc:
-        raise NodeFailed(node.name, "output was not valid JSON (%s)" % exc, attempts=1)
-    if not isinstance(value, dict):
-        raise NodeFailed(
-            node.name,
-            "output must be a JSON object, got %s" % type(value).__name__,
-            attempts=1,
-        )
-    return value
 
 
 def commit(node, value, state, provenance):

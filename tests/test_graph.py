@@ -135,14 +135,16 @@ class TestOutputPlacement(unittest.TestCase):
         result = run(pack, FakeModel(['{"a": 1}']))
         self.assertEqual(result.end_node, "done")
 
-    def test_a_non_object_generation_is_rejected(self):
+    def test_a_non_object_generation_is_rejected_after_the_ladder(self):
         pack = build(
             nodes=[generate("classify"), Node(name="done", type="end")],
             edges=[("classify", "done")],
             entry="classify",
         )
+        model = FakeModel(["not json at all"] * 3)
         with self.assertRaises(NodeFailed):
-            run(pack, FakeModel(["not json at all"]))
+            run(pack, model)
+        self.assertEqual(model.call_count, 3)
 
 
 class TestConditionalEdges(unittest.TestCase):
