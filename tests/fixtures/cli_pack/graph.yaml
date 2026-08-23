@@ -1,0 +1,12 @@
+nodes:
+  classify:
+    type: generate
+    max_tokens: 32
+
+  done:
+    type: end
+    output: [category]
+
+edges:
+  - from: classify
+    to: done

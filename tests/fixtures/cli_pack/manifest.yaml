@@ -1,0 +1,5 @@
+name: cli_demo
+version: 1
+entry: classify
+model: fake:fakes/script.json
+description: Two-node pack used by the CLI tests. Offline by construction.

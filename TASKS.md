@@ -63,7 +63,7 @@ model downloads.** Real-backend work is T11 and is code-only (not executed).
   DONE: `tests/test_eval.py` — a pack scoring 3/4 reports exactly that, and attributes the failure
   to the correct node.
 
-- [ ] **T9 — CLI**
+- [x] **T9 — CLI**
   `jig/cli.py` + `python3 -m jig`. Commands: `jig run <pack> --input '<json>'`,
   `jig eval <pack>`, `jig validate <pack>`. Stdlib `argparse` only. Exit code 1 on eval failure.
   DONE: `tests/test_cli.py` — invokes via `subprocess`, asserts output text and exit codes.

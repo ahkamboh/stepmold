@@ -341,3 +341,49 @@ failed — and the *test* was wrong, not the code. It asserted 4 failures when t
 model made case one legitimately pass, and blamed `extract` for a crash that happened in
 `classify`. Rewrote it to pin the intent (a crash is confined to its own case, attributed
 to the node that was executing), and added a second test for a crash in the first node.
+
+## 2026-08-24 — T9: CLI
+
+**Files changed:** `jig/cli.py`, `jig/__main__.py`, `tests/test_cli.py`,
+`tests/fixtures/cli_pack/` (a coherent 2-node pack with two fake scripts).
+
+**Tests:** 258 passing total (23 new, all through `subprocess`).
+
+```
+$ python3 -m jig validate tests/fixtures/cli_pack
+cli_demo v1: 2 nodes, 1 edge, 2 evalset cases, entry 'classify'
+
+$ python3 -m jig run tests/fixtures/cli_pack --input '{"ticket": "I was charged twice"}'
+{"category": "billing"}
+
+$ python3 -m jig eval tests/fixtures/cli_pack --model fake:fakes/wrong.json
+cli_demo: 1/2 cases passed
+  FAIL technical case [classify]
+    category: expected 'technical', got 'billing'
+  failures by node: classify=1
+$ echo $?
+1
+```
+
+**Decisions I made alone — please review:**
+1. **Exit codes: 0 success, 1 the thing failed, 2 you called it wrong** (argparse's own).
+   TASKS.md only specifies 1 on eval failure; an invalid pack and a failed run use 1 too,
+   and usage errors stay on 2 so CI can tell "the pack is bad" from "the command is bad".
+2. **`--model` is a scheme string**, defaulting to the manifest's `model:`. Only `fake:`
+   exists today — `fake:fakes/script.json` loads a scripted `FakeModel` from JSON, with
+   relative paths resolved *inside the pack*. That is what lets a pack ship its own
+   offline model so `jig eval` runs in CI with no network (T10 depends on it). T11 will add
+   the `openai:` scheme to `resolve_model`; an unknown scheme fails with the list of known
+   ones, which is the current test.
+3. **`main(argv=None)` returns an exit code and never calls `sys.exit`.** `__main__.py`
+   does the exiting. That keeps the CLI callable from a test or another program.
+4. **`jig run` prints the end node's projection; `--state` prints everything.** Default
+   output is what the pack declares it produces; the escape hatch is one flag away.
+5. **Extra flags beyond the three commands:** `--run-id`, `--store`, `--resume` (T7 is
+   useless from the CLI otherwise), `--state`, and `eval --json` for CI. `--resume`
+   without `--store` is a clear error rather than a silent fresh run.
+6. **There is no `jig` executable, only `python3 -m jig`.** Installing a console script
+   needs packaging (`pyproject.toml` + pip), which the zero-dependency rule rules out for
+   now. Every doc line uses `python3 -m jig`. PLAN.md §7's Typer + Rich are dependencies
+   too, so help and report text are plain — the report is designed to be readable, and
+   `--json` covers machines.

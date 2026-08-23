@@ -1,0 +1,3 @@
+Classify this support ticket as billing or technical.
+
+Ticket: {ticket}
