@@ -480,3 +480,39 @@ vLLM or SGLang yet. That is the first thing to do when a GPU is available.
 lists HTTP keep-alive + pooling as the *first* real latency lever. A pooled client needs
 `http.client` connection reuse (still stdlib). Not built tonight: it is an optimisation
 with no test that can prove it offline, and it belongs next to a real measurement.
+
+## 2026-08-24 — T12: README
+
+**Files changed:** `README.md`, `tests/test_readme.py`.
+
+**Tests:** 329 passing total (9 new).
+
+**The quickstart is executed by the test suite, not just written.** `tests/test_readme.py`
+parses every `$ ` line out of the README's console blocks, runs it from the repo root, and
+compares stdout against the output printed in the README **byte for byte**. If a command
+breaks, or its output changes, or someone edits the README to claim something else, the
+suite goes red. A quickstart that has drifted is worse than no quickstart.
+
+Two commands are excluded, both deliberately and both named in the test: the
+`openai:http://localhost:8000` example (needs a live server) and the one command shown
+failing on purpose — the failing `jig eval`, which has its own test asserting it exits 1,
+because "an evalset is a CI gate" is the claim being made there.
+
+**Three tests guard the no-invented-numbers rule:** the benchmark table must contain
+`TODO: measure`, every data cell in it must literally be `TODO: measure`, and the
+benchmark section must contain **no digit at all**. That last one is blunt on purpose —
+it makes adding a plausible-looking number to that section fail the build.
+
+**Decisions I made alone — please review:**
+1. **The README carries no numbers anywhere**, not just in the benchmark table. PLAN.md
+   §0 quotes research figures (error compounding rates, the Shopify result); I compressed
+   those to their qualitative claims instead of restating figures jig has not measured, so
+   no reader can mistake a cited number for a jig result.
+2. **A "What is built" table names the compiler as not started** and the backend adapter
+   as unverified against a live server. The temptation in a README is to describe the
+   design as though it exists; the honest line is that the runtime is complete and
+   `jig build` is not written.
+3. **Install says "Python 3 and nothing else"** and the tests section explains the vendored
+   pytest shim, so nobody is surprised by a `pytest/` directory in the repo root.
+4. The failing-eval example uses `tests/fixtures/cli_pack`, not the example pack, so the
+   example pack's own output stays clean 12/12 in the docs.

@@ -80,7 +80,7 @@ model downloads.** Real-backend work is T11 and is code-only (not executed).
   through as `response_format`/`grammar` per backend flag. Use stdlib `urllib.request` — no `requests`.
   DONE: `tests/test_backend.py` mocks the HTTP layer only; **never make a real network call.**
 
-- [ ] **T12 — README**
+- [x] **T12 — README**
   Root `README.md`: the §0 problem statement from `docs/PLAN.md` compressed, a 15-line quickstart
   using the example pack, and the benchmark table **left empty with a `TODO: measure` marker** —
   do NOT invent numbers.
