@@ -1,0 +1,221 @@
+"""Scoring a pack against its evalset.
+
+The evalset is the contract (docs/PLAN.md §1): prompts, grammars and graphs are all
+regenerable build outputs, but the gold examples are the hand-maintained asset, and
+"v3 passes 50/50" is the sentence a regulated buyer can actually audit.
+
+What makes this more than a test runner is **attribution**. DSPy's known limitation is
+that optimisation is end-to-end and a failure is a black box; because a jig graph gives
+every node its own input/output contract and the walker records which node wrote which
+state key, a failed case can name the node that caused it. `Report.by_node` is that
+per-node signal — the thing a future `jig build` would optimise against.
+"""
+
+from collections import OrderedDict
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
+from .errors import NodeFailed
+from .graph import run
+
+__all__ = ["CaseResult", "Mismatch", "Report", "evaluate"]
+
+_MISSING = object()
+UNKNOWN_NODE = "<unknown>"
+
+
+@dataclass
+class Mismatch:
+    """One expected field that did not come back as promised."""
+
+    field: str
+    expected: Any
+    actual: Any
+    node: Optional[str] = None
+    note: str = ""
+
+
+@dataclass
+class CaseResult:
+    """One evalset case, run."""
+
+    name: str
+    passed: bool
+    input: Dict[str, Any]
+    expected: Dict[str, Any]
+    actual: Dict[str, Any] = field(default_factory=dict)
+    mismatches: List[Mismatch] = field(default_factory=list)
+    node: Optional[str] = None
+    error: Optional[str] = None
+    run_id: Optional[str] = None
+
+
+@dataclass
+class Report:
+    """The score, plus enough detail to act on it."""
+
+    pack: str
+    cases: List[CaseResult] = field(default_factory=list)
+    by_node: Dict[str, int] = field(default_factory=dict)
+
+    @property
+    def total(self):
+        return len(self.cases)
+
+    @property
+    def passed(self):
+        return sum(1 for case in self.cases if case.passed)
+
+    @property
+    def failed(self):
+        return self.total - self.passed
+
+    @property
+    def passed_all(self):
+        return self.failed == 0 and self.total > 0
+
+    def summary(self):
+        """A short human report — what the CLI prints."""
+        lines = ["%s: %d/%d cases passed" % (self.pack, self.passed, self.total)]
+        for case in self.cases:
+            if case.passed:
+                continue
+            lines.append("  FAIL %s [%s]" % (case.name, case.node or UNKNOWN_NODE))
+            if case.error:
+                lines.append("    error: %s" % case.error)
+            for mismatch in case.mismatches:
+                lines.append(
+                    "    %s: expected %r, got %s"
+                    % (
+                        mismatch.field,
+                        mismatch.expected,
+                        mismatch.note or repr(mismatch.actual),
+                    )
+                )
+        if self.by_node:
+            lines.append(
+                "  failures by node: %s"
+                % ", ".join("%s=%d" % item for item in sorted(self.by_node.items()))
+            )
+        return "\n".join(lines)
+
+
+def evaluate(pack, model, cases=None):
+    """Run every evalset case through `pack` and score it.
+
+    `model` is either a `Model` or a zero-argument factory returning one — a factory
+    gives each case a fresh model, which is how an ordered `FakeModel` script stays
+    readable across a dozen cases.
+    """
+    cases = list(pack.evalset if cases is None else cases)
+    if not cases:
+        raise ValueError(
+            "pack %r has no evalset cases to run — an empty evalset is not a pass"
+            % pack.name
+        )
+
+    report = Report(pack=pack.name)
+    counts = OrderedDict()
+    for index, case in enumerate(cases, start=1):
+        result = _run_case(pack, model, case, index)
+        report.cases.append(result)
+        if not result.passed:
+            node = result.node or UNKNOWN_NODE
+            counts[node] = counts.get(node, 0) + 1
+    report.by_node = dict(counts)
+    return report
+
+
+def _run_case(pack, model, case, index):
+    name = case.name or "case %d" % index
+    result = CaseResult(
+        name=name, passed=False, input=dict(case.input), expected=dict(case.expect)
+    )
+    trace = _Trace(pack.entry)
+    try:
+        run_result = run(pack, _model_for(model), dict(case.input), store=trace)
+    except NodeFailed as exc:
+        result.node, result.error = exc.node, str(exc)
+        return result
+    except Exception as exc:  # a backend that falls over fails its case, not the suite
+        result.node = trace.pending
+        result.error = "%s: %s" % (type(exc).__name__, exc)
+        return result
+
+    result.run_id = run_result.run_id
+    result.actual = dict(run_result.output)
+    result.mismatches = _compare(case.expect, run_result)
+    diverted = run_result.failures[0] if run_result.failures else None
+
+    if not result.mismatches and diverted is None:
+        result.passed = True
+        return result
+    if diverted is not None:
+        # A node that burned its ladder and was diverted is the cause, even when the
+        # projected output happens to look right.
+        result.node = diverted.node
+        result.error = diverted.reason
+    else:
+        result.node = result.mismatches[0].node
+    return result
+
+
+def _compare(expect, run_result):
+    """Exact match on the declared fields, each blamed on whoever wrote it."""
+    mismatches = []
+    for name, expected in expect.items():
+        actual = _actual(name, run_result)
+        if actual is _MISSING:
+            mismatches.append(
+                Mismatch(
+                    field=name,
+                    expected=expected,
+                    actual=None,
+                    node=run_result.provenance.get(name),
+                    note="missing from output",
+                )
+            )
+        elif actual != expected:
+            mismatches.append(
+                Mismatch(
+                    field=name,
+                    expected=expected,
+                    actual=actual,
+                    node=run_result.provenance.get(name),
+                )
+            )
+    return mismatches
+
+
+def _actual(name, run_result):
+    """Look in the projected output first, then the full state.
+
+    An `end` node that projects a subset should not stop an evalset from asserting on an
+    intermediate field — per-node expectations are exactly the signal we want.
+    """
+    if name in run_result.output:
+        return run_result.output[name]
+    if name in run_result.state:
+        return run_result.state[name]
+    return _MISSING
+
+
+def _model_for(model):
+    if hasattr(model, "generate"):
+        return model
+    if callable(model):
+        return model()
+    raise TypeError(
+        "evaluate() needs a Model or a factory returning one, got %s"
+        % type(model).__name__
+    )
+
+
+class _Trace:
+    """A store that keeps only the last checkpoint, to blame the right node on a crash."""
+
+    def __init__(self, entry):
+        self.pending = entry
+
+    def save(self, **checkpoint):
+        self.pending = checkpoint.get("next_node")

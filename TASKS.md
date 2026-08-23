@@ -56,7 +56,7 @@ model downloads.** Real-backend work is T11 and is code-only (not executed).
   DONE: `tests/test_state.py` — kill mid-run (simulate by raising in node 3), resume, verify nodes
   1–2 are not re-executed and the run completes.
 
-- [ ] **T8 — Evalset runner**
+- [x] **T8 — Evalset runner**
   `jig/eval.py`. Load `evalset.jsonl` (`{"input": {...}, "expect": {...}}`), run each case through
   the pack, score exact-match on the declared output fields. Report pass/fail per case + totals +
   per-node failure counts (this is the per-node signal the design calls for).

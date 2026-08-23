@@ -300,3 +300,44 @@ the resumed run's fresh model receives exactly one call — node three's prompt.
 6. The full history is kept (not just the latest row), so `store.history(run_id)` is the
    per-run audit trail PLAN.md §0 problem 4 is about. `delete(run_id)` is there for
    retention; nothing calls it automatically.
+
+## 2026-08-24 — T8: Evalset runner
+
+**Files changed:** `jig/eval.py`, `tests/test_eval.py`.
+
+**Tests:** 235 passing total (19 new).
+
+`evaluate(pack, model, cases=None) -> Report`. The TASKS.md acceptance case is tested
+directly: a pack scoring 3/4 reports `passed=3, failed=1, total=4` and
+`by_node == {"extract": 1}` — the node that actually wrote the wrong field.
+
+**How attribution works** (this is the part PLAN.md §2 Bug 3 cares about): the walker
+already records provenance (`state key -> node that wrote it`), so a mismatched expect
+field names its author for free. A case that dies in the ladder is blamed on
+`NodeFailed.node`; a case whose node was diverted by `on_fail` is blamed on the diverted
+node even if the projected output happens to look right; a case that hits an unexpected
+exception is blamed on the node the run was about to execute, tracked with a two-line
+in-memory store.
+
+**Decisions I made alone — please review:**
+1. **An unexpected exception fails its own case, not the suite.** A 50-case contract run
+   that aborts at case 12 because a backend hiccuped is useless. The exception's class and
+   message land in `CaseResult.error`, so nothing is hidden — and a broken case can never
+   become a *pass* this way, only a fail.
+2. **A diverted `on_fail` counts as a failure even when the output matches.** A run that
+   limped to the right answer through its failure path is not a passing case; the pack has
+   a node that does not work.
+3. **Expected fields are looked up in the projected output first, then full state.** An
+   `end` node that projects a subset should not stop an evalset from asserting on an
+   intermediate field — per-node expectations are exactly the signal this is for.
+4. **An empty evalset raises instead of reporting 0/0 passed.** A contract with no cases
+   silently "passing" is the single worst failure mode a system like this can have.
+5. **`model` may be a factory.** Passing a zero-argument callable gives every case a fresh
+   model, which is what keeps an ordered `FakeModel` script readable across a dozen cases.
+   A `Model` instance still works and is shared across cases.
+
+**Surprising:** the first version of `test_an_unexpected_exception_fails_only_its_own_case`
+failed — and the *test* was wrong, not the code. It asserted 4 failures when the scripted
+model made case one legitimately pass, and blamed `extract` for a crash that happened in
+`classify`. Rewrote it to pin the intent (a crash is confined to its own case, attributed
+to the node that was executing), and added a second test for a crash in the first node.
