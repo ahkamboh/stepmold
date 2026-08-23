@@ -32,3 +32,29 @@ pytest stand-in instead of installing one.
 **Surprising:** `python3` here is 3.14.5, not the 3.12 that `docs/PLAN.md` §7 locks in.
 Everything written tonight is kept 3.9-compatible in syntax so the version choice stays open.
 
+## 2026-08-24 — T1: Model protocol + FakeModel
+
+**Files changed:** `jig/__init__.py`, `jig/model.py`, `tests/test_model.py`
+
+**Tests:** 18 passing total (15 new).
+
+`Model` is a `runtime_checkable` Protocol with one method,
+`generate(prompt, grammar=None, max_tokens=512) -> str`. `FakeModel` implements it in two
+modes (ordered list, or dict keyed by prompt substring) and raises `ModelExhausted` when the
+script runs dry.
+
+**Decisions I made alone:**
+1. **`FakeModel` records every call** (`model.calls` → `Call(prompt, grammar, max_tokens)`,
+   plus `model.call_count`). Not in the T1 spec, but T5 requires asserting "exactly 2 model
+   calls" and T6 requires proving a rejected generation never reached state — both need this
+   record, and bolting it on later would have meant reopening T1.
+2. **Keyed mode: longest matching key wins.** With plain "first match" the result depends on
+   dict order, which is a coin-flip for the test author. Longest-match lets a specific key
+   (`"emit ticket"`) override a general one (`"emit"`) predictably.
+3. **A keyed value may be a list, consumed in order.** T10 scripts one 4-node workflow across
+   12 evalset cases; a single string per node cannot express "different answer per case", and
+   substring keys alone can't separate the cases. A plain string key stays inexhaustible
+   (answers every matching prompt); a list key is a queue.
+4. `ModelExhausted` covers both "ordered script ran out" and "no key matched" — one error
+   class, distinct messages, rather than two near-identical exceptions.
+

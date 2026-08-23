@@ -8,7 +8,7 @@ model downloads.** Real-backend work is T11 and is code-only (not executed).
 
 ---
 
-- [ ] **T1 — Model protocol + FakeModel**
+- [x] **T1 — Model protocol + FakeModel**
   `jig/model.py`. Define `Model` protocol: `generate(prompt: str, grammar: dict | None, max_tokens: int) -> str`.
   Implement `FakeModel(scripted: list[str] | dict[str, str])` returning canned responses in order,
   or keyed by a substring match on the prompt. Raise on exhaustion.
