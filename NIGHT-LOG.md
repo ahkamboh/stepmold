@@ -516,3 +516,114 @@ it makes adding a plausible-looking number to that section fail the build.
    pytest shim, so nobody is surprised by a `pytest/` directory in the repo root.
 4. The failing-eval example uses `tests/fixtures/cli_pack`, not the example pack, so the
    example pack's own output stays clean 12/12 in the docs.
+
+---
+
+# SUMMARY — morning read
+
+**Every task T1–T12 is `[x]`. Nothing is `[!]`. Nothing is blocked.**
+**329 tests passing** under `python3 -m pytest -q`, in about 2 seconds, with no network,
+no GPU, no model download, and no dependency outside the standard library.
+
+```
+$ python3 -m pytest -q
+Ran 329 tests ... OK
+
+$ python3 -m jig eval examples/support_triage
+support_triage: 12/12 cases passed
+```
+
+## What is complete
+
+The **runtime half of jig is finished and tested end to end.** A pack goes in, a verified
+result comes out, and every claim in this repo has a test behind it.
+
+| Task | Module | What it does |
+| --- | --- | --- |
+| T2 | `jig/pack.py`, `jig/yamlish.py` | Load and validate a pack directory; 10 malformed fixtures each fail specifically |
+| T3 | `jig/grammar.py` | JSON Schema subset, validated by hand, violations carry a dotted path |
+| T4 | `jig/graph.py`, `errors.py`, `render.py`, `expr.py` | The walker: generate/assert/end, conditional edges, step guard, provenance |
+| T5 | `jig/codegen.py` | Two-stage think -> emit; the scratchpad never enters state |
+| T6 | `jig/verify.py` | Verify-before-commit and the cheap-first retry ladder |
+| T7 | `jig/state.py` | SQLite checkpoint after every node; exact resume |
+| T8 | `jig/eval.py` | Score against the evalset, attribute each failure to a node |
+| T9 | `jig/cli.py` | `python3 -m jig run \| eval \| validate`, exit 1 on a failed case |
+| T10 | `examples/support_triage/` | A real 4-node workflow scoring 12/12 offline |
+| T11 | `jig/backends/openai_compat.py` | OpenAI-compatible client — **written, never run** |
+| T12 | `README.md` | Problem statement, executed quickstart, empty benchmark table |
+
+Roughly 2,850 lines of `jig/`, 2,800 lines of tests. No class hierarchies, no frameworks,
+no metaprogramming — plain functions and dataclasses throughout, as instructed.
+
+## Nothing is blocked. Two things are unverified, and you should treat them differently
+
+1. **`jig/backends/openai_compat.py` has never spoken to a real server.** T11 said code
+   only, so its 41 tests mock the HTTP layer completely. The wire format is written from
+   the OpenAI-compatible spec, not from observation. **First thing to do on a machine with
+   a GPU or a llama.cpp-server: run the example pack through it for real.** Expect the
+   grammar flag to be the thing that needs adjusting per server.
+2. **Every number in this project is still unmeasured, and stays that way.** The README
+   benchmark table is `TODO: measure` in every cell, and three tests enforce it — one of
+   them fails the build if any digit appears in that section. `docs/PLAN.md` §4.1 names
+   the three numbers M0 has to produce; none of them can be produced without a GPU.
+
+## Decisions I made alone that I would most like you to review
+
+Ordered by how much they would cost to change later.
+
+1. **I wrote a YAML parser** (`jig/yamlish.py`, 421 lines, 36 tests). TASKS.md specifies
+   `manifest.yaml` / `graph.yaml`, the stdlib has no YAML, and pip was forbidden. It
+   supports the subset a pack needs and refuses everything else **by name** rather than
+   mis-parsing it. If you would rather take a PyYAML dependency, `load_pack` is the only
+   caller and the swap is one import — but the zero-dependency property is worth a lot on a
+   client box.
+2. **Assert expressions are parsed with `ast` and walked against a whitelist — never
+   `eval()`** (`jig/expr.py`). Packs are compiler-generated data; a pack that can `eval()`
+   is an RCE hole. The language is deliberately tiny. If a node needs more than it offers,
+   that is a signal the logic wants to be a node, not a YAML one-liner.
+3. **A retry re-rolls the emit stage only and reuses the think scratchpad.** Cheap-first,
+   per PLAN.md §3. The risk is a node whose *thinking* was the problem repeating it. If
+   measurement shows that happening, the fix is a `rethink_on_retry` node flag — I did not
+   build it on speculation.
+4. **The pack format's shape is mine**: `output:` places a node's object in state (or
+   projects an end node's result), `when: {key: value}` edges are equality maps evaluated
+   in declaration order, `on_fail:` is a node name rather than an edge, and `assert:` is a
+   node-level expression. All of it is in `examples/support_triage/graph.yaml`, which is
+   the fastest way to judge whether it reads well.
+5. **`docs/PLAN.md` says `graph.json`; TASKS.md says `graph.yaml`.** I followed TASKS.md,
+   as instructed, and noted it. PLAN.md §7's Pydantic, Typer and Rich are all dependencies
+   and were replaced with stdlib equivalents.
+6. **The model spec is a string** — `fake:fakes/script.json` or
+   `openai:http://host:8000#qwen3-8b` — resolved from `--model` or the manifest. The `#`
+   separator is deliberate: `|` would break unquoted in a shell.
+7. **I am pushing to `claude/autonomous-jig-build-62hlu8`, not `main`.** You asked for
+   main; this session's harness pins development to that branch and forbids pushing
+   elsewhere. The branch is a straight-line continuation of main, so
+   `git merge --ff-only claude/autonomous-jig-build-62hlu8` fast-forwards with no
+   conflicts. **This is the one thing I could not do as asked.**
+
+## What to look at first
+
+1. `README.md` — five minutes, and the quickstart is executed by the suite so it cannot
+   be stale.
+2. `examples/support_triage/graph.yaml` — the pack format, judged as a thing a human has
+   to write.
+3. `jig/verify.py` — 156 lines, and the reliability argument lives in them.
+4. `jig/expr.py` — the one module where I made a security call on my own.
+5. `NIGHT-LOG.md` T2 and T10 entries — the two places I changed something structural
+   (writing the YAML parser, then extending it when the example pack showed it was too
+   strict).
+
+## What I would do next, if I were carrying on
+
+Not started, and deliberately not started — all of it is beyond T12:
+
+- **Run T11 against a real server.** Everything else is downstream of that.
+- **`jig build`** — the compiler is the entire other half of the product and does not
+  exist. PLAN.md's M1.
+- **HTTP keep-alive in the backend.** `urllib` opens a connection per request; PLAN.md
+  §7.2 lists pooling as the first real latency lever. Needs `http.client` and a
+  measurement to justify it.
+- **Async execution.** The walker is synchronous. PLAN.md §7 wants asyncio because the
+  runtime is I/O-bound on the GPU. Nothing in the design blocks it; nothing tonight needed it.
+- **A `Store` retention policy.** Checkpoints accumulate forever right now.
