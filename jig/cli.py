@@ -28,7 +28,7 @@ from .pack import PackError, load_pack
 
 __all__ = ["main", "resolve_model"]
 
-MODEL_SCHEMES = ("fake",)
+MODEL_SCHEMES = ("fake", "openai")
 
 
 def main(argv=None):
@@ -147,10 +147,17 @@ def command_eval(args):
 def resolve_model(spec, pack):
     """Turn a model spec into a `Model`.
 
-    `fake:<path>` loads a scripted `FakeModel` from JSON (a list of responses, or an
-    object keyed by prompt substring); a relative path is resolved inside the pack, which
-    is what lets a pack ship an offline model for CI. T11 adds the `openai:` scheme for a
-    real backend.
+    Two schemes:
+
+        fake:<path>                       a scripted FakeModel from JSON — a list of
+                                          responses, or an object keyed by prompt
+                                          substring. A relative path resolves inside the
+                                          pack, which is what lets a pack ship its own
+                                          offline model so CI needs no GPU.
+        openai:<base_url>#<model>[#<grammar_mode>]
+                                          an OpenAI-compatible server (llama.cpp-server,
+                                          vLLM, SGLang). Constructing it opens no
+                                          connection; the first generate does.
     """
     spec = spec or pack.model
     if not spec:
@@ -160,10 +167,29 @@ def resolve_model(spec, pack):
     scheme, _, rest = spec.partition(":")
     if scheme == "fake":
         return _fake_model(rest, pack)
+    if scheme == "openai":
+        return _openai_model(rest)
     raise ValueError(
         "unknown model scheme %r in %r (known: %s)"
         % (scheme, spec, ", ".join(MODEL_SCHEMES))
     )
+
+
+def _openai_model(rest):
+    from .backends.openai_compat import OpenAICompatModel
+
+    parts = rest.split("#")
+    base_url = parts[0].strip()
+    name = parts[1].strip() if len(parts) > 1 else ""
+    if not base_url or not name:
+        raise ValueError(
+            "openai: needs a base url and a model name, "
+            "e.g. openai:http://localhost:8000#qwen3-8b"
+        )
+    options = {"base_url": base_url, "model": name}
+    if len(parts) > 2 and parts[2].strip():
+        options["grammar_mode"] = parts[2].strip()
+    return OpenAICompatModel(**options)
 
 
 def _fake_model(path, pack):

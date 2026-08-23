@@ -435,3 +435,48 @@ T10 surfaced, not a new feature I went looking for.
    `emit`'s `on_fail`.
 5. **No accuracy or cost claim anywhere in the pack.** The numbers this example could
    produce are FakeModel numbers and mean nothing about a real model.
+
+## 2026-08-24 — T11: Real backend adapter (code only, never run)
+
+**Files changed:** `jig/backends/__init__.py`, `jig/backends/openai_compat.py`,
+`jig/errors.py` (`BackendError`), `jig/cli.py` (the `openai:` scheme),
+`tests/test_backend.py`, `tests/test_cli.py`.
+
+**Tests:** 320 passing total (47 new: 41 backend, 6 CLI model-spec).
+
+**No network call is made, anywhere.** Every backend test injects a fake opener. Two
+tests exist specifically to hold that line: one asserts that constructing the model
+performs zero I/O, and one asserts the *default* opener is `urllib.request.urlopen` by
+identity without ever invoking it. `grep urlopen tests/` returns only those.
+
+**This code is unverified against a real server** and the module docstring says so. It is
+written from the OpenAI-compatible wire format; nobody has pointed it at llama.cpp,
+vLLM or SGLang yet. That is the first thing to do when a GPU is available.
+
+**Decisions I made alone — please review:**
+1. **Grammar handling is a four-way flag, not two.** TASKS.md says "`response_format` /
+   `grammar` per backend flag". `response_format` (vLLM, SGLang, OpenAI) is the default.
+   For llama.cpp-server I used **`json_schema`**, not `grammar`, because llama.cpp's
+   `grammar` field expects **GBNF text**, and jig ships JSON Schema — putting a schema in
+   that field would produce a confusing server-side error. Translating JSON Schema to GBNF
+   is a real piece of work and is not in any task. The other two modes are `json_object`
+   (loose JSON mode, schema appended to the prompt) and `none`.
+2. **`none` is a legitimate mode** because `jig.verify` validates every output anyway.
+   Constrained decoding is an optimisation in this architecture, not the safety net — which
+   means jig degrades to "slower and retries more", not "unsafe", on a server without
+   grammar support.
+3. **Retries on 408/429/5xx only**, with exponential backoff and an injectable sleeper;
+   4xx raises immediately with the response body, because retrying a bad schema is just
+   burning tokens. This is transport-level retry and is separate from `verify`'s ladder.
+4. **The model spec is `openai:<base_url>#<model>[#<grammar_mode>]`.** The T2 log entry
+   guessed `|` as the separator — I changed it to `#` because `|` is a shell pipe and
+   `--model openai:http://host|qwen` would break unquoted. `#` mid-word is safe in sh.
+5. **API key resolution: explicit argument, then `JIG_API_KEY`, then `OPENAI_API_KEY`,
+   then none.** Self-hosted servers usually need no key at all, so no key is not an error.
+6. **`base_url` accepts a host, a `/v1`, or the full endpoint** — all three are what people
+   paste out of a server's startup log.
+
+**Known gap, deliberate:** `urllib` opens a new connection per request, and PLAN.md §7.2
+lists HTTP keep-alive + pooling as the *first* real latency lever. A pooled client needs
+`http.client` connection reuse (still stdlib). Not built tonight: it is an optimisation
+with no test that can prove it offline, and it belongs next to a real measurement.

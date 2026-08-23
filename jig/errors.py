@@ -8,6 +8,7 @@ because they happen before a run exists.
 
 __all__ = [
     "AssertFailed",
+    "BackendError",
     "DanglingEdge",
     "DeadEnd",
     "ExprError",
@@ -75,3 +76,7 @@ class AssertFailed(RunError):
 
 class UnknownRun(RunError):
     """A run id with no checkpoint behind it."""
+
+
+class BackendError(RunError):
+    """A real inference backend could not be reached, or answered with nonsense."""

@@ -170,6 +170,50 @@ class TestEval(unittest.TestCase):
         self.assertEqual(code, 1)
 
 
+class TestModelSpecs(unittest.TestCase):
+    """Resolved in-process: constructing a backend opens no connection (see T11)."""
+
+    def setUp(self):
+        sys.path.insert(0, ROOT)
+        from jig.cli import resolve_model
+        from jig.pack import load_pack
+
+        self.resolve = resolve_model
+        self.pack = load_pack(PACK)
+
+    def test_a_fake_spec_loads_the_packs_script(self):
+        model = self.resolve("fake:fakes/script.json", self.pack)
+        self.assertEqual(model.generate("please classify the charged ticket"),
+                         '{"category": "billing"}')
+
+    def test_the_manifest_spec_is_the_default(self):
+        self.assertIsNotNone(self.resolve(None, self.pack))
+
+    def test_an_openai_spec_builds_a_backend_without_calling_it(self):
+        model = self.resolve("openai:http://localhost:8000#qwen3-8b", self.pack)
+        self.assertEqual(model.url, "http://localhost:8000/v1/chat/completions")
+        self.assertEqual(model.model, "qwen3-8b")
+        self.assertEqual(model.grammar_mode, "response_format")
+
+    def test_an_openai_spec_can_choose_the_grammar_mode(self):
+        model = self.resolve("openai:http://host/v1#llama#json_schema", self.pack)
+        self.assertEqual(model.grammar_mode, "json_schema")
+
+    def test_an_openai_spec_without_a_model_name_is_rejected(self):
+        with self.assertRaises(ValueError) as caught:
+            self.resolve("openai:http://localhost:8000", self.pack)
+        self.assertIn("model name", str(caught.exception))
+
+    def test_a_pack_with_no_model_at_all_is_rejected(self):
+        from jig.pack import load_pack
+
+        pack = load_pack(os.path.join(FIXTURES, "valid_pack"))
+        object.__setattr__(pack, "model", None)
+        with self.assertRaises(ValueError) as caught:
+            self.resolve(None, pack)
+        self.assertIn("--model", str(caught.exception))
+
+
 class TestUsage(unittest.TestCase):
     def test_no_arguments_prints_usage(self):
         code, _, err = jig()

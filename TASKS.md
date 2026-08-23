@@ -74,7 +74,7 @@ model downloads.** Real-backend work is T11 and is code-only (not executed).
   `jig eval examples/support_triage` passes end to end in CI.
   DONE: `tests/test_example.py` — the example scores 12/12 with the scripted FakeModel.
 
-- [ ] **T11 — Real backend adapter (CODE ONLY, DO NOT RUN)**
+- [x] **T11 — Real backend adapter (CODE ONLY, DO NOT RUN)**
   `jig/backends/openai_compat.py`. `OpenAICompatModel(base_url, model, api_key=None)` speaking the
   OpenAI-compatible `/v1/chat/completions` used by llama.cpp-server, vLLM, and SGLang. Pass grammars
   through as `response_format`/`grammar` per backend flag. Use stdlib `urllib.request` — no `requests`.
