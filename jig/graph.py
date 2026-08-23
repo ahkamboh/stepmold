@@ -14,7 +14,7 @@ expression and either continues or diverts to `on_fail`. `end` stops and returns
 """
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
 from .errors import (
@@ -27,7 +27,7 @@ from .errors import (
 from .expr import is_true
 from .verify import run_node
 
-__all__ = ["Failure", "RunResult", "run"]
+__all__ = ["Failure", "RunResult", "replay", "run"]
 
 
 @dataclass
@@ -53,16 +53,33 @@ class RunResult:
     failures: List["Failure"] = field(default_factory=list)
 
 
-def run(pack, model, inputs=None, run_id=None, max_steps=None):
-    """Walk `pack` from its entry node until an `end` node, and return a `RunResult`."""
-    state = dict(inputs or {})
-    provenance = {}
-    path = []
-    failures = []
+def run(pack, model, inputs=None, run_id=None, max_steps=None, store=None,
+        resume_from=None):
+    """Walk `pack` from its entry node until an `end` node, and return a `RunResult`.
+
+    `store` is anything with a `save(...)` method (see `jig.state.Store`); when given, a
+    checkpoint is written after every node that completes. `resume_from` is a checkpoint
+    to continue from instead of starting at the entry node — that is how `state.resume`
+    picks a dead run back up without re-executing what already succeeded.
+    """
     budget = max_steps if max_steps is not None else pack.max_steps
 
-    node = _node(pack, pack.entry, "entry node")
-    steps = 0
+    if resume_from is not None:
+        run_id = run_id or resume_from.run_id
+        state = dict(resume_from.state)
+        provenance = dict(resume_from.provenance)
+        path = list(resume_from.path)
+        failures = [Failure(**record) for record in resume_from.failures]
+        steps = resume_from.step
+        node = _node(pack, resume_from.next_node, "resume point of run %r" % run_id)
+    else:
+        state = dict(inputs or {})
+        provenance = {}
+        path = []
+        failures = []
+        steps = 0
+        node = _node(pack, pack.entry, "entry node")
+    run_id = run_id or uuid.uuid4().hex
     while True:
         steps += 1
         if steps > budget:
@@ -73,9 +90,12 @@ def run(pack, model, inputs=None, run_id=None, max_steps=None):
         path.append(node.name)
 
         if node.type == "end":
+            output = _project(node, state)
+            _checkpoint(store, pack, run_id, steps, node.name, None, state, path,
+                        provenance, failures, output)
             return RunResult(
-                run_id=run_id or uuid.uuid4().hex,
-                output=_project(node, state),
+                run_id=run_id,
+                output=output,
                 state=state,
                 path=path,
                 steps=steps,
@@ -95,19 +115,27 @@ def run(pack, model, inputs=None, run_id=None, max_steps=None):
                 failures.append(
                     Failure(node=exc.node, reason=exc.reason, attempts=exc.attempts)
                 )
+                _checkpoint(store, pack, run_id, steps, node.name, node.on_fail, state,
+                            path, provenance, failures)
                 node = _node(pack, node.on_fail, "on_fail of %r" % node.name)
                 continue
             commit(node, value, state, provenance)
-            node = _node(pack, _next(pack, node, state), "edge from %r" % node.name)
+            following = _next(pack, node, state)
+            _checkpoint(store, pack, run_id, steps, node.name, following, state, path,
+                        provenance, failures)
+            node = _node(pack, following, "edge from %r" % node.name)
             continue
 
         if node.type == "assert":
             if is_true(node.expr, state):
-                node = _node(pack, _next(pack, node, state), "edge from %r" % node.name)
+                following = _next(pack, node, state)
             elif node.on_fail:
-                node = _node(pack, node.on_fail, "on_fail of %r" % node.name)
+                following = node.on_fail
             else:
                 raise AssertFailed(node.name, node.expr)
+            _checkpoint(store, pack, run_id, steps, node.name, following, state, path,
+                        provenance, failures)
+            node = _node(pack, following, "edge from %r" % node.name)
             continue
 
         raise DeadEnd("node %r has unknown type %r" % (node.name, node.type))
@@ -167,3 +195,36 @@ def _project(node, state):
     if not node.output:
         return dict(state)
     return {key: state[key] for key in node.output if key in state}
+
+
+def _checkpoint(store, pack, run_id, step, node, next_node, state, path, provenance,
+                failures, output=None):
+    """Persist one completed node, if this run is being checkpointed at all."""
+    if store is None:
+        return
+    store.save(
+        run_id=run_id,
+        step=step,
+        node=node,
+        next_node=next_node,
+        state=state,
+        path=path,
+        provenance=provenance,
+        failures=[asdict(failure) for failure in failures],
+        output=output,
+        pack=pack.name,
+    )
+
+
+def replay(checkpoint):
+    """Rebuild the `RunResult` of a run that already finished, from its checkpoint."""
+    return RunResult(
+        run_id=checkpoint.run_id,
+        output=checkpoint.output if checkpoint.output is not None else dict(checkpoint.state),
+        state=dict(checkpoint.state),
+        path=list(checkpoint.path),
+        steps=checkpoint.step,
+        provenance=dict(checkpoint.provenance),
+        end_node=checkpoint.node,
+        failures=[Failure(**record) for record in checkpoint.failures],
+    )

@@ -263,3 +263,40 @@ absent from the output, and absent from the next node's prompt.
 
 **No frontier fallback.** PLAN.md §3 rules it out for v1 and I did not add one — a silent
 escalation to a big model would make every cost number in the README a lie.
+
+## 2026-08-24 — T7: Checkpointing
+
+**Files changed:** `jig/state.py`, `jig/graph.py` (checkpoint hooks + `replay`),
+`jig/errors.py` (`UnknownRun`), `tests/test_state.py`.
+
+**Tests:** 216 passing total (23 new).
+
+`Store` is a SQLite table of checkpoints keyed by `(run_id, step)`; `run(..., store=...)`
+writes one after every node that completes; `resume(pack, model, run_id, store)` continues
+from the last one. The TASKS.md scenario is tested literally: a `FakeModel` scripted with
+two responses dies on node three, the store holds nodes 1–2 with `next_node="three"`, and
+the resumed run's fresh model receives exactly one call — node three's prompt.
+
+**Decisions I made alone — please review:**
+1. **`Store` and the walker do not import each other.** The walker calls
+   `store.save(run_id=..., step=..., ...)` with keywords and never imports `jig.state`;
+   `state.resume` imports `jig.graph` inside the function. Duck typing here is what keeps
+   the dependency acyclic — and it means any object with a `save()` (Postgres later, a
+   test spy, an append-only log) is a valid store with no changes to the walker.
+2. **Every node that completes is checkpointed, not only generate nodes.** TASKS.md says
+   "after each committed node"; assert transitions and the `on_fail` diversion are also
+   points a crash can land between, and checkpointing them makes resume exact rather than
+   approximately right. Cost is one small INSERT per node.
+3. **Resuming a finished run replays it instead of re-running it** — `graph.replay`
+   rebuilds the `RunResult` from the final checkpoint and calls no model. A supervisor
+   retrying a resume should not pay twice, and should not be able to double-execute
+   side effects.
+4. **The checkpoint carries `path`, `provenance` and `failures`, not just state.** Resume
+   restores the whole run record, so a resumed run's result is indistinguishable from one
+   that never crashed. That matters for PLAN.md §0's auditability claim — a resumed run
+   still has a complete trace.
+5. **`created_at` uses `datetime.now(timezone.utc)`,** not `utcnow()`. `utcnow()` is
+   deprecated from 3.12 and this repo has already seen two different interpreters.
+6. The full history is kept (not just the latest row), so `store.history(run_id)` is the
+   per-run audit trail PLAN.md §0 problem 4 is about. `delete(run_id)` is there for
+   retention; nothing calls it automatically.

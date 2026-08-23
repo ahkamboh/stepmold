@@ -50,7 +50,7 @@ model downloads.** Real-backend work is T11 and is code-only (not executed).
   DONE: `tests/test_verify.py` — passes first try; recovers on retry 2; exhausts to `on_fail`;
   asserts that a rejected generation is absent from final state.
 
-- [ ] **T7 — Checkpointing**
+- [x] **T7 — Checkpointing**
   `jig/state.py`. Persist state after each committed node, keyed by run id. Backend: stdlib
   `sqlite3` (no third-party driver). `resume(run_id)` continues from the last committed node.
   DONE: `tests/test_state.py` — kill mid-run (simulate by raising in node 3), resume, verify nodes

@@ -16,6 +16,7 @@ __all__ = [
     "MissingVariable",
     "NodeFailed",
     "RunError",
+    "UnknownRun",
 ]
 
 
@@ -70,3 +71,7 @@ class AssertFailed(RunError):
         self.node = node
         self.expression = expression
         RunError.__init__(self, "assert node %r failed: %s" % (node, expression))
+
+
+class UnknownRun(RunError):
+    """A run id with no checkpoint behind it."""
