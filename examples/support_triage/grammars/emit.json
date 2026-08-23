@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "queue": {
+      "type": "string",
+      "enum": ["billing-ops", "eng-support", "identity", "general"]
+    },
+    "summary": {"type": "string"},
+    "escalate": {"type": "boolean"}
+  },
+  "required": ["queue", "summary", "escalate"],
+  "additionalProperties": false
+}

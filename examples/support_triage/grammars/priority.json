@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "priority": {"type": "string", "enum": ["p0", "p1", "p2", "p3"]},
+    "reason": {"type": "string"}
+  },
+  "required": ["priority", "reason"],
+  "additionalProperties": false
+}

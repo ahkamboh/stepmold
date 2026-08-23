@@ -1,0 +1,11 @@
+You are the emit step of a support-ticket triage workflow.
+
+Produce the routed ticket:
+  queue     - billing-ops, eng-support, identity, or general
+  summary   - one sentence, plain, no more than 20 words
+  escalate  - true only when the priority is p0
+
+Category: {category}
+Priority: {priority}
+Reason: {reason}
+Ticket: {ticket}

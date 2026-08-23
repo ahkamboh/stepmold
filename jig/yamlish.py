@@ -5,12 +5,13 @@ project rule is standard library only. The standard library has no YAML parser, 
 this is the minimal piece implemented by hand (see NIGHT-LOG.md, T2).
 
 Supported: block mappings, block sequences, nesting by indentation, `#` comments,
-single-line flow collections (`[a, b]`, `{a: 1}`), quoted and plain scalars, and the
-scalar types null / bool / int / float / str.
+single-line flow collections (`[a, b]`, `{a: 1}`), quoted and plain scalars, block and
+folded scalars (`|`, `>`, with `-`/`+` chomping), and the scalar types
+null / bool / int / float / str.
 
-Deliberately unsupported, each with a clear error: anchors and aliases, tags,
-block scalars (`|`, `>`), multiple documents, and complex keys. Pack files do not
-need them, and every unsupported construct fails loudly rather than silently.
+Deliberately unsupported, each with a clear error: anchors and aliases, tags, multiple
+documents, and complex keys. Pack files do not need them, and every unsupported construct
+fails loudly rather than silently.
 """
 
 import re
@@ -29,21 +30,21 @@ _NULL = ("", "~", "null", "Null", "NULL")
 _TRUE = ("true", "True", "TRUE", "yes", "Yes", "YES", "on", "On", "ON")
 _FALSE = ("false", "False", "FALSE", "no", "No", "NO", "off", "Off", "OFF")
 _UNSUPPORTED = {
-    "|": "block scalars (`|`)",
-    ">": "folded scalars (`>`)",
     "&": "anchors (`&`)",
     "*": "aliases (`*`)",
     "!": "tags (`!`)",
 }
+_BLOCK_HEADER = re.compile(r"^([|>])([-+]?)$")
 
 
 class _Line(object):
-    __slots__ = ("indent", "text", "lineno")
+    __slots__ = ("indent", "text", "lineno", "block")
 
-    def __init__(self, indent, text, lineno):
+    def __init__(self, indent, text, lineno, block=None):
         self.indent = indent
         self.text = text
         self.lineno = lineno
+        self.block = block  # resolved text when this line opened a `|` or `>` scalar
 
 
 def parse(text, filename="<yaml>"):
@@ -63,20 +64,90 @@ def parse(text, filename="<yaml>"):
 
 
 def _lex(text, filename):
+    raw_lines = text.splitlines()
     out = []
-    for number, raw in enumerate(text.splitlines(), start=1):
+    index = 0
+    while index < len(raw_lines):
+        raw = raw_lines[index]
+        number = index + 1
         if "\t" in raw[: len(raw) - len(raw.lstrip(" \t"))]:
             raise YamlError(
                 "%s:%d: tabs cannot be used for indentation" % (filename, number)
             )
         stripped = _strip_comment(raw)
-        if not stripped.strip():
-            continue
-        if stripped.strip() in ("---", "..."):
+        if not stripped.strip() or stripped.strip() in ("---", "..."):
+            index += 1
             continue
         indent = len(stripped) - len(stripped.lstrip(" "))
-        out.append(_Line(indent, stripped.strip(), number))
+        content = stripped.strip()
+
+        header = _block_header(content)
+        if header is None:
+            out.append(_Line(indent, content, number))
+            index += 1
+            continue
+
+        style, chomp = header
+        if chomp == "+":
+            raise YamlError(
+                "%s:%d: jig's YAML subset does not support keep chomping (`%s+`)"
+                % (filename, number, style)
+            )
+        body, index = _block_body(raw_lines, index + 1, indent)
+        out.append(_Line(indent, content, number, block=_fold(body, style, chomp)))
     return out
+
+
+def _block_header(content):
+    """Return (style, chomp) when `content` ends in a `|`/`>` scalar header."""
+    marker = content
+    if ":" in content:
+        split = _split_key(content)
+        if split is None:
+            return None
+        marker = split[1]
+    elif content.startswith("- "):
+        marker = content[2:].strip()
+    match = _BLOCK_HEADER.match(marker)
+    return (match.group(1), match.group(2)) if match else None
+
+
+def _block_body(raw_lines, index, indent):
+    """Collect the raw lines belonging to a block scalar opened at `indent`."""
+    body = []
+    block_indent = None
+    while index < len(raw_lines):
+        raw = raw_lines[index]
+        if raw.strip():
+            current = len(raw) - len(raw.lstrip(" "))
+            if current <= indent:
+                break
+            if block_indent is None:
+                block_indent = current
+            body.append(raw[block_indent:] if len(raw) > block_indent else raw.strip())
+        else:
+            body.append("")
+        index += 1
+    while body and not body[-1].strip():
+        body.pop()  # trailing blank lines are not content
+    return body, index
+
+
+def _fold(body, style, chomp):
+    """Apply literal/folded joining and `-`/`+` chomping to a block scalar body."""
+    if style == "|":
+        text = "\n".join(body)
+    else:
+        parts = []
+        for line in body:
+            if not line.strip():
+                parts.append("\n")
+            elif parts and parts[-1] not in ("", "\n"):
+                parts.append(" " + line.strip())
+            else:
+                parts.append(line.strip())
+        text = "".join(parts)
+    return text.rstrip("\n") if chomp == "-" else text + "\n"
 
 
 def _strip_comment(raw):
@@ -120,7 +191,10 @@ def _parse_mapping(lines, index, indent, filename):
             raise _err(filename, line, "unsupported complex key")
         if key in out:
             raise _err(filename, line, "duplicate key %r" % (key,))
-        if rest:
+        if line.block is not None:
+            out[key] = line.block
+            index += 1
+        elif rest:
             out[key] = _value(rest, filename, line)
             index += 1
         else:
@@ -152,6 +226,10 @@ def _parse_sequence(lines, index, indent, filename):
             else:
                 value, index = None, index + 1
             out.append(value)
+            continue
+        if line.block is not None:
+            out.append(line.block)
+            index += 1
             continue
         rest = line.text[2:]
         offset = 2 + (len(rest) - len(rest.lstrip(" ")))

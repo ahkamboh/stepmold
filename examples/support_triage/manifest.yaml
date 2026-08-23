@@ -1,0 +1,12 @@
+name: support_triage
+version: 1
+entry: classify
+model: fake:fakes/script.json
+description: >-
+  Four-node support-ticket triage: classify, extract fields, decide priority,
+  emit the routed ticket.
+
+  The model below is a scripted stand-in, so the evalset scores offline with no
+  GPU and no network. It replays the twelve evalset cases in order and does not
+  read the ticket, so a `jig run` of anything other than the first case will
+  answer the first case. Point --model at a real backend to run real tickets.

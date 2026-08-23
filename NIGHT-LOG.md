@@ -387,3 +387,51 @@ $ echo $?
    now. Every doc line uses `python3 -m jig`. PLAN.md §7's Typer + Rich are dependencies
    too, so help and report text are plain — the report is designed to be readable, and
    `--json` covers machines.
+
+## 2026-08-24 — T10: Example pack (support_triage)
+
+**Files changed:** `examples/support_triage/` (manifest, graph, 5 prompts, 4 grammars,
+12-case evalset, offline fake script), `tests/test_example.py`, plus a fix to
+`jig/yamlish.py` and `tests/test_yamlish.py` (see below).
+
+**Tests:** 279 passing total (12 new example tests + 9 new yamlish tests).
+
+```
+$ python3 -m jig eval examples/support_triage
+support_triage: 12/12 cases passed
+```
+
+The workflow is `classify -> extract -> priority -> emit`, then a conditional edge to
+`escalated` (p0) or `done`. It exercises the whole system on purpose: the `priority` node
+is `two_stage` with its own think prompt, the `emit` node carries a deterministic
+invariant (`escalate == (priority == "p0")`) with `on_fail: needs_human`, and one test
+proves that invariant catches a schema-valid-but-wrong ticket and routes it to a human
+without letting the bad object into state.
+
+**I fixed the YAML parser mid-task.** Writing the manifest, I reached for a `>-` folded
+description — the most natural thing in the world in a YAML manifest — and T2's parser
+refused it (loudly and correctly, but refused). That is a usability hole in the pack
+format, found by using it. So `jig/yamlish.py` now supports block and folded scalars
+(`|`, `>`, with `-` chomping), 9 new tests cover them, and `|+`/`>+` keep-chomping is
+still refused by name rather than silently mishandled. This was maintenance on a defect
+T10 surfaced, not a new feature I went looking for.
+
+**Decisions I made alone — please review:**
+1. **The fake script is positional: per-node lists consumed in order.** A key must be one
+   contiguous substring of the prompt, so no single key can mean "the classify step *and*
+   ticket 7" — one script cannot be both per-node and per-ticket. The evalset runs cases in
+   order, so per-node lists line up exactly. The cost, now stated in the manifest itself:
+   `jig run` on a ticket other than the first replays case one. That is a property of a
+   scripted stand-in, not of jig — pointing `--model` at a real backend fixes it.
+2. **The evalset and the fake script were generated from one table** so the twelve cases
+   could not drift between the two files while I typed them. The generator was a throwaway;
+   the artifacts are what is committed. A test asserts both files still hold 12 entries per
+   node, which is the drift guard that matters.
+3. **The evalset asserts only deterministic fields** — category, order_id, amount_usd,
+   sentiment, priority, queue, escalate. `summary` and `reason` are free text and are
+   deliberately not scored; exact-matching prose would make the contract meaningless.
+4. **Two end nodes (`done`, `escalated`) rather than one**, so the p0 path is visible in
+   the graph rather than hidden in a field. `needs_human` is the third, reached only by
+   `emit`'s `on_fail`.
+5. **No accuracy or cost claim anywhere in the pack.** The numbers this example could
+   produce are FakeModel numbers and mean nothing about a real model.

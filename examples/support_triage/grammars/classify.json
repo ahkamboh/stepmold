@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "category": {
+      "type": "string",
+      "enum": ["billing", "technical", "account", "other"]
+    }
+  },
+  "required": ["category"],
+  "additionalProperties": false
+}

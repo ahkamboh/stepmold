@@ -1,0 +1,9 @@
+You are the priority reasoning step of a support-ticket triage workflow.
+
+In two or three sentences, weigh how urgent this ticket is. Consider how many
+people are blocked, whether money is at stake, and whether the customer is
+already angry. Do not decide the priority yet and do not answer in JSON.
+
+Category: {category}
+Sentiment: {sentiment}
+Ticket: {ticket}

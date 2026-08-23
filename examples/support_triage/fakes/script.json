@@ -1,0 +1,72 @@
+{
+  "classify step": [
+    "{\"category\": \"billing\"}",
+    "{\"category\": \"technical\"}",
+    "{\"category\": \"account\"}",
+    "{\"category\": \"technical\"}",
+    "{\"category\": \"billing\"}",
+    "{\"category\": \"other\"}",
+    "{\"category\": \"billing\"}",
+    "{\"category\": \"account\"}",
+    "{\"category\": \"technical\"}",
+    "{\"category\": \"billing\"}",
+    "{\"category\": \"other\"}",
+    "{\"category\": \"technical\"}"
+  ],
+  "extract step": [
+    "{\"order_id\": \"A-1001\", \"amount_usd\": 49.99, \"sentiment\": \"frustrated\"}",
+    "{\"order_id\": null, \"amount_usd\": null, \"sentiment\": \"frustrated\"}",
+    "{\"order_id\": null, \"amount_usd\": null, \"sentiment\": \"frustrated\"}",
+    "{\"order_id\": null, \"amount_usd\": null, \"sentiment\": \"angry\"}",
+    "{\"order_id\": \"B-2002\", \"amount_usd\": 120.0, \"sentiment\": \"calm\"}",
+    "{\"order_id\": null, \"amount_usd\": null, \"sentiment\": \"calm\"}",
+    "{\"order_id\": \"C-3003\", \"amount_usd\": 15.0, \"sentiment\": \"frustrated\"}",
+    "{\"order_id\": null, \"amount_usd\": null, \"sentiment\": \"angry\"}",
+    "{\"order_id\": null, \"amount_usd\": null, \"sentiment\": \"calm\"}",
+    "{\"order_id\": \"D-4004\", \"amount_usd\": 75.5, \"sentiment\": \"angry\"}",
+    "{\"order_id\": null, \"amount_usd\": null, \"sentiment\": \"calm\"}",
+    "{\"order_id\": null, \"amount_usd\": null, \"sentiment\": \"frustrated\"}"
+  ],
+  "priority reasoning step": [
+    "One customer, money moved twice. Nothing is down, but a duplicate charge is real money and they noticed.",
+    "The product does not start at all for this customer. One person blocked, no revenue at risk.",
+    "They cannot get in and the recovery path is broken too, so they cannot fix it themselves.",
+    "Their whole site is down and orders are failing. This is as urgent as tickets get.",
+    "A refund is owed but they said 'when you get a chance'. Nobody is blocked.",
+    "A question about a feature that already exists. No deadline, no impact.",
+    "Repeated payment failures are annoying but the amount is small and nothing is down.",
+    "Every person at the customer is locked out after a change we made. Whole team blocked.",
+    "A genuine rendering bug, but only in one browser and they have another that works.",
+    "Billed after cancelling, twice now. Money moved wrongly and trust is going.",
+    "A request for something that does not exist yet. No impact on anything today.",
+    "The export is stuck and it is blocking an audit, which is a deadline they cannot move."
+  ],
+  "priority step": [
+    "{\"priority\": \"p1\", \"reason\": \"The customer has been double-charged, so money has moved incorrectly.\"}",
+    "{\"priority\": \"p1\", \"reason\": \"The customer cannot use the product at all after the update.\"}",
+    "{\"priority\": \"p1\", \"reason\": \"The customer is locked out and the self-serve recovery path is broken.\"}",
+    "{\"priority\": \"p0\", \"reason\": \"Production is down for the whole customer and revenue is being lost every minute.\"}",
+    "{\"priority\": \"p2\", \"reason\": \"A refund is owed but the customer is calm and nothing is blocked.\"}",
+    "{\"priority\": \"p3\", \"reason\": \"This is a how-to question with no deadline attached.\"}",
+    "{\"priority\": \"p2\", \"reason\": \"Payment is failing repeatedly but the order is small and nothing is down.\"}",
+    "{\"priority\": \"p0\", \"reason\": \"An entire team is locked out, so everyone at the customer is blocked.\"}",
+    "{\"priority\": \"p2\", \"reason\": \"A real bug, but it is browser-specific and the customer has a workaround.\"}",
+    "{\"priority\": \"p1\", \"reason\": \"The customer was charged after cancelling, and it has now happened twice.\"}",
+    "{\"priority\": \"p3\", \"reason\": \"A feature request with no urgency and no one blocked.\"}",
+    "{\"priority\": \"p1\", \"reason\": \"A stuck export is blocking a deadline the customer cannot move.\"}"
+  ],
+  "emit step": [
+    "{\"queue\": \"billing-ops\", \"summary\": \"Customer double-charged $49.99 on order A-1001.\", \"escalate\": false}",
+    "{\"queue\": \"eng-support\", \"summary\": \"App crashes on launch for this customer since the last update.\", \"escalate\": false}",
+    "{\"queue\": \"identity\", \"summary\": \"Customer locked out; password reset email is not arriving.\", \"escalate\": false}",
+    "{\"queue\": \"eng-support\", \"summary\": \"Customer production site is fully down and losing orders.\", \"escalate\": true}",
+    "{\"queue\": \"billing-ops\", \"summary\": \"Cancel order B-2002 and refund $120.\", \"escalate\": false}",
+    "{\"queue\": \"general\", \"summary\": \"Customer asks how to export last year's invoices.\", \"escalate\": false}",
+    "{\"queue\": \"billing-ops\", \"summary\": \"Payment failing repeatedly on order C-3003 for $15.\", \"escalate\": false}",
+    "{\"queue\": \"identity\", \"summary\": \"Whole team locked out following this morning's SSO change.\", \"escalate\": true}",
+    "{\"queue\": \"eng-support\", \"summary\": \"Dashboard charts render blank in Safari but work in Chrome.\", \"escalate\": false}",
+    "{\"queue\": \"billing-ops\", \"summary\": \"Customer billed $75.50 on order D-4004 after cancelling.\", \"escalate\": false}",
+    "{\"queue\": \"general\", \"summary\": \"Feature request for a dark mode.\", \"escalate\": false}",
+    "{\"queue\": \"eng-support\", \"summary\": \"Data export stuck for six hours, blocking the customer's audit.\", \"escalate\": false}"
+  ]
+}

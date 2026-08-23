@@ -68,7 +68,7 @@ model downloads.** Real-backend work is T11 and is code-only (not executed).
   `jig eval <pack>`, `jig validate <pack>`. Stdlib `argparse` only. Exit code 1 on eval failure.
   DONE: `tests/test_cli.py` — invokes via `subprocess`, asserts output text and exit codes.
 
-- [ ] **T10 — Example pack: support_triage**
+- [x] **T10 — Example pack: support_triage**
   `examples/support_triage/` — a real 4-node workflow (classify → extract fields → decide priority →
   emit ticket JSON), with prompts, grammars, and a 12-case evalset. Wire a FakeModel script so
   `jig eval examples/support_triage` passes end to end in CI.

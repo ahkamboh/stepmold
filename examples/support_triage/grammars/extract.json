@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "properties": {
+    "order_id": {"type": ["string", "null"]},
+    "amount_usd": {"type": ["number", "null"]},
+    "sentiment": {"type": "string", "enum": ["calm", "frustrated", "angry"]}
+  },
+  "required": ["order_id", "amount_usd", "sentiment"],
+  "additionalProperties": false
+}

@@ -105,6 +105,44 @@ class TestStructure(unittest.TestCase):
         self.assertIsNone(parse("# only a comment\n"))
 
 
+class TestBlockScalars(unittest.TestCase):
+    def test_literal_keeps_line_breaks(self):
+        doc = parse("text: |\n  line one\n  line two\n")
+        self.assertEqual(doc["text"], "line one\nline two\n")
+
+    def test_literal_strip_drops_the_trailing_newline(self):
+        doc = parse("text: |-\n  line one\n  line two\n")
+        self.assertEqual(doc["text"], "line one\nline two")
+
+    def test_folded_joins_lines_with_spaces(self):
+        doc = parse("text: >-\n  a folded\n  description\n")
+        self.assertEqual(doc["text"], "a folded description")
+
+    def test_folded_keeps_a_blank_line_as_a_break(self):
+        doc = parse("text: >-\n  first para\n\n  second para\n")
+        self.assertEqual(doc["text"], "first para\nsecond para")
+
+    def test_a_block_scalar_does_not_swallow_the_next_key(self):
+        doc = parse("text: |-\n  body\nafter: 1\n")
+        self.assertEqual(doc, {"text": "body", "after": 1})
+
+    def test_a_block_scalar_keeps_hashes_and_colons_verbatim(self):
+        doc = parse("text: |-\n  # not a comment\n  key: not a mapping\n")
+        self.assertEqual(doc["text"], "# not a comment\nkey: not a mapping")
+
+    def test_a_block_scalar_nested_in_a_mapping(self):
+        doc = parse("node:\n  prompt: |-\n    hello\n    there\n  type: generate\n")
+        self.assertEqual(doc["node"], {"prompt": "hello\nthere", "type": "generate"})
+
+    def test_a_block_scalar_as_a_sequence_item(self):
+        doc = parse("items:\n  - |-\n    one\n    two\n  - plain\n")
+        self.assertEqual(doc["items"], ["one\ntwo", "plain"])
+
+    def test_indentation_inside_a_literal_block_is_preserved(self):
+        doc = parse("text: |-\n  outer\n    inner\n")
+        self.assertEqual(doc["text"], "outer\n  inner")
+
+
 class TestFlowCollections(unittest.TestCase):
     def test_flow_sequence(self):
         self.assertEqual(parse("k: [a, b, 3]\n"), {"k": ["a", "b", 3]})
@@ -147,8 +185,8 @@ class TestErrors(unittest.TestCase):
     def test_duplicate_keys_are_rejected(self):
         self.assertIn("duplicate", self._error("a: 1\na: 2\n"))
 
-    def test_block_scalars_are_rejected_loudly(self):
-        self.assertIn("block scalar", self._error("a: |\n  text\n"))
+    def test_keep_chomping_is_rejected_loudly(self):
+        self.assertIn("keep chomping", self._error("a: |+\n  text\n\n"))
 
     def test_anchors_are_rejected_loudly(self):
         self.assertIn("anchor", self._error("a: &base\n"))

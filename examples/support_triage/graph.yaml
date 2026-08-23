@@ -1,0 +1,60 @@
+# classify -> extract -> priority -> emit -> (escalated | done)
+#
+# Each node has one narrow job and one grammar. That is the whole trick: no node
+# ever has to plan, so no node needs a large model to be reliable.
+
+max_steps: 12
+
+nodes:
+  classify:
+    type: generate
+    max_tokens: 32
+
+  extract:
+    type: generate
+    max_tokens: 96
+
+  priority:
+    type: generate
+    # The one node with a judgement call in it, so it gets an unconstrained
+    # think pass before the constrained emit (docs/PLAN.md, Bug 2).
+    two_stage: true
+    think_max_tokens: 128
+    max_tokens: 96
+
+  emit:
+    type: generate
+    max_tokens: 128
+    # Deterministic invariant, checked before anything is committed: the ticket
+    # may only be flagged for escalation when the priority actually says p0.
+    assert: escalate == (priority == "p0")
+    on_fail: needs_human
+
+  escalated:
+    type: end
+    output: [category, order_id, amount_usd, sentiment, priority, queue, escalate]
+
+  done:
+    type: end
+    output: [category, order_id, amount_usd, sentiment, priority, queue, escalate]
+
+  needs_human:
+    type: end
+    output: [category, priority]
+
+edges:
+  - from: classify
+    to: extract
+
+  - from: extract
+    to: priority
+
+  - from: priority
+    to: emit
+
+  - from: emit
+    to: escalated
+    when: {priority: p0}
+
+  - from: emit
+    to: done

@@ -1,0 +1,11 @@
+You are the classify step of a support-ticket triage workflow.
+
+Choose exactly one category for the ticket:
+  billing    - charges, refunds, invoices, payment failures
+  technical  - crashes, bugs, outages, things not working
+  account    - login, passwords, access, permissions, SSO
+  other      - anything else, including questions and requests
+
+Answer with the category only.
+
+Ticket: {ticket}
