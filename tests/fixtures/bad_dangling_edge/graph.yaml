@@ -1,0 +1,9 @@
+nodes:
+  start:
+    type: assert
+    expr: "true"
+  done:
+    type: end
+edges:
+  - from: start
+    to: nowhere

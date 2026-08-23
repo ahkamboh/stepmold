@@ -1,0 +1,8 @@
+nodes:
+  classify:
+    type: generate
+  done:
+    type: end
+edges:
+  - from: classify
+    to: done

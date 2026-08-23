@@ -14,7 +14,7 @@ model downloads.** Real-backend work is T11 and is code-only (not executed).
   or keyed by a substring match on the prompt. Raise on exhaustion.
   DONE: `tests/test_model.py` covers ordered mode, keyed mode, exhaustion error.
 
-- [ ] **T2 — Pack format: load + validate**
+- [x] **T2 — Pack format: load + validate**
   `jig/pack.py`. A JigPack is a directory: `manifest.yaml` (name, version, entry node, model hint),
   `graph.yaml` (nodes + edges), `prompts/<node>.txt`, `grammars/<node>.json`, `evalset.jsonl`.
   Implement `load_pack(path) -> Pack` with clear validation errors (missing node, dangling edge,

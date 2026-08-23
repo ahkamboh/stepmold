@@ -1,0 +1,2 @@
+{"input": {"ticket": "I was charged twice"}, "expect": {"category": "billing"}}
+{"input": {"ticket": "the app crashes"}, "expect": {"category": "technical"}}

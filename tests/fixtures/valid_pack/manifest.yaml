@@ -1,0 +1,5 @@
+name: fixture_pack
+version: 2
+entry: classify
+model: fake:fakes/script.json
+description: A small but complete pack, used to prove the loader accepts a good one.

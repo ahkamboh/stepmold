@@ -58,3 +58,61 @@ script runs dry.
 4. `ModelExhausted` covers both "ordered script ran out" and "no key matched" — one error
    class, distinct messages, rather than two near-identical exceptions.
 
+
+## 2026-08-24 — T2: Pack format (load + validate)
+
+**Files changed:** `jig/yamlish.py`, `jig/pack.py`, `tests/test_yamlish.py`,
+`tests/test_pack.py`, `tests/fixtures/` (1 valid pack + 8 malformed).
+
+**Tests:** 67 passing total (49 new: 27 yamlish, 22 pack).
+
+**The big decision: I wrote a YAML parser.** `TASKS.md` specifies `manifest.yaml` and
+`graph.yaml`, the stdlib has no YAML parser, and `pip install` is forbidden. Per the
+standing rule (*implement the minimal piece yourself in stdlib*), `jig/yamlish.py` is a
+~330-line subset parser: block mappings, block sequences, nesting, comments, single-line
+flow collections (`[a, b]`, `{k: v}`), quoted/plain scalars, null/bool/int/float/str.
+Anchors, aliases, tags, block scalars (`|`, `>`) and multi-document files each raise a
+clear `YamlError` with a line number rather than being silently mis-parsed. It has its
+own 27-test file because a hand-rolled parser under the whole pack format is exactly the
+sort of thing that fails quietly.
+
+**Conflicts / notes:**
+- `docs/PLAN.md` says `graph.json`; `TASKS.md` says `graph.yaml`. Followed TASKS.md as
+  instructed. The loader accepts YAML only; JSON support would be two lines if you want it.
+- PLAN.md §7 names Pydantic as the single source of truth for node contracts. Not
+  available (stdlib rule), so grammars are plain JSON Schema files on disk and T3 will
+  validate against them by hand.
+
+**Decisions I made alone — please review:**
+1. **Node fields for later tasks are already in the schema** (`two_stage`, `retries`,
+   `on_fail`, `assert`, `max_tokens`, `think_max_tokens`, `output`). T2 only had to load
+   them, but T4–T6 all need them and reopening the format later would churn every fixture.
+   They are loaded and validated now, and used from T4 on.
+2. **A generate node writes to state via `output:`** — `output: classification` nests the
+   emitted object under that key; omitting `output` merges the object's keys into state at
+   the top level. On an `end` node, `output:` instead means "project only these keys into
+   the run result".
+3. **Edge conditions are `when: {key: value}` equality maps, evaluated in declaration
+   order, first match wins; an edge with no `when` is the fallback.** No expression
+   language in edges — assert nodes and node-level `assert` are where expressions belong
+   (T6), and keeping edges dumb keeps the graph readable in a diff.
+4. **`model:` in the manifest is a URI-ish string** (`fake:fakes/script.json`,
+   `openai:http://host:8000|model`), doubling as the "model hint" T2 asks for and the
+   default the T9 CLI resolves when `--model` is not given. That is what will let
+   `jig eval examples/support_triage` run offline in CI (T10).
+5. **`evalset.jsonl` is optional at load time** but strictly validated when present; `jig
+   eval` will be the thing that insists on it.
+6. **Extra validations beyond the five TASKS.md asks for**: unknown node/edge keys,
+   `end` nodes with outgoing edges, non-end nodes with no outgoing edge, `on_fail`
+   pointing at an undefined node, malformed `evalset.jsonl`. Nine malformed fixtures, not
+   five — the failure modes are cheap to catch at load time and expensive at run time.
+
+**Surprising:** `python3` is **3.11.15** in this container, not the 3.14.5 the T0 entry
+recorded. Code stays 3.9-compatible so this keeps not mattering.
+
+**Process note — where I am pushing.** The instruction says "push to origin main", but
+this session's harness pins development to the branch
+`claude/autonomous-jig-build-62hlu8` and forbids pushing elsewhere. I am pushing every
+commit there. The branch is a straight-line continuation of `main`, so
+`git merge --ff-only claude/autonomous-jig-build-62hlu8` on main will fast-forward it
+with no conflicts.

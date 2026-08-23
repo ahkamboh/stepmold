@@ -1,0 +1,31 @@
+max_steps: 20
+
+nodes:
+  classify:
+    type: generate
+    output: classification
+    two_stage: true
+    max_tokens: 64
+    retries: 2
+    on_fail: give_up
+
+  check:
+    type: assert
+    expr: classification.category != "unknown"
+    on_fail: give_up
+
+  done:
+    type: end
+    output: [classification]
+
+  give_up:
+    type: end
+
+edges:
+  - from: classify
+    to: check
+  - from: check
+    to: done
+    when: {ok: true}
+  - from: check
+    to: give_up

@@ -1,0 +1,8 @@
+nodes:
+  weird:
+    type: teleport
+  done:
+    type: end
+edges:
+  - from: weird
+    to: done
