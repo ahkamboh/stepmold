@@ -147,3 +147,48 @@ attribute, not just in the message, so T8 can attribute a failure without regex-
    `{"type": "integer"}`. Python's `isinstance(True, int)` is a genuine trap here.
 5. `ValidationError` subclasses `ValueError` and `SchemaError` does too, so a caller can
    catch either without importing jig internals.
+
+## 2026-08-24 — T4: Graph walker
+
+**Files changed:** `jig/graph.py`, `jig/errors.py`, `jig/render.py`, `jig/expr.py`,
+`tests/test_graph.py`, `tests/test_render.py`, `tests/test_expr.py`.
+
+**Tests:** 150 passing total (61 new: 31 graph, 10 render, 20 expr).
+
+`run(pack, model, inputs, run_id=None, max_steps=None) -> RunResult`. The loop is
+deliberately dumb: execute node, commit output to state, pick the first edge whose `when`
+matches. Nothing asks the model where to go — that is the whole "the small model never
+plans" property from PLAN.md §3, and it is why a graph is auditable.
+
+**Decisions I made alone — please review:**
+1. **Three support modules, not one fat walker.** `errors.py` (the run-time exception
+   hierarchy, in a leaf module so graph/codegen/verify/eval can all import it without a
+   cycle), `render.py` (prompt templating), `expr.py` (assert expressions). Each is small
+   and separately tested; the walker itself is ~120 lines.
+2. **`render` is not `str.format`.** Prompts contain literal JSON constantly (`{"a": 1}`),
+   which `str.format` would read as a field, and `str.format` also does attribute and
+   index access — more machinery than a prompt deserves. `render` does one thing: look a
+   dotted name up in state and render it (non-strings as JSON, so `true`/`null`, not
+   `True`/`None`). `{{` and `}}` are literal braces so a prompt can show an example object.
+3. **`expr.py` parses with `ast` and walks a whitelist — it never calls `eval()`.** Packs
+   are compiler-generated data; a pack that can `eval()` is remote code execution. Allowed:
+   names from state, dotted mapping lookup, comparisons, and/or/not, `in`, arithmetic,
+   indexing, literals, and 16 named helpers (`len`, `lower`, `startswith`, ...). Refused by
+   name: lambdas, comprehensions, method calls, attribute access on non-mappings, dunders,
+   assignment. `true`/`false`/`null` are accepted as literals so an expression reads like
+   the YAML around it.
+4. **`assert` node semantics:** expression true -> follow edges normally; false -> jump to
+   `on_fail` if declared, else raise `AssertFailed`. `on_fail` is a *node name*, not an
+   edge, so a failure path does not need its own conditional edge.
+5. **Edge `when` keys may be dotted** (`{c.category: billing}`), and a key that is missing
+   from state simply does not match rather than raising. A missing key is the normal case
+   on the first pass through a loop; raising there would make every loop need a guard edge.
+6. **Provenance is tracked as state is written** (`{state_key: node_name}`) and returned on
+   the `RunResult`. T8 needs it to attribute an eval failure to a node, and reconstructing
+   it afterwards would be guesswork.
+7. **`end` nodes with `output: [keys]` project just those keys into `RunResult.output`;**
+   without it the output is the whole state. `RunResult.state` always holds everything, so
+   nothing is lost — projection is about what the caller sees.
+8. **Non-object generations are rejected** — a node must emit a JSON object, not a bare
+   string or array, because state is a mapping. This currently raises `NodeFailed` on the
+   first attempt; T6 turns that into the retry ladder.

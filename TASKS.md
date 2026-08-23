@@ -28,7 +28,7 @@ model downloads.** Real-backend work is T11 and is code-only (not executed).
   subset: type, required, properties, enum, additionalProperties=false. No external deps.
   DONE: `tests/test_grammar.py` — valid objects pass, each violation type raises with the field name.
 
-- [ ] **T4 — Graph walker**
+- [x] **T4 — Graph walker**
   `jig/graph.py`. Execute nodes from entry, following edges. Node types: `generate`, `assert`, `end`.
   State is a dict passed between nodes; prompts render with `{var}` substitution from state.
   Edges may be conditional on state values.
