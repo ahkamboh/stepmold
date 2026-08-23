@@ -22,7 +22,7 @@ model downloads.** Real-backend work is T11 and is code-only (not executed).
   DONE: `tests/test_pack.py` — one valid fixture pack loads; five malformed fixtures each raise a
   distinct, specific error. Put fixtures in `tests/fixtures/`.
 
-- [ ] **T3 — Schema/grammar layer**
+- [x] **T3 — Schema/grammar layer**
   `jig/grammar.py`. `schema_to_grammar(schema: dict) -> dict` (pass-through struct for now, backend
   translates later) and `validate_against(schema, obj) -> None | raises`. Pure-stdlib JSON Schema
   subset: type, required, properties, enum, additionalProperties=false. No external deps.

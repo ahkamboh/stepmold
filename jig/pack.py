@@ -20,12 +20,14 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from .grammar import SchemaError, check_schema
 from .yamlish import YamlError, parse as parse_yaml
 
 __all__ = [
     "Edge",
     "EvalCase",
     "EvalsetError",
+    "GrammarError",
     "GraphError",
     "ManifestError",
     "MissingArtifactError",
@@ -62,6 +64,10 @@ class ManifestError(PackError):
 
 class GraphError(PackError):
     """`graph.yaml` describes a graph that cannot be walked."""
+
+
+class GrammarError(PackError):
+    """A node's grammar file is not a schema jig can enforce."""
 
 
 class EvalsetError(PackError):
@@ -238,9 +244,12 @@ def _build_node(path, node_name, node_type, spec):
     prompt = think_prompt = grammar = None
     if node_type == "generate":
         prompt = _read_text(path, spec.get("prompt") or "prompts/%s.txt" % node_name)
-        grammar = _read_json(
-            path, spec.get("grammar") or "grammars/%s.json" % node_name
-        )
+        grammar_relative = spec.get("grammar") or "grammars/%s.json" % node_name
+        grammar = _read_json(path, grammar_relative)
+        try:
+            check_schema(grammar)
+        except SchemaError as exc:
+            raise GrammarError("%s: %s" % (grammar_relative, exc))
         think_relative = "prompts/%s.think.txt" % node_name
         if os.path.isfile(os.path.join(path, think_relative)):
             think_prompt = _read_text(path, think_relative)

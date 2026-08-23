@@ -116,3 +116,34 @@ this session's harness pins development to the branch
 commit there. The branch is a straight-line continuation of `main`, so
 `git merge --ff-only claude/autonomous-jig-build-62hlu8` on main will fast-forward it
 with no conflicts.
+
+## 2026-08-24 — T3: Schema/grammar layer
+
+**Files changed:** `jig/grammar.py`, `tests/test_grammar.py`, `jig/pack.py` (wiring),
+`tests/test_pack.py`, `tests/fixtures/bad_grammar_schema/`.
+
+**Tests:** 89 passing total (22 new).
+
+`schema_to_grammar(schema)` returns `{"kind": "json_schema", "schema": <deep copy>}` —
+the backend-neutral struct that gets handed to `Model.generate` and that T11 translates
+into `response_format`. It deep-copies so a backend can never mutate a pack's schema.
+`validate_against(schema, obj)` implements the subset by hand: `type` (incl. union types
+like `["string", "null"]`), `properties`, `required`, `enum`, `items`,
+`additionalProperties: false`. Errors carry a dotted `path` (`ticket.id`, `tags[1]`) as an
+attribute, not just in the message, so T8 can attribute a failure without regex-ing text.
+
+**Decisions I made alone — please review:**
+1. **Unknown schema keywords are an error, not ignored.** `{"requried": [...]}` raises
+   `SchemaError`. A silently-ignored constraint is a constraint you think you have and
+   don't — and this is a verification system.
+2. **Grammars are schema-checked at pack load time** (`jig/pack.py` now calls
+   `check_schema`, raising a new `GrammarError`). This was not asked for in T2 or T3, but
+   it is the difference between `jig validate` catching a typo and a node failing at run
+   time. Tenth malformed fixture added for it.
+3. **`items` is in the subset** even though TASKS.md's list stops at
+   `additionalProperties`. An array-of-strings field is unavoidable in a real pack (T10's
+   ticket has tags), and validating the array but not its contents would be a hole.
+4. **Booleans are not integers/numbers**, matching JSON rather than Python — `True` fails
+   `{"type": "integer"}`. Python's `isinstance(True, int)` is a genuine trap here.
+5. `ValidationError` subclasses `ValueError` and `SchemaError` does too, so a caller can
+   catch either without importing jig internals.

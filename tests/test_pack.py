@@ -5,6 +5,7 @@ import unittest
 
 from jig.pack import (
     EvalsetError,
+    GrammarError,
     GraphError,
     ManifestError,
     MissingArtifactError,
@@ -132,6 +133,11 @@ class TestMalformedPacks(unittest.TestCase):
         self.assertIn("teleport", message)
         self.assertIn("weird", message)
 
+    def test_grammar_is_not_an_enforceable_schema(self):
+        message = self._load("bad_grammar_schema", GrammarError)
+        self.assertIn("grammars/classify.json", message)
+        self.assertIn("strng", message)
+
     def test_manifest_absent(self):
         message = self._load("bad_no_manifest", MissingArtifactError)
         self.assertIn("manifest.yaml", message)
@@ -153,6 +159,7 @@ class TestMalformedPacks(unittest.TestCase):
             "bad_missing_prompt",
             "bad_missing_grammar",
             "bad_node_type",
+            "bad_grammar_schema",
             "bad_no_manifest",
             "bad_evalset",
         ):
