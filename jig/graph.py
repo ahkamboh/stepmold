@@ -8,9 +8,10 @@ asks a model where to go; edges are data.
     node  = entry
     loop:  execute node -> commit its output to state -> pick the next edge
 
-Three node types. `generate` renders a prompt from state, calls the model under the
-node's grammar, and commits the parsed object. `assert` evaluates a deterministic
-expression and either continues or diverts to `on_fail`. `end` stops and returns.
+Three node types. `generate` renders a prompt from state, generates under the node's
+grammar, and commits the result — but only once `jig.verify` has accepted it, so a
+rejected output never lands here. `assert` evaluates a deterministic expression and
+either continues or diverts to `on_fail`. `end` stops and returns.
 """
 
 import uuid
@@ -80,6 +81,7 @@ def run(pack, model, inputs=None, run_id=None, max_steps=None, store=None,
         steps = 0
         node = _node(pack, pack.entry, "entry node")
     run_id = run_id or uuid.uuid4().hex
+
     while True:
         steps += 1
         if steps > budget:
