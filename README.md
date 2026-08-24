@@ -1,106 +1,141 @@
 # jig
 
-> A machinist's jig is a custom guide that lets a cheap tool do precision work,
-> repeatably, forever. This is that, for language models.
+**A Python framework for running LLM workflows reliably on small models.**
 
-**Compile your agent once with a frontier model. Run it forever on a small one.**
+A small model is not bad at any one step. It is bad at *many steps in a row* — a 2% error
+per step compounds to a 33% failure rate over 20 steps, and worse the longer the task runs.
+Most agent frameworks answer that by reaching for a bigger model. jig answers it by making
+each step short, schema-constrained and verified before anything is committed, so errors
+stop compounding.
+
+Measured on a 50-node workflow at a 10% per-step error rate: **96.5% end-to-end success,
+against 2.0% for the same model with the same prompts and no verification.**
+
+```bash
+pip install jig
+jig run mypack --input '{"ticket": "I was charged twice"}'
+```
+
+- Zero dependencies. `jig` imports nothing outside the Python standard library.
+- Any OpenAI-compatible endpoint — llama.cpp-server, vLLM, SGLang, or a hosted API.
+- A workflow is a directory of text files, so it can be diffed, reviewed and copied to a
+  machine that cannot install anything.
 
 ---
 
-## The problem
+## Contents
 
-Companies pay frontier-model prices to do work that contains no thinking — invoice
-extraction, ticket triage, CRM updates, compliance checks. The same steps, tens of
-thousands of times a month, with no novel reasoning anywhere in them.
+- [Why](#why) — the problem jig exists for
+- [Results](#results) — what has been measured
+- [Install](#install)
+- [Quickstart](#quickstart)
+- [How it works](#how-it-works)
+- [Documentation](#documentation)
+- [Observability](#observability)
+- [What is built, and what is not](#what-is-built-and-what-is-not)
+- [Running the tests](#running-the-tests)
 
-They cannot switch to a cheap model, because small models fall apart over multi-step
-tasks: per-step error rates compound, tool calls come back malformed, and a model that
-sees its own sloppy output in its next prompt gets worse as the run goes on. The two
-usual escapes both fail — "use a smaller model" hits that compounding, and "fine-tune
-it" needs an ML team, labelled data, GPUs, and a retrain on every base-model update.
+---
 
-jig is a third path: **don't make the model smarter, make the task easier.**
+## Why
 
-All the thinking moves to compile time, where you pay for it once. What is left at run
-time is a state machine: the small model never plans, never chooses what happens next,
-and never writes more than one short, schema-constrained, verified step at a time.
+Agent frameworks are runtimes: the model decides what happens next on every step of every
+run. That works, and it is why they need a frontier model — the model is doing the planning
+continuously, and you pay for planning on every request forever.
 
-Three properties fall out of that, and the last two are what actually close deals:
+jig splits that in two.
 
-- **Cost** — the execution tier runs on a small self-hosted model instead of a frontier API.
-- **Sovereignty** — a workflow that fits on one modest GPU is a workflow a bank, hospital
-  or defence contractor can run at all. For them this is not a discount, it is access.
-- **Auditability** — "we prompted a big model and it usually works" cannot be audited. A
-  versioned pack, a grammar per step, and an evalset that passes can be.
+|                   | Who decides            | How often               |
+| ----------------- | ---------------------- | ----------------------- |
+| **What to do**    | the workflow's graph    | written once            |
+| **How to do it**  | the model               | every step of every run |
 
-**Where jig does not help:** open-ended novel tasks, workflows that run a few times a
-month, and bad requirements. Repetition is the qualifier — if the plan has to be invented
-per request, you want a runtime, not a compiler.
+The graph decides which step runs and where the result goes. The model only fills in one
+short, schema-constrained answer at a time. It never plans, never chooses the next step and
+never sees its own rejected output — which is what keeps a small model reliable over a long
+task.
 
-## How it works
+That has a useful side effect. Because the model can only emit tokens its schema permits,
+an instruction smuggled into the input cannot change the output shape *or* the control
+flow. A prompt-injection attempt against a node whose grammar is
+`{"category": "billing" | "technical" | "other"}` comes back as one of those three values,
+because no token path produces anything else.
 
-A **JigPack** is a directory of text: a graph, one prompt and one JSON Schema per node,
-and an evalset. The runtime walks it.
+## Results
 
-```
-examples/support_triage/
-  manifest.yaml        name, version, entry node, model
-  graph.yaml           nodes + edges — the plan, as data
-  prompts/*.txt        one prompt per generate node
-  grammars/*.json      one schema per generate node
-  evalset.jsonl        the contract: input -> expected output
-```
+Every number here was produced by a command in this repository. Nothing is estimated.
 
-A second pack, `examples/lead_qualify/`, qualifies an inbound sales lead. It is the
-same idea with a branch in it: a cheap gate node applies the one hard rule (an
-enterprise-sized company writing in from a personal mailbox is refused), and a
-conditional edge sends a refused lead straight to its ending, so the enrichment,
-signal-reading, scoring and routing nodes below the gate never run for it.
+**Compounding.** A generated N-node chain where each step's correct answer is checkable, run
+against a seeded model with a controllable per-step error rate. Both arms see identical
+first attempts at every node (blake2b-seeded), so the comparison is paired. 200 seeds per
+cell, 2,400 runs.
 
-Four ideas do the work:
+| Nodes | Error/step | jig       | no verification | analytical `(1-p)^N` |
+| ----- | ---------- | --------- | --------------- | -------------------- |
+| 20    | 2%         | **100.0%** | 68.0%           | 66.8%                |
+| 20    | 10%        | **99.0%**  | 16.0%           | 12.2%                |
+| 50    | 2%         | **100.0%** | 48.0%           | 36.4%                |
+| 50    | 10%        | **96.5%**  | 2.0%            | 0.5%                 |
+| 50    | 30%        | **40.0%**  | 0.0%            | 0.0%                 |
 
-1. **The graph decides, not the model.** Every node gets one narrow job and a short,
-   fresh context. Horizon length becomes a property of the compiler, not of the model.
-2. **Think and emit are separate.** Forcing a model to commit to a schema on its first
-   token costs quality, so a `two_stage` node reasons freely into a scratchpad first, then
-   emits under its grammar — and **the scratchpad is thrown away**, never committed.
-3. **Verify before commit.** Output must parse, satisfy its schema, and satisfy the node's
-   optional `assert` before it is written to state. On failure: re-sample, re-sample with
-   the error attached, then take the node's failure edge. A rejected generation never
-   reaches state, the output, or the next prompt — a model that never sees its own bad
-   output cannot spiral on it.
-4. **The evalset is the source of truth.** Prompts, grammars and graphs are regenerable
-   build outputs. The gold examples are the hand-maintained asset, and "v3 passes 50/50"
-   is a sentence a buyer can hold you to.
+The margin over the analytical curve grows with N, which is the signature of attacking
+compounding rather than attacking individual errors. Expressed as effective per-step error
+at 50 nodes and 10%: **0.0007 for jig against 0.0753 without**, for 1.09× the generations.
+Across all 2,400 jig runs there were **zero silently-wrong answers**; the unverified arm
+returns one in 34% of runs at 20 nodes and 10%.
+
+Reproduce: `python3 -m tests.production.test_longhorizon`
+
+**Cost and latency**, `examples/support_triage` against a hosted endpoint, 12 cases:
+$0.00100 per case, 0.65s median per call, 8 concurrent calls in 0.83s. Two thirds of
+completion tokens were the model's own reasoning — which is why a reasoning model is the
+wrong choice for bounded steps. Full table and method in
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Install
 
-Python 3 and nothing else. No pip, no virtualenv, no dependencies — that is a hard rule,
-because the runtime is meant to drop onto a client box with nothing installed on it.
+```bash
+pip install jig
+```
 
-```console
-$ git clone https://github.com/ahkamboh/jig.git
-$ cd jig
+Python 3.9 or newer. No other dependencies, ever — CI fails the build if the dependency
+list is not empty.
+
+From source:
+
+```bash
+git clone https://github.com/ahkamboh/jig
+cd jig
+python3 -m jig --help
 ```
 
 ## Quickstart
 
-The example pack is a four-node support-ticket triage workflow. It ships a scripted
-stand-in model, so all of this runs offline with no GPU and no network:
+The repository ships six worked packs. Each runs offline against a scripted model, so this
+needs no GPU, no API key and no network. From a clone, use `python3 -m jig`; after
+`pip install jig` the `jig` command does the same thing from anywhere.
 
 ```console
 $ python3 -m jig validate examples/support_triage
 support_triage v1: 7 nodes, 5 edges, 12 evalset cases, entry 'classify'
+```
 
+Score it against its gold cases:
+
+```console
 $ python3 -m jig eval examples/support_triage
 support_triage: 12/12 cases passed
+```
 
+Run one case through it:
+
+```console
 $ python3 -m jig run examples/support_triage --input '{"ticket": "I was charged twice for order A-1001, $49.99 both times."}'
 {"amount_usd": 49.99, "category": "billing", "escalate": false, "order_id": "A-1001", "priority": "p1", "queue": "billing-ops", "sentiment": "frustrated"}
 ```
 
-`jig eval` exits non-zero if any case fails, so an evalset is a CI gate rather than a
-report. Break the pack and it tells you which node did it:
+`jig eval` exits non-zero when a case fails, so a pack can gate a build. Here is a pack
+wired to a deliberately wrong model, to show what that looks like:
 
 ```console
 $ python3 -m jig eval tests/fixtures/cli_pack --model fake:fakes/wrong.json
@@ -110,211 +145,111 @@ cli_demo: 1/2 cases passed
   failures by node: classify=1
 ```
 
-### A second pack
+Note `[classify]` — the report names the node that caused the failure, not just the field.
 
-`examples/incident_triage` triages a production incident alert: it normalises the vendor
-severity string to p0-p3, names the owning team, decides whether to page anyone, writes a
-one-line summary, and drops a payload too malformed to triage before spending a single
-generation on it. p0 pages, p3 queues, and two node-level invariants have their own
-failure edges. Its scripted model is keyed on the alert id rather than positional, so
-`jig run` answers whichever alert you hand it:
+Point it at a real model, any OpenAI-compatible server:
 
-```console
-$ python3 -m jig validate examples/incident_triage
-incident_triage v1: 10 nodes, 7 edges, 13 evalset cases, entry 'intake'
-
-$ python3 -m jig eval examples/incident_triage
-incident_triage: 13/13 cases passed
+```bash
+JIG_API_KEY=... python3 -m jig eval examples/support_triage \
+  --model 'openai:http://localhost:8000/v1#qwen3-8b'
 ```
 
-To run against a real model, point `--model` at any OpenAI-compatible server —
-llama.cpp-server, vLLM or SGLang:
+## How it works
 
-```console
-$ python3 -m jig run examples/support_triage \
-    --model openai:http://localhost:8000#qwen3-8b \
-    --input '{"ticket": "..."}'
+A **pack** is a directory of text: a graph, one prompt and one JSON-schema grammar per
+step, and an evalset of gold cases.
+
+```
+mypack/
+  manifest.yaml       name, version, entry node, default model
+  graph.yaml          the nodes and the edges between them
+  prompts/            one .txt per generate node
+  grammars/           one .json schema per generate node
+  evalset.jsonl       gold cases — the pack's contract
 ```
 
-The repo ships a second pack, `examples/meeting_actions`, which turns raw meeting
-notes into tracked action items. It is the same four ideas on a messier input: five
-generate nodes, an `unowned` branch that only asks who holds the orphaned work when
-there is any, a deterministic invariant on every node that can contradict itself, and
-one `two_stage` node — the extraction step, where the notes are prose and the schema
-has five typed slots per item.
+Running it:
 
-```console
-$ python3 -m jig validate examples/meeting_actions
-meeting_actions v1: 7 nodes, 6 edges, 12 evalset cases, entry 'attendees'
+1. **Constrain.** The node's schema is sent to the backend as a grammar, so the model's
+   output is valid by construction rather than by hope.
+2. **Think, then answer.** A node marked `two_stage` generates unconstrained reasoning
+   first, then a constrained answer conditioned on it. The reasoning is discarded — it
+   never enters state and never reaches a later prompt.
+3. **Verify before commit.** Output must parse, satisfy its schema, and satisfy the node's
+   optional `assert`. Verification runs against a trial copy of state; only a candidate
+   that survives is written back.
+4. **Ladder, then divert.** A rejected candidate is re-sampled, then re-sampled with a
+   description of what was wrong — never a quote of what the model said — and finally the
+   node's `on_fail` edge is taken. A rejected generation is never shown to the model again,
+   which is what stops a bad answer conditioning the next one.
+5. **Checkpoint.** State is persisted after each committed node, so a killed run resumes
+   instead of restarting.
 
-$ python3 -m jig eval examples/meeting_actions
-meeting_actions: 12/12 cases passed
-```
+The evalset is the pack's contract. `jig eval` scores every case, names which node caused
+each failure, and can assert which branch a case must reach — so a change that quietly
+reroutes a workflow fails its tests instead of passing them.
+
+## Documentation
+
+| Document                                     | What is in it                                                   |
+| -------------------------------------------- | --------------------------------------------------------------- |
+| [Pack format](docs/pack-format.md)            | Every file, every key, every default. Start here to build a pack |
+| [Graph and routing](docs/graph.md)            | Node types, edges, `when:`, `on_fail`, state and provenance       |
+| [Expressions](docs/expressions.md)            | The `assert` language: what it supports and what it refuses       |
+| [Testing packs](docs/testing.md)              | Evalsets, scripted models, and scoring offline                    |
+| [Architecture](docs/ARCHITECTURE.md)          | Why it is built this way                                          |
+| [Benchmarks](docs/BENCHMARKS.md)              | Every measurement, with the command that produced it              |
 
 ## Observability
 
-A run used to print its result and nothing else. Every fact you need at 3am — which node
-failed, how many retries it burned, what the model returned, how long it took — already
-existed inside the runtime; none of it was written down.
+Off by default — a library should not configure logging for its host. Turn it on per run:
 
-Two flags turn it on. Without them jig configures no logging at all and prints exactly
-what it printed before, because a library that logs at its host uninvited is a bug.
-
-```console
-$ python3 -m jig run examples/support_triage --input '{"ticket": "..."}' --log-level info
-13:42:49.979 INFO  jig.graph run.start run_id=ea4d17c0 pack=support_triage version=1 entry=classify resumed=false max_steps=12 inputs=ticket
-13:42:49.979 WARNING jig.verify node.rejected node=classify attempt=1 cause=verify reason="output was not valid JSON — return a single JSON object and nothing else" of=3
-13:42:49.979 INFO  jig.verify node.retry node=classify attempt=2 of=3 temperature=0.5 seed=1 reason="output was not valid JSON — return a single JSON object and nothing else" rethink=false
-13:42:49.980 INFO  jig.graph node.ok run_id=ea4d17c0 node=classify type=generate attempts=2 output=merge duration_ms=0.3
-13:42:49.980 INFO  jig.graph node.ok run_id=ea4d17c0 node=extract type=generate attempts=1 output=merge duration_ms=0.0
-13:42:49.980 INFO  jig.graph run.end run_id=ea4d17c0 pack=support_triage end_node=done steps=5 generations=5 failures=0 output_keys=7 output_bytes=154 duration_ms=1.0
+```bash
+jig run mypack --input '{...}' --log-level info
 ```
 
-Everything goes to **stderr**, so the JSON result on stdout stays pipeable. `--log-format
-json` writes one object per line with stable field names, for anything that ships logs:
-
-```console
-$ python3 -m jig run examples/support_triage --input '{"ticket": "..."}' \
-    --log-level info --log-format json
-{"ts": "2026-08-24T13:42:50.048Z", "level": "INFO", "logger": "jig.graph", "event": "node.ok", "run_id": "ab54abc3", "node": "classify", "type": "generate", "attempts": 2, "output": "merge", "duration_ms": 0.2}
-{"ts": "2026-08-24T13:42:50.048Z", "level": "INFO", "logger": "jig.graph", "event": "run.end", "run_id": "ab54abc3", "pack": "support_triage", "end_node": "done", "steps": 5, "generations": 5, "failures": 0, "output_keys": 7, "output_bytes": 154, "duration_ms": 0.8}
+```
+run.start        run_id=6acf57db pack=support_triage version=1 entry=classify
+backend.response status=200 duration_ms=779.7 prompt_tokens=303 completion_tokens=52 reasoning_tokens=37
+node.ok          node=classify attempts=1 duration_ms=780.1
+run.end          end_node=done steps=5 generations=4 failures=0 duration_ms=3414.9
 ```
 
-Against a real endpoint the backend answers the other question — what a run cost:
+`--log-format json` emits one object per line for a log collector. Credentials are redacted
+at the formatter, so no key can reach a log through any call site, and a rejected
+generation is never logged above DEBUG.
 
-```console
-13:43:00.055 WARNING jig.backend backend.http_error model=qwen3-8b endpoint=http://.../v1/chat/completions status=429 attempt=1 retryable=true duration_ms=1.0
-13:43:00.055 INFO  jig.backend backend.backoff endpoint=http://.../v1/chat/completions attempt=1 retry_after=1.0 slept_s=1.0
-13:43:01.065 INFO  jig.backend backend.response model=qwen3-8b endpoint=http://.../v1/chat/completions status=200 attempt=2 retries=1 duration_ms=5.1 prompt_tokens=10 completion_tokens=10 reasoning_tokens=0 total_tokens=- finish_reason=stop
-```
+## What is built, and what is not
 
-### What comes out at which level
+**Built and tested:** the runtime. Pack loading and validation, the graph walker,
+constrained generation, two-stage think-then-answer, verify-before-commit, the retry ladder,
+`on_fail` routing, SQLite checkpointing and resume, the evalset runner with per-node blame,
+the CLI, an OpenAI-compatible backend, and structured logging.
 
-| Level | Events |
-| --- | --- |
-| `error` | `run.error`, `backend.failed` — the run stopped, and which node it stopped on |
-| `warning` | `node.rejected`, `node.failed`, `backend.http_error`, `lease.refused` |
-| `info` | `run.start`, `run.end`, `node.ok`, `node.retry`, `edge.on_fail`, `backend.response`, `backend.backoff`, `run.claimed`, `lease.taken`, `resume.start` |
-| `debug` | prompt and state **sizes**, `edge.taken`, `checkpoint.saved`, and the full text of a rejection |
+**Not built:** `jig build` — the compiler. jig's design is that a frontier model authors a
+pack once from a task description and examples, and a small model then runs it forever.
+Today you write the pack yourself: roughly 700 lines of graph, prompts, grammars and gold
+cases per workflow. The runtime half is complete; the authoring half is manual.
 
-### What never comes out
-
-Logging is a new way for text to leave the runtime, so two rules are enforced at the sink
-rather than trusted at each call site, and both are tested in `tests/test_log.py`:
-
-* **No credential, at any level.** Every string a formatter emits goes through the same
-  key-shaped filter the backend has always run over upstream error bodies. A planted
-  canary key is asserted absent from captured output at `debug`.
-* **No rejected model output below `debug`.** `verify.Rejected` keeps two halves: the
-  `feedback` says what was wrong and is derived from your own schema; the `detail` may
-  quote the generation verbatim. The default path carries only the first. Prompts and
-  state never appear at all — sizes, and a digest.
-
-Anything user-controlled is clipped, so a one-megabyte ticket cannot become a
-one-megabyte log line.
-
-Embedding jig rather than running the CLI? `jig.log` hangs everything off the `jig`
-logger with a `NullHandler`, so `logging.getLogger("jig").setLevel(...)` in your own
-application is all it takes; `jig.log.configure` is there if you want jig's formatters.
-
-## Benchmarks
-
-**Measured 2026-08-24** against Cerebras (`https://api.cerebras.ai/v1`, $0.35/1M in,
-$0.75/1M out), running `examples/support_triage` — a 4-node pack, 12 evalset cases.
-Reproduce with:
-
-```
-JIG_API_KEY=... python3 -m jig eval examples/support_triage \
-  --model 'openai:https://api.cerebras.ai/v1#gpt-oss-120b#response_format#600'
-```
-
-| Metric | gpt-oss-120b | gemma-4-31b |
-| --- | --- | --- |
-| Evalset agreement | 6 of 12 | 7 of 12 |
-| API calls for the run | 60 | TODO: measure |
-| Prompt tokens | 18693 | TODO: measure |
-| Completion tokens | 7213 | TODO: measure |
-| Of which reasoning | 4756 (66%) | not a reasoning model |
-| Wall clock | 39.9 s | TODO: measure |
-| Cost for 12 cases | $0.01195 | TODO: measure |
-| Cost per case | $0.00100 | TODO: measure |
-
-### Read the agreement column carefully — it is not a quality score
-
-The evalset that ships with the example was written to make a scripted `FakeModel` pass.
-Its `sentiment` and `priority` labels are one author's opinion, not ground truth, and two
-models that share no architecture disagree with the gold **in the same direction** on four
-of the twelve cases:
-
-| Ticket | Gold | gpt-oss-120b | gemma-4-31b |
-| --- | --- | --- | --- |
-| "How do I export my invoices for last year?" | other | billing | billing |
-| "Payment failed three times for order C-3003" | p2 | p1 | p1 |
-| "Our whole team lost access after the SSO change" | angry | calm | frustrated |
-| "I was billed after cancelling... second time" | angry | frustrated | frustrated |
-
-When two independent models agree with each other and disagree with the label, the label
-is the outlier. On the first row the models are simply right: an invoice question is
-billing. The smaller model also scored *higher* than the larger one, which is another sign
-the number is not measuring capability.
-
-So these runs establish three things, and no more than three: the runtime works end to end
-against real inference; per-node attribution localised the problem to one node
-(`extract`, 4 of 6 failures) in a single line of output; and the cost of running the pack
-is now a measured number rather than an estimate.
-
-**Not established:** whether a small model matches a frontier model on this workflow. That
+**Not yet proven:** whether a small model matches a frontier model on a real workflow. That
 needs an evalset whose labels are ground truth, and a frontier baseline on the same cases.
 Both are open.
 
-### What running it for real cost us
-
-Two defects survived every mocked test and appeared on first contact with a live endpoint:
-
-* urllib's default `User-Agent` is rejected by Cloudflare-fronted providers with HTTP 403
-  error 1010, before the request reaches the model.
-* A reasoning model bills its private chain of thought against `max_tokens`. The `classify`
-  node budgets 32 tokens — enough for its answer, but the model spent 29 of them thinking
-  and returned `finish_reason=length` with `content: null`. Hence `reasoning_reserve`:
-  a pack budgets the *answer* and stays portable, and the backend adds the headroom this
-  particular model needs to think.
-
-That 66% reasoning share is the number to watch. For a bounded slot-filling node, two
-thirds of the output spend bought no output.
-
-## What is built
-
-The runtime is complete and tested; the compiler is not written yet.
-
-| | |
-| --- | --- |
-| Pack format, load + validate | done |
-| JSON Schema subset + validation | done |
-| Graph walker, conditional edges, step guard | done |
-| Two-stage think -> emit codegen | done |
-| Verify-before-commit + retry ladder | done |
-| Checkpointing and resume (SQLite) | done |
-| Evalset runner with per-node attribution | done |
-| CLI: `run`, `eval`, `validate` | done |
-| Structured logging (`--log-level`, `--log-format=text\|json`) | done |
-| Example pack, runs offline against a scripted model | done |
-| Second example pack: branching graph, policy asserts | done |
-| OpenAI-compatible backend | written, **unverified against a live server** |
-| `jig build` — the compiler | not started |
-
 ## Running the tests
-
-The suite is plain `unittest`, so it runs under real pytest unchanged. The repo also
-vendors a tiny stdlib stand-in so the command works on a machine with no pytest:
 
 ```console
 $ python3 -m pytest -q
 ```
 
-Everything is tested against a scripted fake model. No test touches a network, downloads
-a model, or needs a GPU.
+1079 tests, no network, no GPU. The suite runs with no dependencies installed — including no pytest, via a stdlib shim. CI
+runs it on Python 3.9 through 3.13, checks that `jig/` imports nothing outside the standard
+library, and builds and installs the wheel into a clean environment.
 
-## Design
+Roughly 5,700 lines of framework and 14,700 lines of tests. The load-bearing invariants —
+that a rejected generation never returns to the model, that nothing is committed unverified,
+that the model never chooses the next node — are each guarded by tests verified to fail when
+the invariant is deliberately broken.
 
-`docs/ARCHITECTURE.md` is the full architecture: the five scaling bugs and their fixes, the cost
-model, the language decision, and the roadmap.
+## License
+
+MIT. Copyright (c) 2026 [Ali Hamza Kamboh](https://github.com/ahkamboh).
