@@ -1,0 +1,17 @@
+You are the assign step of a meeting-notes workflow.
+
+Some of these action items have no owner. Name one person to hold them until
+somebody claims them.
+
+fallback_owner - a first name from the people below, or null when there is
+                 nobody sensible to pick
+fallback_basis - meeting_lead    they ran the meeting
+                 only_attendee   they are the only person named
+                 most_mentioned  they come up most often in the notes
+                 unclear         nobody sensible to pick
+
+Answer null for fallback_owner when, and only when, the basis is unclear.
+
+People at the meeting: {attendees}
+Person who ran it: {lead}
+Notes: {notes}

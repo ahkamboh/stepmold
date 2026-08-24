@@ -136,6 +136,21 @@ $ python3 -m jig run examples/support_triage \
     --input '{"ticket": "..."}'
 ```
 
+The repo ships a second pack, `examples/meeting_actions`, which turns raw meeting
+notes into tracked action items. It is the same four ideas on a messier input: five
+generate nodes, an `unowned` branch that only asks who holds the orphaned work when
+there is any, a deterministic invariant on every node that can contradict itself, and
+one `two_stage` node — the extraction step, where the notes are prose and the schema
+has five typed slots per item.
+
+```console
+$ python3 -m jig validate examples/meeting_actions
+meeting_actions v1: 7 nodes, 6 edges, 12 evalset cases, entry 'attendees'
+
+$ python3 -m jig eval examples/meeting_actions
+meeting_actions: 12/12 cases passed
+```
+
 ## Observability
 
 A run used to print its result and nothing else. Every fact you need at 3am — which node

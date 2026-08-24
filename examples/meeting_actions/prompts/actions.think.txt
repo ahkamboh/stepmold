@@ -1,0 +1,11 @@
+You are the actions reasoning step of a meeting-notes workflow.
+
+Write two or three plain sentences listing every thing somebody agreed to do,
+and quote the words that made you call it a commitment.
+
+Leave out things that were only discussed, and things somebody wants but
+nobody agreed to.
+
+Do not answer in JSON. Do not pick owners, dates, or priorities yet.
+
+Notes: {notes}

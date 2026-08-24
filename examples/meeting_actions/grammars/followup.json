@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "follow_up_needed": {"type": "boolean"},
+    "follow_up_when": {
+      "type": "string",
+      "enum": ["none", "this_week", "next_week", "later"]
+    },
+    "follow_up_reason": {"type": "string"}
+  },
+  "required": ["follow_up_needed", "follow_up_when", "follow_up_reason"],
+  "additionalProperties": false
+}

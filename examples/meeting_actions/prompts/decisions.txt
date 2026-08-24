@@ -1,0 +1,15 @@
+You are the decisions step of a meeting-notes workflow.
+
+List what the meeting settled. A decision is something that is now true.
+Something a person still has to go and do is not a decision.
+
+Each decision has:
+  decision - what was settled, under 15 words
+  firmness - final      it is settled
+             tentative  settled for now, and the notes say it may be revisited
+
+Then answer decision_count: how many decisions you listed.
+
+If nothing was settled: empty list and decision_count 0.
+
+Notes: {notes}

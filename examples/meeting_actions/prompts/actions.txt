@@ -1,0 +1,23 @@
+You are the actions step of a meeting-notes workflow.
+
+List the action items. One item per thing somebody has to do.
+
+Each item has:
+  task         - what has to be done, under 10 words
+  owner        - a first name, or null if the notes name nobody
+  owner_source - explicit    the notes name this person for this task
+                 inferred    the notes name a team or a role, not a person
+                 unassigned  nobody was named (owner must be null)
+  due_bucket   - today, this_week, next_week, this_month, or no_date
+  priority     - p1  someone is blocked, or it is already late
+                 p2  normal work with a date on it
+                 p3  no date and nobody waiting
+
+Then answer:
+  action_count - how many items you listed
+  unowned      - "some" when any item has owner null, otherwise "none"
+
+If nobody agreed to do anything: empty list, action_count 0, unowned "none".
+
+People at the meeting: {attendees}
+Notes: {notes}
