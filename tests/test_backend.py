@@ -392,3 +392,40 @@ class TestRedirectsCannotLeakTheKey(unittest.TestCase):
         with self.assertRaises(BackendError):
             model(http, max_retries=2).generate("hi")
         self.assertEqual(http.count, 1)
+
+
+class TheRequestCarriesAnExplicitUserAgent(unittest.TestCase):
+    """urllib's default UA gets 403'd by Cloudflare-fronted providers.
+
+    Cerebras returns HTTP 403 error 1010 (browser-signature ban) for
+    "Python-urllib/X.Y" before the request reaches the model. Found the first time this
+    adapter spoke to a real server — every mocked test passed without it.
+    """
+
+    def test_a_user_agent_header_is_always_sent(self):
+        from jig.backends.openai_compat import OpenAICompatModel
+
+        seen = {}
+
+        def opener(request, timeout=None):
+            seen["headers"] = dict(request.headers)
+            raise AssertionError("stop before the network")
+
+        model = OpenAICompatModel(base_url="http://x", model="m", opener=opener)
+        try:
+            model.generate("hi", None, 10)
+        except Exception:
+            pass
+        keys = {k.lower() for k in seen.get("headers", {})}
+        self.assertIn("user-agent", keys)
+
+    def test_the_user_agent_is_not_the_urllib_default(self):
+        from jig.backends.openai_compat import OpenAICompatModel
+
+        model = OpenAICompatModel(base_url="http://x", model="m")
+        self.assertNotIn("python-urllib", model.user_agent.lower())
+        self.assertTrue(model.user_agent.strip())
+
+
+if __name__ == "__main__":
+    unittest.main()

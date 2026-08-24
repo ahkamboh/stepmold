@@ -115,19 +115,68 @@ $ python3 -m jig run examples/support_triage \
 
 ## Benchmarks
 
-**TODO: measure.** This table is empty on purpose. Every number that belongs here is a
-number nobody has measured yet, and a guessed benchmark in a project whose whole pitch is
-verifiability would be self-defeating.
+**Measured 2026-08-24** against Cerebras (`https://api.cerebras.ai/v1`, $0.35/1M in,
+$0.75/1M out), running `examples/support_triage` — a 4-node pack, 12 evalset cases.
+Reproduce with:
 
-| Metric | jig + small model | Frontier baseline |
+```
+JIG_API_KEY=... python3 -m jig eval examples/support_triage \
+  --model 'openai:https://api.cerebras.ai/v1#gpt-oss-120b#response_format#600'
+```
+
+| Metric | gpt-oss-120b | gemma-4-31b |
 | --- | --- | --- |
-| Evalset pass rate, same gold cases | TODO: measure | TODO: measure |
-| Tokens per run, including think stages | TODO: measure | TODO: measure |
-| Batched throughput on the target GPU | TODO: measure | TODO: measure |
-| Cost per run | TODO: measure | TODO: measure |
+| Evalset agreement | 6 of 12 | 7 of 12 |
+| API calls for the run | 60 | TODO: measure |
+| Prompt tokens | 18693 | TODO: measure |
+| Completion tokens | 7213 | TODO: measure |
+| Of which reasoning | 4756 (66%) | not a reasoning model |
+| Wall clock | 39.9 s | TODO: measure |
+| Cost for 12 cases | $0.01195 | TODO: measure |
+| Cost per case | $0.00100 | TODO: measure |
 
-`docs/PLAN.md` sets the go/no-go gate these have to clear. Until someone runs it on a
-GPU, the honest claim is the architecture, not the arithmetic.
+### Read the agreement column carefully — it is not a quality score
+
+The evalset that ships with the example was written to make a scripted `FakeModel` pass.
+Its `sentiment` and `priority` labels are one author's opinion, not ground truth, and two
+models that share no architecture disagree with the gold **in the same direction** on four
+of the twelve cases:
+
+| Ticket | Gold | gpt-oss-120b | gemma-4-31b |
+| --- | --- | --- | --- |
+| "How do I export my invoices for last year?" | other | billing | billing |
+| "Payment failed three times for order C-3003" | p2 | p1 | p1 |
+| "Our whole team lost access after the SSO change" | angry | calm | frustrated |
+| "I was billed after cancelling... second time" | angry | frustrated | frustrated |
+
+When two independent models agree with each other and disagree with the label, the label
+is the outlier. On the first row the models are simply right: an invoice question is
+billing. The smaller model also scored *higher* than the larger one, which is another sign
+the number is not measuring capability.
+
+So these runs establish three things, and no more than three: the runtime works end to end
+against real inference; per-node attribution localised the problem to one node
+(`extract`, 4 of 6 failures) in a single line of output; and the cost of running the pack
+is now a measured number rather than an estimate.
+
+**Not established:** whether a small model matches a frontier model on this workflow. That
+needs an evalset whose labels are ground truth, and a frontier baseline on the same cases.
+Both are open. `docs/PLAN.md` §4.1 names the numbers that would close it.
+
+### What running it for real cost us
+
+Two defects survived every mocked test and appeared on first contact with a live endpoint:
+
+* urllib's default `User-Agent` is rejected by Cloudflare-fronted providers with HTTP 403
+  error 1010, before the request reaches the model.
+* A reasoning model bills its private chain of thought against `max_tokens`. The `classify`
+  node budgets 32 tokens — enough for its answer, but the model spent 29 of them thinking
+  and returned `finish_reason=length` with `content: null`. Hence `reasoning_reserve`:
+  a pack budgets the *answer* and stays portable, and the backend adds the headroom this
+  particular model needs to think.
+
+That 66% reasoning share is the number to watch. For a bounded slot-filling node, two
+thirds of the output spend bought no output.
 
 ## What is built
 
@@ -143,7 +192,7 @@ The runtime is complete and tested; the compiler is not written yet.
 | Checkpointing and resume (SQLite) | done |
 | Evalset runner with per-node attribution | done |
 | CLI: `run`, `eval`, `validate` | done |
-| Example pack, scored offline | done |
+| Example pack, runs offline against a scripted model | done |
 | OpenAI-compatible backend | written, **unverified against a live server** |
 | `jig build` — the compiler | not started |
 

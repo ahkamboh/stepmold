@@ -210,7 +210,7 @@ def resolve_model(spec, pack, allow_pack_model=False):
                                           substring. A relative path resolves inside the
                                           pack, which is what lets a pack ship its own
                                           offline model so CI needs no GPU.
-        openai:<base_url>#<model>[#<grammar_mode>]
+        openai:<base_url>#<model>[#<grammar_mode>[#<reasoning_reserve>]]
                                           an OpenAI-compatible server (llama.cpp-server,
                                           vLLM, SGLang). Constructing it opens no
                                           connection; the first generate does.
@@ -256,6 +256,16 @@ def _openai_model(rest):
     options = {"base_url": base_url, "model": name}
     if len(parts) > 2 and parts[2].strip():
         options["grammar_mode"] = parts[2].strip()
+    if len(parts) > 3 and parts[3].strip():
+        # Reasoning headroom belongs to the backend, not the pack: a pack budgets the
+        # answer and stays portable, while this says how much extra THIS model needs to
+        # think. See openai_compat.build_payload.
+        try:
+            options["reasoning_reserve"] = int(parts[3].strip())
+        except ValueError:
+            raise ValueError(
+                "openai: reasoning reserve must be an integer, got %r" % parts[3].strip()
+            )
     return OpenAICompatModel(**options)
 
 

@@ -106,6 +106,8 @@ class OpenAICompatModel:
     model: str
     api_key: Optional[str] = None
     grammar_mode: str = "response_format"
+    user_agent: str = "jig/%s" % __import__("jig").__version__
+    reasoning_reserve: int = 0
     temperature: float = 0.0
     timeout: float = 60.0
     max_retries: int = 2
@@ -138,7 +140,13 @@ class OpenAICompatModel:
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
+            # A pack's max_tokens budgets the ANSWER, because a pack is portable and
+            # cannot know which model will run it. A reasoning model bills its private
+            # chain of thought against the same ceiling, so the model-specific headroom
+            # is added here, in the backend that knows what it is talking to. Without
+            # it, a node with a tight budget spends the whole allowance thinking and
+            # returns finish_reason=length with content=None.
+            "max_tokens": max_tokens + self.reasoning_reserve,
             "temperature": self.temperature,
         }
         if schema is not None:
@@ -165,7 +173,12 @@ class OpenAICompatModel:
 
     def _post(self, payload):
         body = json.dumps(payload).encode("utf-8")
-        headers = {"Content-Type": "application/json"}
+        # An explicit User-Agent is not cosmetic. urllib defaults to "Python-urllib/X.Y",
+        # which Cloudflare-fronted inference providers (Cerebras among them) reject with
+        # HTTP 403 error 1010 — a browser-signature ban, before the request ever reaches
+        # the model. Found by running this adapter against a real endpoint for the first
+        # time; no mocked test could have caught it.
+        headers = {"Content-Type": "application/json", "User-Agent": self.user_agent}
         if self.api_key:
             headers["Authorization"] = "Bearer %s" % self.api_key
 
@@ -231,13 +244,50 @@ def _content(response):
     choices = response.get("choices") if isinstance(response, dict) else None
     if not choices:
         raise BackendError("backend returned no choices: %s" % json.dumps(response)[:200])
-    message = choices[0].get("message") or {}
+    choice = choices[0]
+    message = choice.get("message") or {}
     content = message.get("content")
     if content is None:
-        content = choices[0].get("text")
+        content = choice.get("text")
     if not isinstance(content, str):
-        raise BackendError("backend returned a choice with no text content")
+        raise BackendError(_no_content_reason(response, choice, message))
     return content
+
+
+def _no_content_reason(response, choice, message):
+    """Say *why* a choice carried no text, not merely that it did not.
+
+    The common cause on a reasoning model is a budget the private chain of thought ate
+    before any answer was emitted: finish_reason "length", a populated `reasoning`
+    field, and `content` null. Diagnosing that from "no text content" costs an hour, so
+    name it and say what to change.
+    """
+    finish = choice.get("finish_reason")
+    usage = response.get("usage") or {}
+    detail = usage.get("completion_tokens_details") or {}
+    thought = detail.get("reasoning_tokens")
+    reasoning = message.get("reasoning")
+    if finish == "length" and (thought or reasoning):
+        return (
+            "the model spent its whole token budget reasoning and emitted no answer "
+            "(finish_reason=length, %s reasoning tokens, content=null). This is a "
+            "reasoning model: its private chain of thought is billed against the same "
+            "ceiling as the answer. Raise the backend's reasoning_reserve (or the "
+            "node's max_tokens) and run again."
+            % (thought if thought is not None else "some")
+        )
+    if finish == "length":
+        return (
+            "the model hit its token ceiling before emitting content "
+            "(finish_reason=length). Raise the node's max_tokens."
+        )
+    if reasoning:
+        return (
+            "the backend returned reasoning but no content (finish_reason=%r). Some "
+            "reasoning models only fill `message.reasoning` when they stop early."
+            % finish
+        )
+    return "backend returned a choice with no text content (finish_reason=%r)" % finish
 
 
 def _read_error(exc):

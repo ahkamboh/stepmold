@@ -155,26 +155,43 @@ class TestQuickstartActuallyWorks(unittest.TestCase):
 
 
 class TestNoInventedNumbers(unittest.TestCase):
-    def test_the_benchmark_table_is_marked_unmeasured(self):
+    def test_every_benchmark_number_carries_its_provenance(self):
+        """The guard changed shape when the first numbers were measured.
+
+        It used to ban every digit, because nothing had been run. Numbers now exist, so
+        banning them would be wrong — but an unattributed number is still the thing to
+        prevent. A reader must be able to re-run any figure here, so the section has to
+        name the date, the endpoint, the model, and the exact command.
+        """
         benchmarks = sections()["Benchmarks"]
-        self.assertIn("TODO: measure", benchmarks)
+        for required in ("Measured", "2026-08-24", "api.cerebras.ai",
+                         "gpt-oss-120b", "python3 -m jig eval"):
+            self.assertIn(
+                required, benchmarks,
+                "benchmark section states numbers without %r — no provenance" % required,
+            )
 
-    def test_every_benchmark_cell_is_a_todo(self):
-        for line in sections()["Benchmarks"].splitlines():
-            if not line.startswith("|") or set(line) <= set("| -"):
+    def test_the_benchmark_section_says_what_is_not_established(self):
+        """A measured number invites an unearned conclusion. Say the limit out loud."""
+        benchmarks = sections()["Benchmarks"]
+        self.assertIn("Not established", benchmarks)
+
+    def test_no_section_claims_a_result_without_provenance(self):
+        """Only Benchmarks may state results, because only it cites how to reproduce them.
+
+        Elsewhere the thing to catch is not a number — "two halves", "Three rules" and
+        "§3" are ordinary prose — but the LANGUAGE of a measured win: faster, cheaper,
+        outperforms, we measured. That is what a fabricated benchmark reads like when it
+        escapes the table.
+        """
+        for name, body in sections().items():
+            if name == "Benchmarks":
                 continue
-            cells = [cell.strip() for cell in line.strip("|").split("|")]
-            for cell in cells[1:]:
-                self.assertIn(
-                    cell, ("TODO: measure", "jig + small model", "Frontier baseline"),
-                    "benchmark cell %r is not a TODO" % cell,
-                )
-
-    def test_the_benchmark_section_states_no_result_at_all(self):
-        self.assertEqual(
-            unmeasured_claims(sections()["Benchmarks"]), [],
-            "the benchmark section states a result — nothing here has been measured",
-        )
+            self.assertEqual(
+                [match.group(0) for match in CLAIM.finditer(body)], [],
+                "section %r claims a measured result but cites no provenance; "
+                "move it to Benchmarks with the command that reproduces it" % name,
+            )
 
 
 class TestTheGuardCatchesFabrications(unittest.TestCase):
