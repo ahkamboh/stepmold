@@ -1,7 +1,7 @@
 """An OpenAI-compatible `/v1/chat/completions` client, in `urllib`.
 
 This is the adapter that points jig at a real small model. The same wire format is
-spoken by llama.cpp-server, vLLM and SGLang, which is exactly the point: PLAN.md §2's
+spoken by llama.cpp-server, vLLM and SGLang, which is exactly the point: ARCHITECTURE.md §2's
 "one base model, many packs" only works if swapping the server is a URL change.
 
 Written but **never executed against a live server in this repo** — the test suite mocks

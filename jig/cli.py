@@ -11,7 +11,7 @@ failed run, evalset not fully passed), **2** you called it wrong (argparse's own
 `jig eval` exiting 1 on a single failed case is the point — that is what makes an evalset
 a gate rather than a report.
 
-argparse only, per the stdlib rule. PLAN.md §7 names Typer + Rich; both are dependencies,
+argparse only, per the stdlib rule. ARCHITECTURE.md §7 names Typer + Rich; both are dependencies,
 so the help text here is plain and the report text is plain.
 """
 

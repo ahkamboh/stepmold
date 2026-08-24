@@ -1,6 +1,6 @@
 """How one node's output gets generated: think -> emit, or just emit.
 
-This is the fix for the constraint tax (docs/PLAN.md §2, Bug 2): forcing a model to
+This is the fix for the constraint tax (docs/ARCHITECTURE.md §2, Bug 2): forcing a model to
 commit to a schema on its first token costs quality, and the known remedy is to separate
 the reasoning from the formatting. So a `two_stage: true` node runs twice —
 
@@ -195,7 +195,7 @@ def build_prompt(node, state, scratchpad=None, error=None):
     """Assemble the emit prompt.
 
     Volatile content goes last. That is a prefix-cache decision, not a style one:
-    PLAN.md §2 wants every prompt ordered most-stable-first so the KV cache hit rate is
+    ARCHITECTURE.md §2 wants every prompt ordered most-stable-first so the KV cache hit rate is
     engineered rather than accidental. The node template is stable, the scratchpad
     changes every call, and a correction changes every retry.
     """

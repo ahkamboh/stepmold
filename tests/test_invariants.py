@@ -4,7 +4,7 @@ Every test here was written against a deliberately sabotaged copy of the module 
 guards, and confirmed to fail, before the fix landed. That is the whole point: the
 original suite named these invariants and could not catch their violation.
 
-If you change one of these, you are changing a claim jig makes in docs/PLAN.md or
+If you change one of these, you are changing a claim jig makes in docs/ARCHITECTURE.md or
 README.md. Change the doc in the same commit.
 """
 
@@ -53,7 +53,7 @@ def _node(**kw):
 
 
 class RejectedOutputNeverReachesAPrompt(unittest.TestCase):
-    """PLAN.md §3 / verify.py: a rejected generation must never be shown to the model.
+    """ARCHITECTURE.md §3 / verify.py: a rejected generation must never be shown to the model.
 
     This is the anti-self-conditioning invariant — the mechanism the whole small-model
     argument rests on. The retry prompt is the hard case, because the retry ladder is
@@ -116,7 +116,7 @@ class RejectedOutputNeverReachesAPrompt(unittest.TestCase):
 class PackArtifactsStayInsideThePack(unittest.TestCase):
     """A pack directory must not be able to read files outside itself.
 
-    docs/PLAN.md §6 plans a pack registry and §7.2 describes scp-ing packs between
+    docs/ARCHITECTURE.md §6 plans a pack registry and §7.2 describes scp-ing packs between
     machines, so a pack is untrusted input the moment it leaves the machine that
     compiled it.
     """

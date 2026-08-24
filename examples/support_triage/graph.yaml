@@ -17,7 +17,7 @@ nodes:
   priority:
     type: generate
     # The one node with a judgement call in it, so it gets an unconstrained
-    # think pass before the constrained emit (docs/PLAN.md, Bug 2).
+    # think pass before the constrained emit (docs/ARCHITECTURE.md, Bug 2).
     two_stage: true
     think_max_tokens: 128
     max_tokens: 96

@@ -1,6 +1,6 @@
 """Verify-before-commit, and the retry ladder.
 
-This module is the reason a small model can be trusted here at all (docs/PLAN.md §3).
+This module is the reason a small model can be trusted here at all (docs/ARCHITECTURE.md §3).
 Two rules, and the second one is the load-bearing one:
 
 1. **Nothing is committed until it is verified.** Output must parse, satisfy the node's
@@ -18,13 +18,13 @@ Two rules, and the second one is the load-bearing one:
    on disk cannot condition a model. `tests/test_invariants.py` enforces both halves.
 
 The ladder is: generate, then re-sample once for each retry the node allows, then the
-node's `on_fail` edge (or `NodeFailed`). No frontier-model fallback, by design — PLAN.md
+node's `on_fail` edge (or `NodeFailed`). No frontier-model fallback, by design — ARCHITECTURE.md
 keeps the cost story honest.
 
 Every rung after the first changes two things, because a re-sample is only worth its
 tokens if it is a *different draw*:
 
-* **a sampling hint** (`codegen.Sampling`, `RESAMPLE_TEMPERATURES` below). PLAN.md §3
+* **a sampling hint** (`codegen.Sampling`, `RESAMPLE_TEMPERATURES` below). ARCHITECTURE.md §3
   writes the first rung as a plain re-sample "(temp bump)", and for a long time nothing
   at this layer could bump anything: the protocol had no sampling parameter, so against
   a greedy backend rung 1 re-issued a byte-identical request and got the byte-identical

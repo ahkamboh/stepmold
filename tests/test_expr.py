@@ -217,7 +217,7 @@ class TestTheModelFacingHalfOfAMessage(unittest.TestCase):
     `verify._check_assert` turns an `ExprError` into a `Rejected` whose feedback the next
     retry prompt is built from — and an assert exists to read the candidate object, so
     every failure here happens with model-authored values in hand. Quoting one back is
-    the self-conditioning spiral PLAN.md §3 is designed around, and a channel for a
+    the self-conditioning spiral ARCHITECTURE.md §3 is designed around, and a channel for a
     poisoned ticket to put its own words in a prompt the pack author never wrote.
     `exc.detail` keeps the whole story for logs, which cannot condition anything.
 

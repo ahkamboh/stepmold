@@ -1,6 +1,6 @@
 """Scoring a pack against its evalset.
 
-The evalset is the contract (docs/PLAN.md §1): prompts, grammars and graphs are all
+The evalset is the contract (docs/ARCHITECTURE.md §1): prompts, grammars and graphs are all
 regenerable build outputs, but the gold examples are the hand-maintained asset, and
 "v3 passes 50/50" is the sentence a regulated buyer can actually audit.
 

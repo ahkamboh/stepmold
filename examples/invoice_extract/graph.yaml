@@ -106,7 +106,7 @@ nodes:
     # document look like something a human should see" — unreadable identifiers,
     # an invoice that says it is a revision or a duplicate. That is a reading
     # task with no single right cue, which is exactly the case where forcing the
-    # first token into a schema costs accuracy (docs/PLAN.md §2, Bug 2). So it
+    # first token into a schema costs accuracy (docs/ARCHITECTURE.md §2, Bug 2). So it
     # reasons into a scratchpad first and emits second.
     two_stage: true
     think_max_tokens: 160

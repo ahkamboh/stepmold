@@ -1,12 +1,12 @@
 """Checkpoints: a run that dies at node 17 resumes at node 17.
 
 Long workflows are the whole point of jig, and a workflow that restarts from zero on any
-failure is a workflow you cannot run on real volume (docs/PLAN.md §3). So state is written
+failure is a workflow you cannot run on real volume (docs/ARCHITECTURE.md §3). So state is written
 to SQLite after every node that completes, keyed by run id, and `resume` picks the walk up
 at the node the crash interrupted.
 
 SQLite because it is in the standard library, it is a real database with real durability,
-and a client can open the file with tools they already have. PLAN.md §7 lists Postgres as
+and a client can open the file with tools they already have. ARCHITECTURE.md §7 lists Postgres as
 the option for later; nothing here is SQLite-specific beyond `Store`.
 
 `Store` knows nothing about walking a graph, and the walker knows nothing about SQL — it
@@ -21,7 +21,7 @@ Two contracts hold this together, and both are enforced rather than hoped for:
   value that would change shape is refused at the door instead of corrupting the run it
   is supposed to rescue. Only strict JSON is written: NaN and Infinity are Python's
   extensions to the format, and a file carrying them is unreadable by any conforming
-  reader, including the other-language runtimes PLAN.md §7 leaves room for.
+  reader, including the other-language runtimes ARCHITECTURE.md §7 leaves room for.
 * **A run resumes under the pack that started it.** The checkpoint records which pack
   wrote it, and `resume` refuses a pack that disagrees. Resuming under a different graph
   skips nodes that were inserted since and trusts nodes that were rewritten, which turns

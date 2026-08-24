@@ -686,7 +686,7 @@ class TheAppendedSchemaSurvivesThinkThenEmit(ProxyTest):
     """`json_object` mode plus `two_stage: true` — two calls, one of them constrained.
 
     The think stage is meant to be unconstrained (that is the entire point of splitting
-    it out, docs/PLAN.md Bug 2). If the mode's schema block leaked into the think
+    it out, docs/ARCHITECTURE.md Bug 2). If the mode's schema block leaked into the think
     prompt, the think stage would start formatting instead of reasoning and the split
     would buy nothing.
     """

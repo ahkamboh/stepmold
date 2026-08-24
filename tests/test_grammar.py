@@ -163,7 +163,7 @@ class TestTheModelFacingHalfOfAMessage(unittest.TestCase):
 
     `verify` builds a retry prompt out of `ValidationError.safe_text`, so anything that
     reaches `safe_text` is shown to the model on the next rung. A rejected generation
-    that comes back as feedback is the self-conditioning spiral PLAN.md §3 is designed
+    that comes back as feedback is the self-conditioning spiral ARCHITECTURE.md §3 is designed
     around — and worse, a channel for a poisoned ticket to smuggle its own words into a
     prompt the pack author never wrote. `str(exc)` keeps the whole story for the
     operator; `safe_text` may name the *constraint* and nothing else.

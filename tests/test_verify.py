@@ -268,7 +268,7 @@ class SamplingModel:
 
 
 class TestTheResampleIsAnIndependentDraw(unittest.TestCase):
-    """A re-sample is only worth its tokens if it is a different draw (PLAN.md §3)."""
+    """A re-sample is only worth its tokens if it is a different draw (ARCHITECTURE.md §3)."""
 
     def test_the_first_attempt_asks_for_nothing(self):
         """A run that never stumbles must be the run the operator configured."""

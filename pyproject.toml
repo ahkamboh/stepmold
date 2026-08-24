@@ -27,7 +27,7 @@ classifiers = [
 
 # Deliberately empty, and load-bearing. A pack has to run on a client's own box, and
 # "python3 -m jig" must work there without a wheel-build toolchain, a resolver, or a
-# CUDA-adjacent dependency tree. docs/PLAN.md §7.2 sizes the whole runtime around this.
+# CUDA-adjacent dependency tree. docs/ARCHITECTURE.md §7.2 sizes the whole runtime around this.
 # tests/production/test_packaging.py fails the build if anything is ever added here.
 dependencies = []
 

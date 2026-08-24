@@ -103,7 +103,7 @@ def _error(safe, detail=None):
     `verify._check_assert` turns `str(exc)` into the `Rejected` a retry prompt is built
     from, and an assert reads exactly the values that were just rejected — so a message
     quoting one would carry the rejected generation into the next prompt, which is the
-    self-conditioning spiral jig is designed around (docs/PLAN.md §3). `str(exc)` is
+    self-conditioning spiral jig is designed around (docs/ARCHITECTURE.md §3). `str(exc)` is
     therefore pack-authored text only; `exc.detail` keeps the whole story for the
     operator, because bytes in a log cannot condition anything.
     """

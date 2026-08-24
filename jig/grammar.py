@@ -6,7 +6,7 @@ Two jobs, and they are deliberately separate:
   handed to `Model.generate`. It is a pass-through today — real backends (T11) translate
   it into `response_format` / `grammar` on the way out. It also *checks* the schema, so a
   typo in a pack fails at `jig validate` time rather than at 3am in production.
-* `validate_against` is the runtime half of verify-before-commit (docs/PLAN.md §3): even
+* `validate_against` is the runtime half of verify-before-commit (docs/ARCHITECTURE.md §3): even
   with a constrained decoder, jig never trusts output it has not checked itself. It also
   refuses what `json.loads` accepts but JSON does not have — NaN, Infinity, and nesting
   deep enough to exhaust the interpreter — because every one of those is fatal *after*

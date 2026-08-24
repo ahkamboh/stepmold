@@ -29,7 +29,7 @@ nodes:
     # with the impact in the message — a "P1" that hit one merchant is a p2, an
     # "info" that took every region down is a p0. Reconciling the two is reasoning,
     # so it gets an unconstrained think pass before the constrained emit
-    # (docs/PLAN.md, Bug 2). The scratchpad is thrown away.
+    # (docs/ARCHITECTURE.md, Bug 2). The scratchpad is thrown away.
     two_stage: true
     think_max_tokens: 160
     max_tokens: 96

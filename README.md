@@ -265,7 +265,7 @@ is now a measured number rather than an estimate.
 
 **Not established:** whether a small model matches a frontier model on this workflow. That
 needs an evalset whose labels are ground truth, and a frontier baseline on the same cases.
-Both are open. `docs/PLAN.md` §4.1 names the numbers that would close it.
+Both are open.
 
 ### What running it for real cost us
 
@@ -316,5 +316,5 @@ a model, or needs a GPU.
 
 ## Design
 
-`docs/PLAN.md` is the full architecture: the five scaling bugs and their fixes, the cost
+`docs/ARCHITECTURE.md` is the full architecture: the five scaling bugs and their fixes, the cost
 model, the language decision, and the roadmap.

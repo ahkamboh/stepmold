@@ -1,6 +1,6 @@
 """The thesis test: does jig actually remove error compounding over a long horizon?
 
-docs/PLAN.md §0 sells jig on one number — *"2%/step = 33% failure at 20 steps"* — and §3
+docs/ARCHITECTURE.md §0 sells jig on one number — *"2%/step = 33% failure at 20 steps"* — and §3
 claims the fix is structural: bounded steps, a grammar per node, verify-before-commit,
 and a rejected generation that never re-enters context. Every other test in this repo
 checks a mechanism. This one checks the *claim*, end to end, at N = 5, 20 and 50, against
@@ -92,7 +92,7 @@ class Cell:
 
     @property
     def analytic(self):
-        """PLAN.md's own model of a naive run: (1 - p) ** N."""
+        """ARCHITECTURE.md's own model of a naive run: (1 - p) ** N."""
         return (1.0 - self.p) ** self.n
 
     @property
@@ -238,7 +238,7 @@ class TheHarnessMeasuresWhatItClaims(unittest.TestCase):
 
 
 class CompoundingIsRealWithoutVerification(unittest.TestCase):
-    """PLAN.md §0's premise. If this does not reproduce, jig is solving nothing.
+    """ARCHITECTURE.md §0's premise. If this does not reproduce, jig is solving nothing.
 
     Measured (TRIALS=200), naive arm — success rate vs the analytical (1-p)^N:
 
@@ -269,7 +269,7 @@ class CompoundingIsRealWithoutVerification(unittest.TestCase):
         measured = cell(20, 0.02, L.NAIVE)
         self.assertLess(measured.rate, 0.80)      # measured 68.0%
         self.assertGreater(measured.rate, 0.55)
-        # And the failure rate is in the neighbourhood PLAN.md names.
+        # And the failure rate is in the neighbourhood ARCHITECTURE.md names.
         self.assertGreater(1.0 - measured.rate, 0.20)
 
     def test_the_naive_baseline_returns_wrong_answers_silently(self):
@@ -497,7 +497,7 @@ class TwoStageRetriesReThinkInsteadOfReEmitting(unittest.TestCase):
     think stage ran exactly once per node and every re-sample re-read the same
     reasoning — including the reasoning that produced the answer just rejected. For a
     model whose emit follows its own notes, which is what conditioning on a scratchpad
-    means and the exact case PLAN.md Bug 2 introduced the think stage to serve, the
+    means and the exact case ARCHITECTURE.md Bug 2 introduced the think stage to serve, the
     ladder had no rung that could reach the error.
 
     `README.md` and `codegen.py` both describe the scratchpad as thrown away and never
@@ -558,7 +558,7 @@ class TwoStageRetriesReThinkInsteadOfReEmitting(unittest.TestCase):
         for call in model.calls[2:]:
             self.assertNotIn(
                 self.NOTES, call.prompt,
-                "PLAN.md §3 wants a rejected attempt out of the model's context, and "
+                "ARCHITECTURE.md §3 wants a rejected attempt out of the model's context, and "
                 "the scratchpad that produced it is part of that attempt",
             )
         # The notes that were *not* rejected are still there to condition the emit.
@@ -599,7 +599,7 @@ class TwoStageRetriesReThinkInsteadOfReEmitting(unittest.TestCase):
 
 
 class VerificationWithoutALadderScoresBelowNoVerification(unittest.TestCase):
-    """FINDING: PLAN.md §4.1's layer table implies each defence only adds. It does not.
+    """FINDING: The design's layer table implies each defence only adds. It does not.
 
     Measured (TRIALS=200) success rate by arm — each arm adds one defence, retries off
     until the last:
@@ -652,7 +652,7 @@ class VerificationWithoutALadderScoresBelowNoVerification(unittest.TestCase):
 
 
 class RejectedGenerationsNeverEnterALaterPrompt(unittest.TestCase):
-    """PLAN.md §3's anti-self-conditioning invariant, at scale rather than in a unit.
+    """ARCHITECTURE.md §3's anti-self-conditioning invariant, at scale rather than in a unit.
 
     `tests/test_invariants.py` proves it for one node and three rungs. This proves it
     across a 50-node run at p=0.30, where hundreds of generations are rejected and every
@@ -706,7 +706,7 @@ class RejectedGenerationsNeverEnterALaterPrompt(unittest.TestCase):
 
 
 class TheHorizonStaysBounded(unittest.TestCase):
-    """PLAN.md §3: 'the small model never plans; short, fresh context per node.'
+    """ARCHITECTURE.md §3: 'the small model never plans; short, fresh context per node.'
 
     The structural claim underneath every number above. If context grew with N, a
     50-node run would be a long-context problem and small-model reliability would decay
@@ -860,7 +860,7 @@ class CheckpointStorageGrowsWithTheSquareOfTheHorizon(unittest.TestCase):
     run: N=5 -> 260, N=20 -> 2,631, N=50 -> 14,961 — a 10x horizon costs 58x the storage.
 
     Harmless at N=50 with three-digit values. It is not harmless for the workflows
-    PLAN.md targets (invoice extraction, ticket triage), where a node commits a document
+    ARCHITECTURE.md targets (invoice extraction, ticket triage), where a node commits a document
     rather than an integer and every later checkpoint re-writes every earlier document.
     """
 

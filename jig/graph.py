@@ -1,6 +1,6 @@
 """The graph walker — jig's runtime.
 
-This is the whole "the small model never plans" idea in one loop (docs/PLAN.md §3): the
+This is the whole "the small model never plans" idea in one loop (docs/ARCHITECTURE.md §3): the
 walker decides what happens next, the model only ever fills one node's slot. Nothing here
 asks a model where to go; edges are data.
 

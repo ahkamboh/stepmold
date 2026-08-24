@@ -1,6 +1,6 @@
 """A generated N-node pack, and a model that fails like a small model does.
 
-docs/PLAN.md §0 makes one quantitative claim and the whole product rests on it:
+docs/ARCHITECTURE.md §0 makes one quantitative claim and the whole product rests on it:
 
     "Use a smaller model" -> error compounding (2%/step = 33% failure at 20 steps)
 
@@ -93,7 +93,7 @@ def expected_final(seed_value, n):
 class Arm:
     """One configuration of jig's defences, so they can be removed one at a time.
 
-    `naive` is the closest thing this harness has to PLAN.md's "naive 8B, free-running
+    `naive` is the closest thing this harness has to ARCHITECTURE.md's "naive 8B, free-running
     loop": the model's output is committed if it is a JSON object at all. It is not a
     *straw* baseline — it still gets jig's graph decomposition and its fresh per-node
     context, because those are structural and cannot be switched off without writing a
@@ -234,7 +234,7 @@ def _write(path, relative, text):
 
 
 # Every faulted generation carries this outside its JSON, so a test can search the whole
-# run for it. It is the tracer dye for PLAN.md §3's "a rejected generation never re-enters
+# run for it. It is the tracer dye for ARCHITECTURE.md §3's "a rejected generation never re-enters
 # context": if it ever shows up in a later prompt, the invariant is broken.
 POISON_MARK = "POISON-9f3a"
 
@@ -306,7 +306,7 @@ class FlakyModel:
 
         # A two-stage node that already reasoned its way to a number follows its own
         # notes. That is not this model being difficult: it is what conditioning on a
-        # scratchpad means, and it is the whole reason PLAN.md Bug 2 wants the think
+        # scratchpad means, and it is the whole reason ARCHITECTURE.md Bug 2 wants the think
         # stage in the first place.
         hinted = _match(_SCRATCH_HINT, prompt)
         if hinted is not None:

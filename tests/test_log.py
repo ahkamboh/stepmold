@@ -476,7 +476,7 @@ class TestBackendEvents(Captured):
         self.assertIsInstance(self.field("backend.response", "duration_ms"), float)
 
     def test_a_reasoning_model_reports_its_reasoning_tokens(self):
-        """The number PLAN.md wants watched: output spend that bought no output."""
+        """The number ARCHITECTURE.md wants watched: output spend that bought no output."""
         http = FakeHTTP(completion(
             '{"v": "ok"}',
             prompt_tokens=100, completion_tokens=600,

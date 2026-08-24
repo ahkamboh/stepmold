@@ -12,7 +12,7 @@ Once it's running, the laptop can be off — it runs on Anthropic's infrastructu
 ```
 You are building `jig` autonomously overnight. I am asleep and cannot answer questions — make reasonable decisions yourself and record them in NIGHT-LOG.md.
 
-START: read TASKS.md (the ordered build queue) and docs/PLAN.md (the architecture) in full before writing any code. T1 is already complete — begin at T2.
+START: read TASKS.md (the ordered build queue) and docs/ARCHITECTURE.md (the architecture) in full before writing any code. T1 is already complete — begin at T2.
 
 YOUR ORACLE: passing tests are the only proof of progress. Never mark a task done without them. Note that pytest is NOT installed; a stdlib test harness already exists in the repo — use it, do not install anything.
 
@@ -29,7 +29,7 @@ HARD RULES:
 - No network calls and no model downloads at test time. Everything tests against the FakeModel from T1. T11 is CODE ONLY — write it, mock the HTTP layer in its test, never make a real request.
 - Never invent benchmark, accuracy, or cost numbers in code, comments, docs, or README. Write `TODO: measure`. The project's credibility depends on measured numbers only.
 - No GitHub issues, PRs, or releases. Commit to main and push, nothing else.
-- Follow docs/PLAN.md for architecture. If PLAN.md and TASKS.md conflict, follow TASKS.md and note it.
+- Follow docs/ARCHITECTURE.md for architecture. If ARCHITECTURE.md and TASKS.md conflict, follow TASKS.md and note it.
 - Keep code small and readable — plain functions and dataclasses, no class hierarchies, no frameworks, no metaprogramming.
 
 FINISH: when every task is [x] or [!], append a SUMMARY to NIGHT-LOG.md: what's complete, what's blocked and why, decisions I should review, and what to look at first. Commit and push it.

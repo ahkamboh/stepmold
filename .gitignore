@@ -11,3 +11,6 @@ venv/
 dist/
 build/
 *.egg-info/
+
+# the private strategy doc lives outside the repo
+docs/PLAN.md

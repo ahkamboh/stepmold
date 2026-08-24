@@ -15,7 +15,7 @@ documents, complex keys, block scalar lines indented less than the block they ar
 `str.splitlines()` would mistake for line breaks. Pack files do not need them, and every
 unsupported construct fails loudly rather than silently: where this parser cannot match
 real YAML it refuses the input by name rather than guessing a value, because the pack
-format is meant to read the same in a future Go or TypeScript runtime (docs/PLAN.md §7).
+format is meant to read the same in a future Go or TypeScript runtime (docs/ARCHITECTURE.md §7).
 """
 
 import re

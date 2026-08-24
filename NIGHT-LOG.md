@@ -29,7 +29,7 @@ pytest stand-in instead of installing one.
 3. `conftest.py` at the root only puts the repo root on `sys.path`; it is there for the
    real pytest's benefit as much as the shim's.
 
-**Surprising:** `python3` here is 3.14.5, not the 3.12 that `docs/PLAN.md` §7 locks in.
+**Surprising:** `python3` here is 3.14.5, not the 3.12 that `docs/ARCHITECTURE.md` §7 locks in.
 Everything written tonight is kept 3.9-compatible in syntax so the version choice stays open.
 
 ## 2026-08-24 — T1: Model protocol + FakeModel
@@ -77,9 +77,9 @@ own 27-test file because a hand-rolled parser under the whole pack format is exa
 sort of thing that fails quietly.
 
 **Conflicts / notes:**
-- `docs/PLAN.md` says `graph.json`; `TASKS.md` says `graph.yaml`. Followed TASKS.md as
+- `docs/ARCHITECTURE.md` says `graph.json`; `TASKS.md` says `graph.yaml`. Followed TASKS.md as
   instructed. The loader accepts YAML only; JSON support would be two lines if you want it.
-- PLAN.md §7 names Pydantic as the single source of truth for node contracts. Not
+- ARCHITECTURE.md §7 names Pydantic as the single source of truth for node contracts. Not
   available (stdlib rule), so grammars are plain JSON Schema files on disk and T3 will
   validate against them by hand.
 
@@ -158,7 +158,7 @@ attribute, not just in the message, so T8 can attribute a failure without regex-
 `run(pack, model, inputs, run_id=None, max_steps=None) -> RunResult`. The loop is
 deliberately dumb: execute node, commit output to state, pick the first edge whose `when`
 matches. Nothing asks the model where to go — that is the whole "the small model never
-plans" property from PLAN.md §3, and it is why a graph is auditable.
+plans" property from ARCHITECTURE.md §3, and it is why a graph is auditable.
 
 **Decisions I made alone — please review:**
 1. **Three support modules, not one fat walker.** `errors.py` (the run-time exception
@@ -208,13 +208,13 @@ later node's prompt.
 
 **Decisions I made alone — please review:**
 1. **A re-sample re-rolls the emit stage only, reusing the scratchpad** (that is what the
-   `scratchpad=` argument is for). PLAN.md §3 says the ladder is cheap-first, and the emit
+   `scratchpad=` argument is for). ARCHITECTURE.md §3 says the ladder is cheap-first, and the emit
    half is the cheap half. The cost: if the *thinking* is what was wrong, re-emitting
    repeats the mistake. If measurement later shows retries failing for that reason, the
    fix is a `rethink_on_retry: true` node flag — deliberately not built on speculation.
 2. **Scratchpad placement is prompt-cache-aware.** By default the notes are appended after
    the rendered node prompt, and a correction after that — stable content first, volatile
-   last, per PLAN.md §2's prefix-ordering rule. A prompt that contains `{scratchpad}`
+   last, per ARCHITECTURE.md §2's prefix-ordering rule. A prompt that contains `{scratchpad}`
    explicitly overrides that and places it wherever the author wants.
 3. **The think stage renders `{scratchpad}` as empty** when the default think template is
    derived from an emit prompt that references it. Found by a test failure, not by
@@ -261,7 +261,7 @@ absent from the output, and absent from the next node's prompt.
    behaviour, which T6 was always going to replace. It now scripts three and asserts the
    ladder spent all three. No other test needed touching.
 
-**No frontier fallback.** PLAN.md §3 rules it out for v1 and I did not add one — a silent
+**No frontier fallback.** ARCHITECTURE.md §3 rules it out for v1 and I did not add one — a silent
 escalation to a big model would make every cost number in the README a lie.
 
 ## 2026-08-24 — T7: Checkpointing
@@ -293,12 +293,12 @@ the resumed run's fresh model receives exactly one call — node three's prompt.
    side effects.
 4. **The checkpoint carries `path`, `provenance` and `failures`, not just state.** Resume
    restores the whole run record, so a resumed run's result is indistinguishable from one
-   that never crashed. That matters for PLAN.md §0's auditability claim — a resumed run
+   that never crashed. That matters for ARCHITECTURE.md §0's auditability claim — a resumed run
    still has a complete trace.
 5. **`created_at` uses `datetime.now(timezone.utc)`,** not `utcnow()`. `utcnow()` is
    deprecated from 3.12 and this repo has already seen two different interpreters.
 6. The full history is kept (not just the latest row), so `store.history(run_id)` is the
-   per-run audit trail PLAN.md §0 problem 4 is about. `delete(run_id)` is there for
+   per-run audit trail ARCHITECTURE.md §0 problem 4 is about. `delete(run_id)` is there for
    retention; nothing calls it automatically.
 
 ## 2026-08-24 — T8: Evalset runner
@@ -311,7 +311,7 @@ the resumed run's fresh model receives exactly one call — node three's prompt.
 directly: a pack scoring 3/4 reports `passed=3, failed=1, total=4` and
 `by_node == {"extract": 1}` — the node that actually wrote the wrong field.
 
-**How attribution works** (this is the part PLAN.md §2 Bug 3 cares about): the walker
+**How attribution works** (this is the part ARCHITECTURE.md §2 Bug 3 cares about): the walker
 already records provenance (`state key -> node that wrote it`), so a mismatched expect
 field names its author for free. A case that dies in the ladder is blamed on
 `NodeFailed.node`; a case whose node was diverted by `on_fail` is blamed on the diverted
@@ -384,7 +384,7 @@ $ echo $?
    without `--store` is a clear error rather than a silent fresh run.
 6. **There is no `jig` executable, only `python3 -m jig`.** Installing a console script
    needs packaging (`pyproject.toml` + pip), which the zero-dependency rule rules out for
-   now. Every doc line uses `python3 -m jig`. PLAN.md §7's Typer + Rich are dependencies
+   now. Every doc line uses `python3 -m jig`. ARCHITECTURE.md §7's Typer + Rich are dependencies
    too, so help and report text are plain — the report is designed to be readable, and
    `--json` covers machines.
 
@@ -476,7 +476,7 @@ vLLM or SGLang yet. That is the first thing to do when a GPU is available.
 6. **`base_url` accepts a host, a `/v1`, or the full endpoint** — all three are what people
    paste out of a server's startup log.
 
-**Known gap, deliberate:** `urllib` opens a new connection per request, and PLAN.md §7.2
+**Known gap, deliberate:** `urllib` opens a new connection per request, and ARCHITECTURE.md §7.2
 lists HTTP keep-alive + pooling as the *first* real latency lever. A pooled client needs
 `http.client` connection reuse (still stdlib). Not built tonight: it is an optimisation
 with no test that can prove it offline, and it belongs next to a real measurement.
@@ -504,7 +504,7 @@ benchmark section must contain **no digit at all**. That last one is blunt on pu
 it makes adding a plausible-looking number to that section fail the build.
 
 **Decisions I made alone — please review:**
-1. **The README carries no numbers anywhere**, not just in the benchmark table. PLAN.md
+1. **The README carries no numbers anywhere**, not just in the benchmark table. ARCHITECTURE.md
    §0 quotes research figures (error compounding rates, the Shopify result); I compressed
    those to their qualitative claims instead of restating figures jig has not measured, so
    no reader can mistake a cited number for a jig result.
@@ -564,7 +564,7 @@ no metaprogramming — plain functions and dataclasses throughout, as instructed
    grammar flag to be the thing that needs adjusting per server.
 2. **Every number in this project is still unmeasured, and stays that way.** The README
    benchmark table is `TODO: measure` in every cell, and three tests enforce it — one of
-   them fails the build if any digit appears in that section. `docs/PLAN.md` §4.1 names
+   them fails the build if any digit appears in that section. The project's accuracy and cost targets name
    the three numbers M0 has to produce; none of them can be produced without a GPU.
 
 ## Decisions I made alone that I would most like you to review
@@ -582,7 +582,7 @@ Ordered by how much they would cost to change later.
    is an RCE hole. The language is deliberately tiny. If a node needs more than it offers,
    that is a signal the logic wants to be a node, not a YAML one-liner.
 3. **A retry re-rolls the emit stage only and reuses the think scratchpad.** Cheap-first,
-   per PLAN.md §3. The risk is a node whose *thinking* was the problem repeating it. If
+   per ARCHITECTURE.md §3. The risk is a node whose *thinking* was the problem repeating it. If
    measurement shows that happening, the fix is a `rethink_on_retry` node flag — I did not
    build it on speculation.
 4. **The pack format's shape is mine**: `output:` places a node's object in state (or
@@ -590,8 +590,8 @@ Ordered by how much they would cost to change later.
    in declaration order, `on_fail:` is a node name rather than an edge, and `assert:` is a
    node-level expression. All of it is in `examples/support_triage/graph.yaml`, which is
    the fastest way to judge whether it reads well.
-5. **`docs/PLAN.md` says `graph.json`; TASKS.md says `graph.yaml`.** I followed TASKS.md,
-   as instructed, and noted it. PLAN.md §7's Pydantic, Typer and Rich are all dependencies
+5. **`docs/ARCHITECTURE.md` says `graph.json`; TASKS.md says `graph.yaml`.** I followed TASKS.md,
+   as instructed, and noted it. ARCHITECTURE.md §7's Pydantic, Typer and Rich are all dependencies
    and were replaced with stdlib equivalents.
 6. **The model spec is a string** — `fake:fakes/script.json` or
    `openai:http://host:8000#qwen3-8b` — resolved from `--model` or the manifest. The `#`
@@ -620,10 +620,10 @@ Not started, and deliberately not started — all of it is beyond T12:
 
 - **Run T11 against a real server.** Everything else is downstream of that.
 - **`jig build`** — the compiler is the entire other half of the product and does not
-  exist. PLAN.md's M1.
-- **HTTP keep-alive in the backend.** `urllib` opens a connection per request; PLAN.md
+  exist. ARCHITECTURE.md's M1.
+- **HTTP keep-alive in the backend.** `urllib` opens a connection per request; ARCHITECTURE.md
   §7.2 lists pooling as the first real latency lever. Needs `http.client` and a
   measurement to justify it.
-- **Async execution.** The walker is synchronous. PLAN.md §7 wants asyncio because the
+- **Async execution.** The walker is synchronous. ARCHITECTURE.md §7 wants asyncio because the
   runtime is I/O-bound on the GPU. Nothing in the design blocks it; nothing tonight needed it.
 - **A `Store` retention policy.** Checkpoints accumulate forever right now.

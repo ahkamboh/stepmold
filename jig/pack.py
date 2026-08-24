@@ -1,7 +1,7 @@
 """Loading and validating a JigPack.
 
 A pack is a directory, not a database — it is meant to be read in a diff, checked into
-a client's repo, and shipped as text (docs/PLAN.md §7.2):
+a client's repo, and shipped as text (docs/ARCHITECTURE.md §7.2):
 
     <pack>/
       manifest.yaml        name, version, entry node, model hint
@@ -72,7 +72,7 @@ class UnsafePath(PackError):
     """A pack referenced a file outside its own directory.
 
     A pack is untrusted input the moment it leaves the machine that compiled it
-    (docs/PLAN.md §6 plans a registry, §7.2 describes copying packs between hosts), so
+    (docs/ARCHITECTURE.md §6 plans a registry, §7.2 describes copying packs between hosts), so
     every artifact reference must resolve inside the pack root.
     """
 

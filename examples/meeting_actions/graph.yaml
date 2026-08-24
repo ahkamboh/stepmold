@@ -20,7 +20,7 @@ nodes:
     # right next to it sits a wish nobody agreed to. Deciding that *and* filling
     # five typed slots per item on the first token is two jobs at once, so this
     # node thinks in plain sentences first and only then emits under its grammar
-    # (docs/PLAN.md, Bug 2). The notes are thrown away; only the list survives.
+    # (docs/ARCHITECTURE.md, Bug 2). The notes are thrown away; only the list survives.
     two_stage: true
     think_max_tokens: 256
     max_tokens: 512
