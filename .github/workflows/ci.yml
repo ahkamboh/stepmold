@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # jig claims 3.9+ in pyproject.toml. This matrix is what makes that claim true
+        # rather than aspirational — the code is written 3.9-compatible on purpose, and
+        # nothing but a real interpreter proves it.
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: No dependencies are installed, on purpose
+        run: |
+          echo "jig must run on a bare interpreter. Nothing is pip-installed here."
+          python -c "import sys; print(sys.version)"
+
+      - name: Test suite
+        run: python -m pytest -q
+
+      - name: Example pack runs offline
+        run: |
+          python -m jig validate examples/support_triage
+          python -m jig eval examples/support_triage
+
+      - name: Load-bearing invariants
+        run: python -m unittest tests.test_invariants -v
+
+  zero-dependencies:
+    name: zero dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Every import in jig/ is standard library
+        run: |
+          python - <<'PY'
+          import ast, pathlib, sys
+          std = set(sys.stdlib_module_names)
+          bad = []
+          for path in sorted(pathlib.Path("jig").rglob("*.py")):
+              tree = ast.parse(path.read_text())
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      for alias in node.names:
+                          root = alias.name.split(".")[0]
+                          if root not in std:
+                              bad.append("%s: import %s" % (path, alias.name))
+                  elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                      root = node.module.split(".")[0]
+                      if root not in std | {"jig"}:
+                          bad.append("%s: from %s" % (path, node.module))
+          if bad:
+              print("THIRD-PARTY IMPORTS FOUND — zero-dep is a load-bearing property:")
+              for line in bad:
+                  print("  " + line)
+              raise SystemExit(1)
+          print("clean: jig/ imports nothing outside the standard library")
+          PY
+
+      - name: pyproject declares no dependencies
+        run: |
+          python - <<'PY'
+          import re, pathlib
+          text = pathlib.Path("pyproject.toml").read_text()
+          match = re.search(r"^dependencies\s*=\s*\[(.*?)\]", text, re.S | re.M)
+          assert match, "pyproject.toml must declare `dependencies`"
+          body = match.group(1).strip()
+          assert body == "", "dependencies must stay empty, found: %r" % body
+          print("clean: pyproject declares no dependencies")
+          PY
+
+  package:
+    name: builds and installs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Install the wheel into a clean venv and run it from elsewhere
+        run: |
+          python -m venv /tmp/fresh
+          /tmp/fresh/bin/pip install dist/*.whl
+          cd /tmp                       # prove it does not need the source tree
+          /tmp/fresh/bin/jig --version
+          /tmp/fresh/bin/jig --help
+          /tmp/fresh/bin/python -c "import jig; print('import jig ok', jig.__version__)"
+
+      - name: The installed wheel pulled in nothing else
+        run: |
+          /tmp/fresh/bin/pip list --format=freeze | grep -v "^jig==" | grep -v "^pip==" \
+            | grep -v "^setuptools==" | grep -v "^wheel==" > /tmp/extra.txt || true
+          if [ -s /tmp/extra.txt ]; then
+            echo "installing jig pulled in dependencies:"; cat /tmp/extra.txt; exit 1
+          fi
+          echo "clean: installing jig pulled in nothing"

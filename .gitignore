@@ -6,3 +6,8 @@ venv/
 *.gguf
 .jig-cache/
 .DS_Store
+
+# packaging
+dist/
+build/
+*.egg-info/
