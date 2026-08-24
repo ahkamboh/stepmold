@@ -14,15 +14,20 @@ What holds up (and is guarded here so it keeps holding):
 * Resuming a run that already finished is idempotent even when two supervisors do it at
   once: `state.resume` replays the checkpoint and never calls the model.
 
-What does not, each marked `FINDING` where it is documented:
+And what used to give way, each now asserted the other way round:
 
-* `RunIdInUse` is read-then-write, so two runs that start together both pass it and weld
-  themselves into one chain — the exact data leak the check was added to stop.
-* Concurrent `resume` of an *unfinished* run double-executes every remaining node.
-* A `Store` cannot be shared between threads at all, and nothing says so.
-* `Store.__init__` races itself on first open: unguarded `makedirs`, and an unguarded
-  schema migration.
-* Nothing prunes. Per-run bytes grow quadratically in the length of the run.
+* Two runs that start together under one id no longer weld into one chain. The first
+  checkpoint of a run claims the id inside its own transaction, so the loser is refused
+  with `RunIdInUse` and writes nothing.
+* Concurrent `resume` of an *unfinished* run no longer double-executes the tail:
+  `state.resume` holds a lease for the length of the walk.
+* A `Store` is safe to share between threads, and says so.
+* `Store.__init__` no longer races itself on first open: `makedirs` is `exist_ok`, and
+  the migration asks sqlite for the column rather than reading and then deciding.
+* Contention past the busy timeout arrives as `StoreBusy`, a `JigError`, not as a raw
+  `sqlite3.OperationalError`.
+* A run's checkpoints cost bytes linear in its length, and `prune`/`vacuum` give an
+  operator a retention policy.
 
 Every test here is deterministic: threads meet at barriers, never at sleeps, and the two
 races whose interleaving cannot be forced through the public API are reproduced by
@@ -40,13 +45,14 @@ import time
 import types
 import unittest
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 import jig.state
 from jig.errors import JigError, RunIdInUse
 from jig.graph import run
 from jig.pack import Edge, Node, Pack
-from jig.state import Store, resume
+from jig.state import ResumeInProgress, Store, StoreBusy, resume
 
 
 # How long any thread will wait for its partner before the test fails instead of hanging.
@@ -283,26 +289,27 @@ class ConcurrentRunsShareOneStoreFile(StoreTempDir):
 
 
 class TwoRunsRacingOnOneRunId(StoreTempDir):
-    """`RunIdInUse` is read-then-write, so it does not survive two runs starting together.
+    """One run id, two runs starting together — and only one of them survives.
 
     `graph.run` asks `store.latest(run_id)` and, seeing nothing, walks on. Nothing is
-    written until the first node completes — one whole model call later. Two callers that
-    enter that window together both see an empty store, both pass the check, and both
-    write into the same `(run_id, step)` primary key, where `INSERT OR REPLACE` makes the
-    later write win.
+    written until the first node completes, one whole model call later, so two callers
+    that enter that window together both see an empty store and both clear that check.
+    The read-then-write guard cannot close its own window.
 
-    The result is precisely what commit 6f5da57 added `RunIdInUse` to prevent, restated
-    as a race: one caller's checkpoint chain is gone, and anyone who resumes that run id
-    is handed the *other* caller's data with a zero exit code.
+    The store closes it instead. The first checkpoint of a run — step 1, the walker's
+    first — claims the run id by inserting a row keyed on it, inside the same transaction
+    that writes the checkpoint. sqlite decides the winner; the loser is refused with
+    `RunIdInUse` and leaves nothing behind, so the surviving chain is one run's and the
+    caller of the other is told, rather than handed a zero exit code over deleted data.
     """
 
     def _race(self):
         """Run two workers under one id, with the interleaving pinned.
 
         `gate` holds both inside their first generation, which proves both cleared the
-        `RunIdInUse` check before either wrote anything. `first_done` then lets the
-        "first" worker finish alone, so the "second" worker's writes land last and the
-        outcome is the same on every machine.
+        `RunIdInUse` check in `graph.run` before either wrote anything — the window the
+        store now has to cover. `first_done` then lets the "first" worker finish alone,
+        so "second" is deterministically the one that arrives at a claimed id.
         """
         gate = threading.Barrier(2)
         first_done = threading.Event()
@@ -329,63 +336,77 @@ class TwoRunsRacingOnOneRunId(StoreTempDir):
         _run_all([worker("first", None), worker("second", first_done)])
         return results, errors
 
-    def test_both_runs_pass_the_run_id_check_that_exists_to_stop_them(self):
+    def test_the_second_run_under_a_live_id_is_refused_by_the_store(self):
         results, errors = self._race()
 
-        # FINDING (critical): one of these two SHOULD have raised RunIdInUse. The check
-        # reads the store and writes a checkpoint one model call later, and nothing
-        # closes that window — not a transaction, not a UNIQUE constraint, not a claim
-        # row. Both callers are told their run started cleanly.
-        self.assertEqual(errors, {}, "the race no longer happens — tighten this test")
-        self.assertEqual(sorted(results), ["first", "second"])
-        for marker, result in results.items():
-            self.assertEqual(result.run_id, "R")
-            self.assertEqual(result.output["ticket"], marker)
+        self.assertEqual(sorted(results), ["first"])
+        self.assertEqual(sorted(errors), ["second"])
+        self.assertIsInstance(errors["second"], RunIdInUse)
+        self.assertIn("R", str(errors["second"]))
+        self.assertEqual(results["first"].run_id, "R")
+        self.assertEqual(results["first"].output["ticket"], "first")
 
-    def test_the_two_runs_weld_into_one_chain_and_one_of_them_disappears(self):
+    def test_the_surviving_chain_belongs_to_exactly_one_of_them(self):
         results, errors = self._race()
-        self.assertEqual(errors, {})
+        self.assertEqual(sorted(errors), ["second"])
 
         store = self.open_store()
         history = store.history("R")
 
-        # FINDING (critical): two runs of three steps each left three rows, not six.
-        # `INSERT OR REPLACE` on (run_id, step) let the later writer overwrite the
-        # earlier one step for step, so the store's audit trail describes one run that
-        # never happened as the record of two that did.
-        self.assertEqual(len(history), 3)
+        # Three nodes, three checkpoints, all of them the winner's. The loser's refusal
+        # happened inside the transaction that would have written its first row, so there
+        # is no half-run to clean up and nothing of "second" in the chain.
+        self.assertEqual([c.step for c in history], [1, 2, 3])
         self.assertEqual(store.runs(), ["R"])
-        surviving = {checkpoint.state["ticket"] for checkpoint in history}
-        self.assertEqual(surviving, {"second"})
+        self.assertEqual(
+            {checkpoint.state["ticket"] for checkpoint in history}, {"first"}
+        )
+        self.assertEqual(results["first"].output, history[-1].output)
 
-        # The "first" caller holds a successful RunResult for run "R" whose every trace
-        # in the store has been overwritten. Nothing told it, and nothing can tell it now.
-        self.assertEqual(results["first"].output["ticket"], "first")
-        self.assertNotEqual(results["first"].output, history[-1].output)
-
-    def test_resuming_the_shared_run_id_hands_back_the_other_callers_data(self):
-        """The leak, end to end: caller A resumes A's run id and gets B's output."""
+    def test_resuming_the_contested_run_id_hands_back_the_winners_data(self):
+        """The leak, end to end — and now it is not one."""
         results, _ = self._race()
         store = self.open_store()
 
         replayed = resume(two_step_pack(), MarkerModel("unused"), "R", store)
 
-        # FINDING (critical): "first" asked for its own run and received "second"'s
-        # ticket, "second"'s generations and "second"'s output — one customer's data
-        # returned as another's. `resume` cannot detect this: the chain it reads is
-        # internally consistent, it is just not the chain the caller committed.
-        self.assertEqual(replayed.output["ticket"], "second")
-        self.assertEqual(replayed.output, results["second"].output)
-        self.assertNotEqual(replayed.output, results["first"].output)
+        self.assertEqual(replayed.output["ticket"], "first")
+        self.assertEqual(replayed.output, results["first"].output)
 
     def test_the_check_still_works_when_the_runs_do_not_overlap(self):
-        """The guard is not useless — it is only unsound. Sequentially it holds."""
+        """The sequential case the walker\'s own guard already caught still raises."""
         store = self.open_store()
         run(two_step_pack(), MarkerModel("a"), inputs={"ticket": "a"},
             run_id="S", store=store)
         with self.assertRaises(RunIdInUse):
             run(two_step_pack(), MarkerModel("b"), inputs={"ticket": "b"},
                 run_id="S", store=store)
+
+    def test_a_deleted_run_frees_its_id_again(self):
+        """The claim is the run, not the name: delete the run and the id is reusable."""
+        store = self.open_store()
+        run(two_step_pack(), MarkerModel("a"), inputs={"ticket": "a"},
+            run_id="S", store=store)
+        store.delete("S")
+        second = run(two_step_pack(), MarkerModel("b"), inputs={"ticket": "b"},
+                     run_id="S", store=store)
+        self.assertEqual(second.output["ticket"], "b")
+        self.assertEqual([c.step for c in store.history("S")], [1, 2, 3])
+
+    def test_the_claim_survives_the_store_that_made_it(self):
+        """A worker that exits does not release the id — only `delete` does.
+
+        Otherwise a fleet that restarts mid-run would let a second run start on top of a
+        chain it is about to resume.
+        """
+        first = Store(self.path)
+        first.save(run_id="T", step=1, node="one", next_node="two", state={"a": 1})
+        first.close()
+
+        second = self.open_store()
+        with self.assertRaises(RunIdInUse):
+            second.save(run_id="T", step=1, node="one", next_node="two", state={"a": 2})
+        self.assertEqual(second.latest("T").state, {"a": 1})
 
 
 # ------------------------------------------------------------ concurrent resume
@@ -396,7 +417,10 @@ class ConcurrentResumeOfOneRun(StoreTempDir):
 
     This is not exotic: a retry loop plus a stuck health check produces it on the first
     bad night. `state.resume` promises idempotence — "a supervisor can retry a resume
-    without paying for it twice" — and delivers it for a *finished* run only.
+    without paying for it twice" — and used to deliver it for a *finished* run only. An
+    unfinished one now runs under a lease: whoever takes it walks the tail, and the other
+    is refused with `ResumeInProgress` or, if it arrives after the walk finished, handed
+    the same replay everyone else gets.
     """
 
     def _half_finished_run(self):
@@ -411,54 +435,98 @@ class ConcurrentResumeOfOneRun(StoreTempDir):
         self.assertFalse(history[0].finished)
         return store
 
-    def test_concurrent_resume_of_an_unfinished_run_executes_the_rest_twice(self):
+    def test_concurrent_resume_of_an_unfinished_run_runs_the_tail_once(self):
         self._half_finished_run()
 
-        gate = threading.Barrier(2)
-        first_done = threading.Event()
+        start = threading.Barrier(2)
         models = {}
         results = {}
         errors = {}
 
-        def worker(marker, after):
+        def worker(marker):
             def go():
                 store = Store(self.path)
-                model = MarkerModel(marker, gate=gate, after=after)
+                model = MarkerModel(marker)
                 models[marker] = model
+                start.wait(timeout=RENDEZVOUS)
                 try:
-                    results[marker] = resume(
-                        two_step_pack(), model, "R", store
-                    )
+                    results[marker] = resume(two_step_pack(), model, "R", store)
                 except BaseException as exc:  # noqa: BLE001
                     errors[marker] = exc
                 finally:
-                    if marker == "first":
-                        first_done.set()
                     store.close()
             return go
 
-        _run_all([worker("first", None), worker("second", first_done)])
+        _run_all([worker("first"), worker("second")])
 
-        self.assertEqual(errors, {})
-        # FINDING (high): node "two" — the only node left to run — was generated twice,
-        # once per resumer. `resume` re-enters `graph.run` with `resume_from` set, which
-        # is the one path that skips the RunIdInUse check entirely, so there is no claim,
-        # no lease and no lock between the two walks. Whatever that node does downstream
-        # (charge, email, ticket) happens twice, for one run.
-        self.assertEqual(len(models["first"].calls), 1)
-        self.assertEqual(len(models["second"].calls), 1)
-        self.assertNotEqual(results["first"].output, results["second"].output)
+        # Node "two" is the only node left to run, and whatever it does downstream —
+        # charge, email, ticket — it does once for this run. Either the loser was refused
+        # while the winner walked, or it arrived afterwards and replayed the winner\'s
+        # finished chain; neither path generates.
+        spent = sum(len(model.calls) for model in models.values())
+        self.assertEqual(spent, 1, "the tail of the run was executed twice")
+        for exc in errors.values():
+            self.assertIsInstance(exc, ResumeInProgress)
+            self.assertIsInstance(exc, JigError)
+        self.assertEqual(len(results) + len(errors), 2)
+        self.assertGreaterEqual(len(results), 1)
 
         store = self.open_store()
         history = store.history("R")
         self.assertEqual([c.step for c in history], [1, 2, 3])
-        # Only one of the two answers survives, and the caller holding the other one was
-        # told its run succeeded.
-        self.assertEqual(history[-1].output["b"]["v"], "second")
-        self.assertEqual(results["first"].output["b"]["v"], "first")
+        # Every caller that was told its run succeeded holds the chain that is in the
+        # store — nobody walks away with an answer the store does not have.
+        for result in results.values():
+            self.assertEqual(result.output, history[-1].output)
+
+    def test_a_second_resume_while_the_first_holds_the_lease_is_refused(self):
+        """The refusal on its own, with the interleaving held open rather than raced for."""
+        holder = self._half_finished_run()
+        other = Store(self.path)
+        self.addCleanup(other.close)
+        model = MarkerModel("late")
+
+        with holder.lease("R"):
+            with self.assertRaises(ResumeInProgress) as caught:
+                resume(two_step_pack(), model, "R", other)
+
+        self.assertIn("R", str(caught.exception))
+        self.assertEqual(model.calls, [], "a refused resume still paid for a generation")
+        self.assertEqual([c.step for c in other.history("R")], [1])
+
+    def test_the_lease_is_released_when_the_resume_returns(self):
+        """A held lease is a bug if it outlives its holder, so releasing it is the test."""
+        self._half_finished_run()
+        store = self.open_store()
+        result = resume(two_step_pack(), MarkerModel("done"), "R", store)
+        self.assertEqual(result.output["b"]["v"], "done")
+        # Nothing holds it any more: the next caller gets it without waiting.
+        with store.lease("R"):
+            pass
+
+    def test_a_lease_left_behind_by_a_dead_resumer_expires(self):
+        """The holder cannot release what it no longer has a process for.
+
+        So the lease carries an expiry, and a resumer that arrives after it can take the
+        run. Without this a worker killed mid-resume would wedge its run forever.
+        """
+        self._half_finished_run()
+        dead = self.open_store()
+        alive = self.open_store()
+        with dead.lease("R", seconds=-1.0):  # already stale by the time anyone asks
+            result = resume(two_step_pack(), MarkerModel("taken-over"), "R", alive)
+        self.assertEqual(result.output["b"]["v"], "taken-over")
+
+    def test_a_lone_resume_of_a_half_finished_run_still_works(self):
+        """The forward walk that died left no lease behind to block its own recovery."""
+        self._half_finished_run()
+        store = self.open_store()
+        result = resume(two_step_pack(), MarkerModel("recovered"), "R", store)
+        self.assertEqual(result.output["b"]["v"], "recovered")
+        self.assertEqual([c.step for c in store.history("R")], [1, 2, 3])
 
     def test_concurrent_resume_of_a_finished_run_is_idempotent(self):
-        """The half that does hold: a finished run replays, and never calls the model."""
+        """The half that always held: a finished run replays, and never calls the model."""
         store = self.open_store()
         run(two_step_pack(), MarkerModel("done"), inputs={"ticket": "t"},
             run_id="F", store=store)
@@ -487,121 +555,154 @@ class ConcurrentResumeOfOneRun(StoreTempDir):
         self.assertEqual(self.rows(), rows_before, "replay wrote to the store")
 
 
-# --------------------------------------------------- sharing one Store: it cannot be
+# ------------------------------------------------- sharing one Store between threads
 
 
 class SharingOneStoreBetweenThreads(StoreTempDir):
-    """`Store` wraps one `sqlite3.connect(path)`, and that call defaults to
-    `check_same_thread=True`.
+    """One `Store`, a thread pool — the obvious deployment, and now a supported one.
 
-    Nothing in `jig/state.py` says so — the module docstring talks about durability and
-    round-tripping, `Store.__init__` takes a path and nothing else, and `graph.run`
-    accepts any object with `save`. The obvious deployment (one store, a thread pool)
-    therefore fails, and fails in a way that costs money.
+    `sqlite3.connect` defaults to `check_same_thread=True`, so a `Store` touched from any
+    thread but the one that built it used to die on a bare `sqlite3.ProgrammingError`:
+    not a `JigError`, so `except JigError` around a run did not catch it, and a message
+    about thread identities rather than about jig. `Store` now opens its connection with
+    `check_same_thread=False` and serialises every statement on its own lock, which is
+    cheaper than a connection per thread on a file this small.
     """
 
-    def test_a_store_created_in_one_thread_cannot_be_used_from_another(self):
+    def test_a_store_created_in_one_thread_can_be_used_from_another(self):
         store = self.open_store()
         failures = []
 
         def go():
             try:
-                store.save(run_id="r", step=1, node="n", next_node=None, state={})
+                store.save(run_id="r", step=1, node="n", next_node=None, state={"a": 1})
             except BaseException as exc:  # noqa: BLE001
                 failures.append(exc)
 
         _run_all([go])
 
-        self.assertEqual(len(failures), 1)
-        # FINDING (high): a raw sqlite3.ProgrammingError, not a JigError. A caller that
-        # wraps its runs in `except JigError` — the hierarchy jig documents — does not
-        # catch this, and the message talks about thread ids rather than about jig.
-        self.assertIsInstance(failures[0], sqlite3.ProgrammingError)
-        self.assertNotIsInstance(failures[0], JigError)
+        self.assertEqual([repr(f) for f in failures], [])
+        self.assertEqual(store.latest("r").state, {"a": 1})
 
-    def test_reads_are_refused_across_threads_too(self):
-        """So even the RunIdInUse guard, which only reads, dies on a shared store."""
+    def test_reads_cross_threads_too(self):
         store = self.open_store()
+        store.save(run_id="r", step=1, node="n", next_node=None, state={"a": 1})
+        seen = []
         failures = []
 
         def go():
             try:
-                store.latest("anything")
+                seen.append(store.latest("r").state)
             except BaseException as exc:  # noqa: BLE001
                 failures.append(exc)
 
         _run_all([go])
-        self.assertEqual(len(failures), 1)
-        self.assertIsInstance(failures[0], sqlite3.ProgrammingError)
+        self.assertEqual([repr(f) for f in failures], [])
+        self.assertEqual(seen, [{"a": 1}])
 
-    def test_a_shared_store_kills_the_run_only_after_a_generation_is_paid_for(self):
-        """The expensive shape of the same defect.
+    def test_many_threads_writing_through_one_shared_store_lose_nothing(self):
+        """The lock has to serialise, not just permit: eight threads, one connection."""
+        store = self.open_store()
+        writers, per_writer = 8, 30
+        errors = []
 
-        With `run_id` supplied the guard reads the store first and dies before any model
-        call. With `run_id` left to the walker there is no read, so the failure lands on
-        the first `save` — after the first generation has already been issued, billed and
-        thrown away, with no checkpoint to show for it.
-        """
+        def worker(index):
+            def go():
+                try:
+                    for step in range(1, per_writer + 1):
+                        store.save(run_id="s%d" % index, step=step, node="n",
+                                   next_node="m", state={"w": index, "k": step})
+                except BaseException as exc:  # noqa: BLE001
+                    errors.append(repr(exc))
+            return go
+
+        _run_all([worker(index) for index in range(writers)])
+
+        self.assertEqual(errors, [])
+        self.assertEqual(self.rows(), writers * per_writer)
+        for index in range(writers):
+            history = store.history("s%d" % index)
+            self.assertEqual([c.state["k"] for c in history],
+                             list(range(1, per_writer + 1)))
+            self.assertEqual([c.state["w"] for c in history], [index] * per_writer)
+
+    def test_a_whole_run_on_a_store_owned_by_another_thread_completes(self):
+        """The expensive shape of the old defect: the failure used to land on the first
+        `save`, after the first generation had been issued, billed and thrown away."""
         store = self.open_store()
         model = MarkerModel("m")
         failures = []
+        results = []
 
         def go():
             try:
-                run(two_step_pack(), model, inputs={"ticket": "t"}, store=store)
+                results.append(
+                    run(two_step_pack(), model, inputs={"ticket": "t"}, store=store)
+                )
             except BaseException as exc:  # noqa: BLE001
                 failures.append(exc)
 
         _run_all([go])
 
-        self.assertEqual(len(failures), 1)
-        self.assertIsInstance(failures[0], sqlite3.ProgrammingError)
-        self.assertEqual(len(model.calls), 1, "a generation was spent")
-        self.assertEqual(self.rows(), 0, "and nothing was checkpointed")
+        self.assertEqual([repr(f) for f in failures], [])
+        self.assertEqual(len(model.calls), 2)
+        self.assertEqual(self.rows(), 3, "the run was not checkpointed")
+        self.assertEqual(results[0].output["b"]["v"], "m")
 
-    def test_nothing_in_the_store_documents_the_thread_restriction(self):
-        """A documented limitation is a design; an undocumented one is a trap.
+    def test_the_store_documents_that_it_is_shareable(self):
+        """A supported property nobody can find is still a trap.
 
-        When jig grows either a `check_same_thread=False` connection with its own lock or
-        a line of prose telling operators to open one `Store` per thread, this test is
-        what should be deleted.
+        The old version of this test asserted the opposite — that nothing anywhere said
+        `Store` was single-threaded — and named its own deletion as the fix.
         """
         text = (jig.state.__doc__ or "") + (Store.__doc__ or "") + (
             Store.__init__.__doc__ or ""
         )
         lowered = text.lower()
-        self.assertNotIn("thread", lowered)
-        self.assertNotIn("check_same_thread", lowered)
+        self.assertIn("thread", lowered)
+        self.assertIn("check_same_thread", lowered)
 
 
 # ------------------------------------------------------------- sqlite under load
 
 
 class SqliteLockingUnderContention(StoreTempDir):
-    """What actually happens when many writers hit one file.
+    """What happens when many writers hit one file, and what it looks like when it hurts.
 
-    The good news first: sqlite3's connect() default is a 5 second busy timeout, so it
-    does have one, and at the scale a jig deployment writes — a handful of small rows per
-    run — contention is absorbed and nothing is lost. The bad news is everything about
-    what happens when that 5 seconds is not enough.
+    At the scale a jig deployment writes — a handful of small rows per run — contention
+    is absorbed and nothing is lost. The question this class exists for is the other one:
+    what a caller sees when the wait is not enough, and whether they have any way to
+    change the wait.
     """
 
-    def test_the_store_runs_on_stdlib_defaults_and_offers_no_knob(self):
+    def test_the_store_picks_its_own_timeout_and_journal_and_offers_the_knob(self):
         store = self.open_store()
         timeout_ms = store._connection.execute("PRAGMA busy_timeout").fetchone()[0]
         journal = store._connection.execute("PRAGMA journal_mode").fetchone()[0]
 
-        # FINDING (medium): 5000ms is `sqlite3.connect`'s default, not a decision — and
-        # the journal is the rollback journal, so a writer excludes every reader for the
-        # length of its transaction. WAL would let readers through. Neither is reachable:
-        # `Store(path)` takes a path and nothing else, so an operator whose store is on a
-        # slow or networked filesystem has nowhere to raise the timeout.
-        self.assertEqual(timeout_ms, 5000)
-        self.assertEqual(journal, "delete")
+        # A decision rather than sqlite3.connect\'s 5s default: a store is written by a
+        # fleet and may sit on a slow or networked filesystem. WAL because the rollback
+        # journal makes a writer exclude every reader for the length of its transaction,
+        # and `history()` over a large store is exactly such a reader.
+        self.assertEqual(timeout_ms, int(jig.state.DEFAULT_TIMEOUT * 1000))
+        self.assertEqual(journal, "wal")
+
         import inspect
 
         parameters = inspect.signature(Store.__init__).parameters
-        self.assertEqual(list(parameters), ["self", "path"])
+        self.assertEqual(list(parameters), ["self", "path", "timeout"])
+        slow = Store(self.path, timeout=0.25)
+        self.addCleanup(slow.close)
+        self.assertEqual(
+            slow._connection.execute("PRAGMA busy_timeout").fetchone()[0], 250
+        )
+
+    def test_an_in_memory_store_does_not_try_to_journal_to_a_file(self):
+        """WAL is meaningless without a file, and asking for it there is not harmless."""
+        store = Store(":memory:")
+        self.addCleanup(store.close)
+        journal = store._connection.execute("PRAGMA journal_mode").fetchone()[0]
+        self.assertEqual(journal, "memory")
 
     def test_many_threaded_writers_on_one_file_lose_nothing(self):
         """Eight writers, thirty checkpoints each. Every row must be there afterwards."""
@@ -632,18 +733,18 @@ class SqliteLockingUnderContention(StoreTempDir):
             history = store.history("w%d" % index)
             self.assertEqual(len(history), per_writer)
             # A row that landed under the wrong run id, or a state that came back as some
-            # other writer's, would show here.
+            # other writer\'s, would show here.
             self.assertEqual(
                 [c.state["w"] for c in history], [index] * per_writer
             )
 
-    def test_a_write_that_outlasts_the_busy_timeout_loses_the_checkpoint(self):
-        """The failure mode the 5s default only postpones.
+    def test_a_write_that_outlasts_the_busy_timeout_raises_a_jig_error(self):
+        """The failure the timeout only postpones, reported as jig\'s rather than sqlite\'s.
 
         The timeout is shortened on this one connection so the test costs 100ms instead
-        of five seconds; the wait is the only thing scaled, the outcome is not. A long
-        write elsewhere — a backup, a `history()` over a huge store, another host on an
-        NFS mount — produces the same thing at the real timeout.
+        of the store\'s real wait; the wait is the only thing scaled, the outcome is not.
+        A long write elsewhere — a backup, another host on an NFS mount — produces the
+        same thing at the real timeout.
         """
         store = self.open_store()
         store._connection.execute("PRAGMA busy_timeout=100")
@@ -658,29 +759,34 @@ class SqliteLockingUnderContention(StoreTempDir):
         )
 
         started = time.monotonic()
-        with self.assertRaises(sqlite3.OperationalError) as caught:
+        with self.assertRaises(StoreBusy) as caught:
             store.save(run_id="victim", step=1, node="one", next_node="two",
                        state={"work": "already done"})
         waited = time.monotonic() - started
         blocker.rollback()
 
-        self.assertIn("locked", str(caught.exception))
         self.assertLess(waited, 2.0)
-        # FINDING (medium): the run dies on a raw sqlite3.OperationalError, which is not
-        # a JigError and carries no run id, no node and no retry. The node had already
-        # completed and been verified; its checkpoint is simply gone, which is the one
-        # outcome the whole checkpoint layer exists to prevent. `save` should retry a
-        # busy database, and a give-up should arrive as a jig error naming the run.
-        self.assertNotIsInstance(caught.exception, JigError)
+        # A JigError, so `except JigError` around a run catches it, and it names the run,
+        # the step and the node so an operator knows what to re-drive.
+        self.assertIsInstance(caught.exception, JigError)
+        self.assertIn("victim", str(caught.exception))
+        self.assertIn("one", str(caught.exception))
+        self.assertIn("timeout", str(caught.exception))
         self.assertIsNone(store.latest("victim"))
 
-        # Not sticky, at least: once the blocker lets go the same Store writes again, so
-        # a caller that catches OperationalError itself can retry. The connection is left
-        # mid-transaction by the failed INSERT, and that turns out to be harmless because
-        # a deferred BEGIN that never got its write lock holds nothing.
-        self.assertTrue(store._connection.in_transaction)
+        # And the failure is clean: the transaction was rolled back rather than left
+        # open, so the same Store writes again the moment the blocker lets go.
+        self.assertFalse(store._connection.in_transaction)
         store.save(run_id="victim", step=1, node="one", next_node="two", state={"a": 1})
         self.assertEqual(store.latest("victim").state, {"a": 1})
+
+    def test_an_error_that_is_not_contention_is_not_disguised_as_contention(self):
+        """`StoreBusy` must mean the lock and only the lock."""
+        store = self.open_store()
+        store._connection.execute("DROP TABLE checkpoints")
+        with self.assertRaises(sqlite3.OperationalError) as caught:
+            store.save(run_id="r", step=1, node="n", next_node=None, state={})
+        self.assertNotIsInstance(caught.exception, StoreBusy)
 
 
 def _process_writer(path, worker, count, queue):
@@ -745,15 +851,16 @@ class SeparateProcessesWritingOneStore(StoreTempDir):
             self.assertEqual([c.state["p"] for c in history], [index] * self.PER_WORKER)
 
 
-# ------------------------------------------------- opening a Store is itself a race
+# ------------------------------------------- opening a Store is no longer a race
 
 
 class OpeningAStoreRacesItself(unittest.TestCase):
-    """`Store.__init__` does two read-then-write things before it is usable.
+    """`Store.__init__` used to do two read-then-write things before it was usable.
 
     Both only matter on a cold start — the first time a fleet of workers opens a store
     that does not exist yet, or the first time it opens a store file an older jig wrote.
-    That is exactly the moment a deployment restarts every worker at once.
+    That is exactly the moment a deployment restarts every worker at once, so both were
+    guaranteed to fire and neither had anything to do with a real fault.
     """
 
     def setUp(self):
@@ -762,42 +869,33 @@ class OpeningAStoreRacesItself(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.directory, ignore_errors=True)
 
-    def test_makedirs_is_unguarded_when_two_workers_create_the_store_directory(self):
-        """The losing worker's exact code path, forced rather than raced for.
+    def test_makedirs_survives_another_worker_creating_the_directory_first(self):
+        """The losing worker\'s exact code path, forced rather than raced for.
 
-        `Store.__init__` reads `os.path.isdir(directory)` and, if it is False, calls
-        `os.makedirs(directory)` with no `exist_ok`. The loser of a two-worker cold start
-        is the process whose `isdir` ran before the winner's `makedirs` and whose
-        `makedirs` ran after it. Substituting an `os` whose `isdir` always says "not yet"
-        reproduces that interleaving with no scheduling luck involved.
+        The loser of a two-worker cold start is the process whose look at the directory
+        ran before the winner\'s `makedirs` and whose own `makedirs` ran after it.
+        Substituting a `makedirs` that creates the directory before delegating reproduces
+        that interleaving with no scheduling luck involved: whatever jig passes has to
+        survive the directory already being there.
         """
-        existing = os.path.join(self.directory, "state")
-        os.makedirs(existing)  # the winner already made it
-        stale = types.SimpleNamespace(
-            path=types.SimpleNamespace(
-                dirname=os.path.dirname,
-                abspath=os.path.abspath,
-                isdir=lambda path: False,  # the loser's stale read
-            ),
-            makedirs=os.makedirs,
-        )
+        real_makedirs = os.makedirs
+
+        def racing_makedirs(name, *args, **kwargs):
+            real_makedirs(name, exist_ok=True)  # the winner, in the window
+            return real_makedirs(name, *args, **kwargs)  # the loser\'s own call
+
+        stale = types.SimpleNamespace(path=os.path, makedirs=racing_makedirs)
         real_os = jig.state.os
         jig.state.os = stale
         try:
-            # FINDING (medium): FileExistsError, out of a constructor, on a perfectly
-            # healthy store. `os.makedirs(directory, exist_ok=True)` is the whole fix.
-            with self.assertRaises(FileExistsError):
-                Store(os.path.join(existing, "runs.db"))
+            store = Store(os.path.join(self.directory, "state", "runs.db"))
         finally:
             jig.state.os = real_os
+        store.close()
+        self.assertTrue(os.path.isdir(os.path.join(self.directory, "state")))
 
-    def test_racing_workers_creating_the_store_directory_fail_this_way_or_not_at_all(self):
-        """The unforced version, as a check that the injection above is not fiction.
-
-        Eight threads meet at a barrier and open the same not-yet-existing store. This
-        asserts nothing about *whether* the race fires — that would be a coin flip in the
-        suite — only that when it does, it is the unguarded `makedirs` and nothing else.
-        """
+    def test_racing_workers_creating_the_store_directory_all_succeed(self):
+        """The unforced version: eight threads meet at a barrier on a fresh path."""
         path = os.path.join(self.directory, "fresh", "runs.db")
         barrier = threading.Barrier(8)
         failures = []
@@ -814,64 +912,90 @@ class OpeningAStoreRacesItself(unittest.TestCase):
 
         _run_all([go] * 8)
 
-        self.assertGreaterEqual(len(opened), 1, "not one worker opened the store")
-        for failure in failures:
-            self.assertIsInstance(failure, FileExistsError)
+        self.assertEqual([repr(f) for f in failures], [])
+        self.assertEqual(len(opened), 8)
 
-    def test_the_schema_migration_is_unguarded_between_two_openers(self):
-        """The other read-then-write in the constructor, replayed the same way.
+    def test_a_store_opens_even_when_the_journal_switch_is_blocked(self):
+        """`PRAGMA journal_mode=WAL` answers SQLITE_BUSY without asking the busy handler.
 
-        `Store._migrate` reads `PRAGMA table_info` and, for every column missing, runs an
+        So a fleet cold-starting on one store file collides over it, and the loser used
+        to die in the constructor over a preference. The journal belongs to the file, not
+        to this connection: a loser left on the rollback journal is slower, not wrong.
+        """
+        path = os.path.join(self.directory, "delete_mode.db")
+        seed = sqlite3.connect(path)
+        self.addCleanup(seed.close)
+        seed.executescript(jig.state.SCHEMA)
+        seed.commit()
+
+        blocker = sqlite3.connect(path)
+        self.addCleanup(blocker.close)
+        blocker.execute("BEGIN")
+        blocker.execute("SELECT COUNT(*) FROM checkpoints").fetchone()
+
+        store = Store(path, timeout=0.2)
+        self.addCleanup(store.close)
+        self.assertEqual(
+            store._connection.execute("PRAGMA journal_mode").fetchone()[0], "delete"
+        )
+        blocker.rollback()
+        store.save(run_id="r", step=1, node="n", next_node=None, state={"a": 1})
+        self.assertEqual(store.latest("r").state, {"a": 1})
+
+    def test_adding_a_migration_column_twice_is_not_an_error(self):
+        """The other read-then-write in the constructor, replayed statement for statement.
+
+        `_migrate` used to read `PRAGMA table_info` and, for every column missing, run an
         `ALTER TABLE ... ADD COLUMN`. Two workers opening a pre-`pack_version` store file
-        together both read "missing" and both run the ALTER; the second one is answered
-        with `duplicate column name`. The connections below execute exactly the two
-        statements `_migrate` executes, in the order two cold-starting workers produce.
+        together both read "missing" and both run the ALTER; the second was answered with
+        `duplicate column name` out of a constructor, on a store file that was fine. The
+        fix is to ask sqlite instead of reading and deciding, so running the statement
+        twice is the test.
         """
         self.assertIn(
             "pack_version", [name for name, _ in jig.state._ADDED_COLUMNS],
             "the migration this test replays is gone — retarget or delete it",
         )
         path = os.path.join(self.directory, "legacy.db")
-        legacy = sqlite3.connect(path)
-        # The table as jig shipped it before commit a055476 added the version column.
-        legacy.executescript(
-            "CREATE TABLE checkpoints ("
-            " run_id TEXT NOT NULL, step INTEGER NOT NULL, node TEXT NOT NULL,"
-            " next_node TEXT, state TEXT NOT NULL, path TEXT NOT NULL,"
-            " provenance TEXT NOT NULL, failures TEXT NOT NULL, output TEXT,"
-            " pack TEXT, created_at TEXT NOT NULL, PRIMARY KEY (run_id, step));"
-        )
-        legacy.commit()
-        legacy.close()
+        _write_legacy_store(path)
 
-        loser = sqlite3.connect(path)
-        self.addCleanup(loser.close)
-        columns = {row[1] for row in loser.execute("PRAGMA table_info(checkpoints)")}
-        self.assertNotIn("pack_version", columns)  # the loser's read
+        connection = sqlite3.connect(path)
+        self.addCleanup(connection.close)
+        jig.state._add_column(connection, "pack_version", "TEXT")
+        jig.state._add_column(connection, "pack_version", "TEXT")  # the loser
+        columns = [row[1] for row in connection.execute(
+            "PRAGMA table_info(checkpoints)"
+        )]
+        self.assertEqual(columns.count("pack_version"), 1)
 
-        winner = Store(path)  # the winner migrates and commits
-        winner.close()
-
-        # FINDING (medium): the loser now runs the ALTER its read told it to run, and
-        # dies in the constructor on a store file that is perfectly fine. The migration
-        # needs to tolerate the column already being there.
+    def test_a_real_sql_error_in_the_migration_still_escapes(self):
+        """Tolerating a duplicate column must not tolerate a missing table."""
+        path = os.path.join(self.directory, "empty.db")
+        connection = sqlite3.connect(path)
+        self.addCleanup(connection.close)
         with self.assertRaises(sqlite3.OperationalError) as caught:
-            loser.execute("ALTER TABLE checkpoints ADD COLUMN pack_version TEXT")
-        self.assertIn("duplicate column", str(caught.exception))
+            jig.state._add_column(connection, "pack_version", "TEXT")
+        self.assertIn("no such table", str(caught.exception))
 
-    def test_racing_workers_migrating_a_legacy_store_fail_this_way_or_not_at_all(self):
-        """As above: the unforced race, asserting only the shape of any failure."""
+    def test_two_openers_of_a_legacy_store_both_migrate_it_cleanly(self):
+        path = os.path.join(self.directory, "legacy_pair.db")
+        _write_legacy_store(path)
+
+        first = Store(path)
+        self.addCleanup(first.close)
+        second = Store(path)
+        self.addCleanup(second.close)
+        for store in (first, second):
+            columns = [
+                row["name"] for row in
+                store._connection.execute("PRAGMA table_info(checkpoints)")
+            ]
+            self.assertEqual(columns.count("pack_version"), 1)
+
+    def test_racing_workers_migrating_a_legacy_store_all_succeed(self):
+        """As above: the unforced race, which must now produce no failures at all."""
         path = os.path.join(self.directory, "legacy_race.db")
-        legacy = sqlite3.connect(path)
-        legacy.executescript(
-            "CREATE TABLE checkpoints ("
-            " run_id TEXT NOT NULL, step INTEGER NOT NULL, node TEXT NOT NULL,"
-            " next_node TEXT, state TEXT NOT NULL, path TEXT NOT NULL,"
-            " provenance TEXT NOT NULL, failures TEXT NOT NULL, output TEXT,"
-            " pack TEXT, created_at TEXT NOT NULL, PRIMARY KEY (run_id, step));"
-        )
-        legacy.commit()
-        legacy.close()
+        _write_legacy_store(path)
 
         barrier = threading.Barrier(8)
         failures = []
@@ -888,10 +1012,8 @@ class OpeningAStoreRacesItself(unittest.TestCase):
 
         _run_all([go] * 8)
 
-        self.assertGreaterEqual(len(opened), 1)
-        for failure in failures:
-            self.assertIsInstance(failure, sqlite3.OperationalError)
-            self.assertIn("duplicate column", str(failure))
+        self.assertEqual([repr(f) for f in failures], [])
+        self.assertEqual(len(opened), 8)
         # Whatever else happened, the migration itself succeeded exactly once.
         store = Store(path)
         self.addCleanup(store.close)
@@ -902,29 +1024,50 @@ class OpeningAStoreRacesItself(unittest.TestCase):
         self.assertEqual(columns.count("pack_version"), 1)
 
 
+def _write_legacy_store(path):
+    """The checkpoints table as jig shipped it before a055476 added the version column."""
+    legacy = sqlite3.connect(path)
+    legacy.executescript(
+        "CREATE TABLE checkpoints ("
+        " run_id TEXT NOT NULL, step INTEGER NOT NULL, node TEXT NOT NULL,"
+        " next_node TEXT, state TEXT NOT NULL, path TEXT NOT NULL,"
+        " provenance TEXT NOT NULL, failures TEXT NOT NULL, output TEXT,"
+        " pack TEXT, created_at TEXT NOT NULL, PRIMARY KEY (run_id, step));"
+    )
+    legacy.commit()
+    legacy.close()
+
+
 # ----------------------------------------------------------------------- the soak
 
 
 class TheStoreGrowsAndNothingPrunesIt(StoreTempDir):
     """Sustained runs against one store file, which is what a deployed jig does forever.
 
-    Two separate growth problems live here: how much one run costs, and what happens to
-    the file over a month of them.
+    Two separate growth problems live here: how much one run costs, and what an operator
+    can do about a month of them.
     """
 
     def _state_bytes(self, store):
+        """Every column that grows along the walk, not just `state`.
+
+        `path` and `provenance` lengthen with every node too, so measuring `state` alone
+        would let the quadratic term move one column to the right and call it fixed.
+        """
         return store._connection.execute(
-            "SELECT SUM(LENGTH(state)) FROM checkpoints"
+            "SELECT SUM(LENGTH(state) + LENGTH(path) + LENGTH(provenance))"
+            " FROM checkpoints"
         ).fetchone()[0]
 
-    def test_one_run_costs_bytes_quadratic_in_its_own_length(self):
-        """Every checkpoint holds the *whole* state, so step N re-writes steps 1..N-1.
+    def test_one_run_costs_bytes_linear_in_its_own_length(self):
+        """A checkpoint records what its node changed, so step N no longer re-writes 1..N.
 
-        A twenty-node run therefore costs roughly four times a ten-node run, not twice.
-        The numbers below are exact — the model's payload is fixed — so this is a
+        A twenty-node run used to cost roughly four times a ten-node one; it now costs
+        twice. The numbers are exact — the model\'s payload is fixed — so this is a
         measurement, not a heuristic.
         """
         sizes = {}
+        naive = {}
         for length in (10, 20):
             directory = tempfile.mkdtemp()
             self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
@@ -933,44 +1076,165 @@ class TheStoreGrowsAndNothingPrunesIt(StoreTempDir):
             run(chain_pack(length), MarkerModel("m", delay=0, payload="x" * 200),
                 inputs={"ticket": "t"}, run_id="R", store=store)
             sizes[length] = self._state_bytes(store)
+            # What the old store wrote: all three, in full, once per checkpoint.
+            naive[length] = sum(
+                len(json.dumps(c.state, sort_keys=True))
+                + len(json.dumps(c.path))
+                + len(json.dumps(c.provenance, sort_keys=True))
+                for c in store.history("R")
+            )
 
-        # FINDING (medium): doubling the length of a run more than triples what it
-        # stores. jig's own pitch is long workflows; a 200-node run stores its state 200
-        # times over. A checkpoint that recorded only the node's own commit, with the
-        # walker rebuilding state from the chain, would be linear.
-        self.assertGreater(sizes[20], 3 * sizes[10])
+        self.assertLess(sizes[20], 2.2 * sizes[10], "growth is still superlinear")
+        # And the saving against repeating everything grows with the run, which is the
+        # point: the longer the workflow, the more the old shape cost.
+        self.assertLess(sizes[10] * 4, naive[10])
+        self.assertLess(sizes[20] * 8, naive[20])
 
-    def test_a_soak_of_sequential_runs_grows_the_file_with_nothing_to_stop_it(self):
+    def test_a_delta_encoded_chain_still_hands_back_every_state_intact(self):
+        """Cheaper on disk is worthless if what comes back is not what was committed."""
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        store = Store(os.path.join(directory, "runs.db"))
+        self.addCleanup(store.close)
+        result = run(chain_pack(30), MarkerModel("m", delay=0, payload="x" * 200),
+                     inputs={"ticket": "t"}, run_id="R", store=store)
+
+        history = store.history("R")
+        self.assertEqual(len(history), 31)
+        for index, checkpoint in enumerate(history):
+            expected = {"ticket": "t"}
+            for earlier in range(min(index + 1, 30)):
+                expected["out%d" % earlier] = {"v": "m", "pad": "x" * 200}
+            self.assertEqual(checkpoint.state, expected, "step %d" % checkpoint.step)
+            self.assertEqual(
+                checkpoint.path,
+                ["n%d" % walked for walked in range(min(index + 1, 30))]
+                + (["done"] if index == 30 else []),
+            )
+            self.assertEqual(
+                checkpoint.provenance,
+                {"out%d" % w: "n%d" % w for w in range(min(index + 1, 30))},
+            )
+        # `latest` rebuilds from the snapshot forward; `history` walks the chain. Both
+        # have to agree, and with the run itself.
+        self.assertEqual(history[-1].state, result.state)
+        self.assertEqual(store.latest("R").state, result.state)
+        self.assertEqual(store.latest("R").path, result.path)
+        self.assertEqual(store.latest("R").provenance, result.provenance)
+
+    def test_a_state_that_is_rewritten_rather_than_grown_is_still_exact(self):
+        """The awkward shape for a delta: keys removed, and a value that changes type.
+
+        `True` and `1` are equal in Python, so a naive comparison would call this
+        unchanged and hand back the wrong one.
+        """
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        store = Store(os.path.join(directory, "runs.db"))
+        self.addCleanup(store.close)
+        states = [
+            {"a": 1, "b": [1, 2], "c": {"k": "v"}},
+            {"a": True, "b": [1, 2]},
+            {"a": True, "b": [1, 2], "d": None},
+            {},
+            {"a": 1.0},
+        ]
+        # A path that diverges rather than only growing — a loop re-walked down another
+        # edge — is the same question asked of the column that is encoded as a suffix.
+        paths = [
+            ["one"],
+            ["one", "two"],
+            ["one", "two", "three"],
+            ["one", "other"],
+            ["one", "other", "three"],
+        ]
+        for step, (state, path) in enumerate(zip(states, paths), start=1):
+            store.save(run_id="R", step=step, node="n", next_node="m", state=state,
+                       path=path, provenance={"a": "n%d" % step})
+        for checkpoint, state, path in zip(store.history("R"), states, paths):
+            self.assertEqual(checkpoint.state, state)
+            self.assertEqual(checkpoint.path, path)
+            self.assertEqual(checkpoint.provenance, {"a": "n%d" % checkpoint.step})
+            for key, value in state.items():
+                self.assertIs(type(checkpoint.state[key]), type(value), key)
+        self.assertEqual(store.latest("R").state, states[-1])
+        self.assertEqual(store.latest("R").path, paths[-1])
+
+    def test_a_soak_of_sequential_runs_grows_until_an_operator_prunes_it(self):
         store = self.open_store()
         model = MarkerModel("m", delay=0, payload="x" * 200)
         pack = chain_pack(3)
 
-        for index in range(60):
+        for index in range(120):
             run(pack, model, inputs={"ticket": "t%d" % index},
                 run_id="soak-%04d" % index, store=store)
-        after_60 = self._state_bytes(store)
-        for index in range(60, 120):
-            run(pack, model, inputs={"ticket": "t%d" % index},
-                run_id="soak-%04d" % index, store=store)
-        after_120 = self._state_bytes(store)
-
         self.assertEqual(len(store.runs()), 120)
-        self.assertGreater(after_120, after_60)
 
-        # FINDING (medium): the only way to remove anything is `delete(run_id)`, one run
-        # at a time, and the caller has to already know which ids to remove — there is no
-        # retention window, no "keep the last N", no "drop everything that finished
-        # before X", and `Checkpoint.created_at` is written but never used for any of it.
-        for name in ("prune", "vacuum", "purge", "trim", "retain"):
-            self.assertFalse(hasattr(store, name), "a prune API appeared: %s" % name)
+        # Retention is a policy, so nothing happens without one — a store that quietly
+        # forgot last month\'s runs would be worse than one that grows.
+        self.assertEqual(store.prune(), [])
+        self.assertEqual(len(store.runs()), 120)
 
-        # And deleting every run does not give the disk back: sqlite keeps the freed
-        # pages for reuse, and nothing ever runs VACUUM.
-        size_before_delete = os.path.getsize(self.path)
+        dropped = store.prune(keep_last=10)
+        self.assertEqual(len(dropped), 110)
+        self.assertEqual(sorted(store.runs()), sorted("soak-%04d" % i
+                                                      for i in range(110, 120)))
+        # The window is by run, not by row: what survives is whole chains.
         for run_id in store.runs():
-            store.delete(run_id)
+            self.assertEqual(len(store.history(run_id)), 4)
+
+    def test_prune_never_touches_a_run_that_has_not_finished(self):
+        """An unfinished chain is the only copy of work someone still means to resume."""
+        store = self.open_store()
+        run(two_step_pack(), MarkerModel("done"), inputs={"ticket": "t"},
+            run_id="finished", store=store)
+        with self.assertRaises(RuntimeError):
+            run(two_step_pack(), DyingModel("seed"), inputs={"ticket": "t"},
+                run_id="halfway", store=store)
+
+        dropped = store.prune(keep_last=0)
+        self.assertEqual(dropped, ["finished"])
+        self.assertEqual(store.runs(), ["halfway"])
+        # And it is still resumable afterwards.
+        result = resume(two_step_pack(), MarkerModel("later"), "halfway", store)
+        self.assertEqual(result.output["b"]["v"], "later")
+
+    def test_prune_by_date_drops_what_finished_before_the_cutoff(self):
+        store = self.open_store()
+        for index in range(3):
+            run(two_step_pack(), MarkerModel("m"), inputs={"ticket": "t"},
+                run_id="r%d" % index, store=store)
+
+        past = datetime(2000, 1, 1, tzinfo=timezone.utc)
+        self.assertEqual(store.prune(before=past), [])
+        self.assertEqual(len(store.runs()), 3)
+
+        future = datetime.now(timezone.utc) + timedelta(days=1)
+        self.assertEqual(store.prune(before=future), ["r0", "r1", "r2"])
+        self.assertEqual(store.runs(), [])
+
+    def test_vacuum_gives_the_disk_back_after_a_prune(self):
+        """Deleting rows does not shrink the file — sqlite keeps the pages for reuse."""
+        store = self.open_store()
+        model = MarkerModel("m", delay=0, payload="x" * 2000)
+        for index in range(40):
+            run(chain_pack(3), model, inputs={"ticket": "t%d" % index},
+                run_id="big-%03d" % index, store=store)
+        store._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        grown = os.path.getsize(self.path)
+
+        store.prune(keep_last=0)
         self.assertEqual(self.rows(), 0)
-        self.assertGreaterEqual(os.path.getsize(self.path), size_before_delete)
+        store._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        self.assertGreaterEqual(os.path.getsize(self.path), grown)
+
+        store.vacuum()
+        self.assertLess(os.path.getsize(self.path), grown)
+        # And the store still works afterwards: VACUUM rewrites the file, it does not
+        # retire it.
+        run(chain_pack(3), model, inputs={"ticket": "after"}, run_id="after",
+            store=store)
+        self.assertEqual(store.latest("after").state["ticket"], "after")
 
 
 if __name__ == "__main__":  # pragma: no cover
