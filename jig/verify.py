@@ -256,11 +256,18 @@ def verify(node, text, state):
         raise Rejected(
             "output must be a JSON object, got %s" % type(value).__name__
         )
-    if node.grammar:
-        try:
-            validate_against(node.grammar, value)
-        except ValidationError as exc:
-            raise Rejected("schema: %s" % exc, feedback="schema: %s" % exc.safe_text)
+    # Always, even with no schema. `validate_against` runs a JSON-shape check (no NaN or
+    # Infinity, nothing nested past the ceiling) before it looks at the schema, and shape
+    # is not a schema question — a value JSON cannot represent is bad output whether or not
+    # a node declared constraints. Guarding this with `if node.grammar:` skipped it for a
+    # free-form node, which the pack format documents `{}` as being: NaN then committed,
+    # printed as a bare NaN no strict reader can parse, and killed a checkpointed run AFTER
+    # the commit — the exact hazard checking-before-commit exists to prevent. An empty
+    # schema constrains nothing, so free-form nodes stay free.
+    try:
+        validate_against(node.grammar or {}, value)
+    except ValidationError as exc:
+        raise Rejected("schema: %s" % exc, feedback="schema: %s" % exc.safe_text)
     if node.assert_expr:
         _check_assert(node, value, state)
     return value

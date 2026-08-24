@@ -19,7 +19,7 @@ from jig.graph import run
 from jig.model import FakeModel
 from jig.pack import Node, PackError, load_pack
 from jig.state import Store, resume
-from jig.verify import Rejected, run_node
+from jig.verify import Rejected, run_node, verify
 
 
 ENUM_SCHEMA = {
@@ -623,3 +623,48 @@ class AResumeIsRefusedIfThePackMoved(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TheShapeCheckRunsEvenWithoutASchema(unittest.TestCase):
+    """JSON validity is not a schema question, so it cannot be skipped when there is no schema.
+
+    `verify` guarded the whole check with `if node.grammar:`, and `{}` is falsy — while the
+    pack format documents `{}` as a legal grammar for a free-form field. So the one node
+    shape most likely to receive junk was the one node that never checked for it: NaN,
+    Infinity and 3000-deep nesting all committed, `json.dumps` then emitted a bare `NaN`
+    that no strict reader can parse, and a run with `--store` died *after* the commit —
+    exactly the hazard checking-before-commit exists to prevent.
+
+    Found by an independent reviewer fact-checking docs/pack-format.md against the source.
+    """
+
+    def _node(self, grammar):
+        return Node(name="a", type="generate", prompt="p", grammar=grammar)
+
+    def test_nan_is_rejected_even_when_the_grammar_is_empty(self):
+        with self.assertRaises(Rejected):
+            verify(self._node({}), '{"kind": NaN}', {})
+
+    def test_infinity_is_rejected_even_when_the_grammar_is_empty(self):
+        with self.assertRaises(Rejected):
+            verify(self._node({}), '{"kind": Infinity}', {})
+
+    def test_nan_is_rejected_when_there_is_no_grammar_at_all(self):
+        with self.assertRaises(Rejected):
+            verify(self._node(None), '{"kind": NaN}', {})
+
+    def test_deep_nesting_is_rejected_even_when_the_grammar_is_empty(self):
+        deep = '{"v": %s}' % ("[" * 3000 + "]" * 3000)
+        with self.assertRaises(Rejected):
+            verify(self._node({}), deep, {})
+
+    def test_an_ordinary_object_still_commits_under_an_empty_grammar(self):
+        """The point is a shape check, not a new constraint — free-form must stay free."""
+        value = verify(self._node({}), '{"anything": 1, "at": ["all"]}', {})
+        self.assertEqual(value, {"anything": 1, "at": ["all"]})
+
+    def test_a_declared_schema_is_still_enforced(self):
+        schema = {"type": "object", "properties": {"k": {"type": "string"}},
+                  "required": ["k"], "additionalProperties": False}
+        with self.assertRaises(Rejected):
+            verify(self._node(schema), '{"k": 12345}', {})
+
