@@ -410,3 +410,38 @@ class TestAttemptsAreCounted(unittest.TestCase):
     def test_a_clean_run_reports_one_attempt_per_node(self):
         result = run(pack_of(node()), FakeModel([GOOD]), {"ticket": "t"})
         self.assertEqual(result.attempts, {"classify": 1})
+
+
+class DeeplyNestedOutputIsRejectedNotFatal(unittest.TestCase):
+    """A model emitting 10,000 nested arrays is a bad generation, not a broken runtime.
+
+    Before CPython 3.12, json.loads raises RecursionError rather than ValueError for input
+    nested past the decoder's stack. That is not a ValueError, so it escaped extract_json's
+    handler, was not a Rejected, and bypassed the retry ladder and the node's on_fail edge
+    to kill the run. CI on 3.9, 3.10 and 3.11 caught it; the development interpreter (3.14)
+    never could, so these force the decoder to raise and cover the path everywhere.
+    """
+
+    def _with_exploding_decoder(self, call):
+        import jig.verify as verify_module
+
+        real = verify_module.json.loads
+
+        def exploding(*args, **kwargs):
+            raise RecursionError("maximum recursion depth exceeded")
+
+        verify_module.json.loads = exploding
+        try:
+            return call()
+        finally:
+            verify_module.json.loads = real
+
+    def test_a_recursion_error_from_the_decoder_becomes_a_rejected(self):
+        with self.assertRaises(Rejected) as caught:
+            self._with_exploding_decoder(lambda: extract_json("[[[[[nested]]]]]"))
+        self.assertIn("nested too deeply", str(caught.exception))
+
+    def test_the_feedback_tells_the_model_what_to_do_instead(self):
+        with self.assertRaises(Rejected) as caught:
+            self._with_exploding_decoder(lambda: extract_json("[[[["))
+        self.assertIn("flat JSON object", caught.exception.feedback)
