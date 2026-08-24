@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "properties": {
+    "policy_category": {
+      "type": "string",
+      "enum": [
+        "none",
+        "harassment",
+        "hate_speech",
+        "violent_threat",
+        "self_harm",
+        "sexual_content",
+        "spam_scam",
+        "misinformation"
+      ]
+    },
+    "quoted_or_counter_speech": {
+      "type": "boolean",
+      "description": "true when the poster is quoting, reporting or objecting to the content rather than authoring it"
+    }
+  },
+  "required": ["policy_category", "quoted_or_counter_speech"],
+  "additionalProperties": false
+}

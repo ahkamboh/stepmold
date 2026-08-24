@@ -1,0 +1,73 @@
+{
+  "screen step": [
+    "{\"signal\": \"clean\"}",
+    "{\"signal\": \"clean\"}",
+    "{\"signal\": \"severe\"}",
+    "{\"signal\": \"severe\"}",
+    "{\"signal\": \"severe\"}",
+    "{\"signal\": \"severe\"}",
+    "{\"signal\": \"severe\"}",
+    "{\"signal\": \"suspect\"}",
+    "{\"signal\": \"suspect\"}",
+    "{\"signal\": \"suspect\"}",
+    "{\"signal\": \"suspect\"}",
+    "{\"signal\": \"suspect\"}",
+    "{\"signal\": \"clean\"}"
+  ],
+  "clear-post step": [
+    "{\"decision\": \"allow\", \"policy_category\": \"none\", \"severity\": \"none\", \"confidence\": \"high\", \"needs_human\": false}",
+    "{\"decision\": \"allow\", \"policy_category\": \"none\", \"severity\": \"none\", \"confidence\": \"high\", \"needs_human\": false}",
+    "{\"decision\": \"review\", \"policy_category\": \"none\", \"severity\": \"none\", \"confidence\": \"low\", \"needs_human\": true}"
+  ],
+  "classify step": [
+    "{\"policy_category\": \"harassment\", \"quoted_or_counter_speech\": false}",
+    "{\"policy_category\": \"hate_speech\", \"quoted_or_counter_speech\": false}",
+    "{\"policy_category\": \"violent_threat\", \"quoted_or_counter_speech\": false}",
+    "{\"policy_category\": \"self_harm\", \"quoted_or_counter_speech\": false}",
+    "{\"policy_category\": \"spam_scam\", \"quoted_or_counter_speech\": false}",
+    "{\"policy_category\": \"hate_speech\", \"quoted_or_counter_speech\": true}",
+    "{\"policy_category\": \"misinformation\", \"quoted_or_counter_speech\": false}",
+    "{\"policy_category\": \"sexual_content\", \"quoted_or_counter_speech\": false}",
+    "{\"policy_category\": \"violent_threat\", \"quoted_or_counter_speech\": false}",
+    "{\"policy_category\": \"none\", \"quoted_or_counter_speech\": false}"
+  ],
+  "assess reasoning step": [
+    "One named person is the target and the whole post is contempt aimed at them. The poster is saying it, not reporting it. Nothing here is ambiguous.",
+    "The attack is on a group defined by where they were born, and the poster is arguing for their exclusion. This is authored, not quoted.",
+    "It names a place and a day and is aimed at one person after a fight. That specificity is what makes a threat credible rather than venting.",
+    "The poster is describing their own state in a community meant for exactly this. Removing it silently would cut off the person who needs reaching.",
+    "Guaranteed returns, a private group and urgency are the standard shape of this. Nobody is harmed physically, but money is the point of it.",
+    "The hateful line is quoted, and it is quoted in order to object to it. The poster is the target here, not the author.",
+    "It could be true and it could be invented, and nothing here settles it. A recall claim spreads fast either way.",
+    "The community is age-gated and its rules allow this, and the post asks for text rather than images. The venue is what settles it.",
+    "Nothing is named, and the thread is about a film, so this may be a line from one. It may also not be.",
+    "The post refers to something that was not shown to me. I cannot rate what I cannot read."
+  ],
+  "assess step": [
+    "{\"severity\": \"high\", \"confidence\": \"high\", \"rationale\": \"Sustained personal contempt aimed at one named member with no other purpose.\"}",
+    "{\"severity\": \"high\", \"confidence\": \"high\", \"rationale\": \"Calls for exclusion of a group based on national origin, in the poster's own words.\"}",
+    "{\"severity\": \"high\", \"confidence\": \"high\", \"rationale\": \"Names a place and a time and is directed at one person after a dispute.\"}",
+    "{\"severity\": \"high\", \"confidence\": \"high\", \"rationale\": \"The poster describes their own suicidal thinking in a support community.\"}",
+    "{\"severity\": \"moderate\", \"confidence\": \"high\", \"rationale\": \"Guaranteed returns plus a private group plus false scarcity is a standard financial scam.\"}",
+    "{\"severity\": \"none\", \"confidence\": \"high\", \"rationale\": \"The poster is quoting abuse aimed at them in order to report it.\"}",
+    "{\"severity\": \"moderate\", \"confidence\": \"low\", \"rationale\": \"An unsourced recall claim that may be true; nothing in the post allows a check.\"}",
+    "{\"severity\": \"low\", \"confidence\": \"high\", \"rationale\": \"Adult text in an age-gated community whose own rules permit it.\"}",
+    "{\"severity\": \"moderate\", \"confidence\": \"low\", \"rationale\": \"Menacing wording with no named target, in a thread where it may be a quotation.\"}",
+    "{\"severity\": \"none\", \"confidence\": \"low\", \"rationale\": \"The post refers to content that was not provided, so nothing can be rated.\"}"
+  ],
+  "decide step": [
+    "{\"decision\": \"block\", \"needs_human\": true}",
+    "{\"decision\": \"block\", \"needs_human\": true}",
+    "{\"decision\": \"block\", \"needs_human\": true}",
+    "{\"decision\": \"review\", \"needs_human\": true}",
+    "{\"decision\": \"block\", \"needs_human\": true}",
+    "{\"decision\": \"allow\", \"needs_human\": false}",
+    "{\"decision\": \"review\", \"needs_human\": true}",
+    "{\"decision\": \"allow\", \"needs_human\": false}",
+    "{\"decision\": \"review\", \"needs_human\": false}",
+    "{\"decision\": \"review\", \"needs_human\": true}"
+  ],
+  "forced-review step": [
+    "{\"decision\": \"review\", \"needs_human\": true, \"review_note\": \"No target and no building are named and the thread is about a film, so a human should read the surrounding replies before acting.\"}"
+  ]
+}

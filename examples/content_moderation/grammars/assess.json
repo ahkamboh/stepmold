@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "properties": {
+    "severity": {"type": "string", "enum": ["none", "low", "moderate", "high"]},
+    "confidence": {
+      "type": "string",
+      "description": "how sure you are of the severity, given how much context you were given",
+      "enum": ["low", "medium", "high"]
+    },
+    "rationale": {"type": "string"}
+  },
+  "required": ["severity", "confidence", "rationale"],
+  "additionalProperties": false
+}
