@@ -1,0 +1,19 @@
+Task: cause category
+Alert: {alert_id}
+
+You are the cause step of an incident-alert triage workflow. Pick the one cause
+category the error text and message point at:
+  dependency_timeout   - an internal service or database did not answer in time
+  deploy_regression    - it started at a release, restart or rollout
+  resource_exhaustion  - pool, disk, memory, quota or queue backlog is full
+  config_error         - a setting, flag, key or route was changed or is wrong
+  upstream_provider    - a third party we do not run is failing or slow
+  data_corruption      - wrong, duplicated or missing rows in the data itself
+  unknown              - the alert does not say enough to choose
+
+Then say how sure you are: high, medium, or low. Use low whenever you picked
+unknown.
+
+Service: {service}
+Message: {message}
+Error: {error_text}

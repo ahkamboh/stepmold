@@ -1,0 +1,21 @@
+Task: severity call
+Alert: {alert_id}
+
+You are the severity step of an incident-alert triage workflow. Assign one
+normalised severity:
+  p0 - customer-facing and broken now for everyone, or money is being lost
+  p1 - a real customer-facing fault, but not everyone, or data is drifting
+  p2 - degraded but working, or one customer is affected
+  p3 - no customer impact today, and no deadline
+
+And one blast radius: all_customers, many_customers, single_customer, or
+internal_only.
+
+The raw severity below is the vendor's guess. Trust the message over it.
+
+Give a one-sentence reason.
+
+Raw severity: {severity_raw}
+Suspected cause: {cause_category}
+Message: {message}
+Error: {error_text}

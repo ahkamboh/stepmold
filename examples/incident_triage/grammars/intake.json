@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "properties": {
+    "alert_status": {
+      "type": "string",
+      "enum": ["actionable", "malformed"]
+    },
+    "defect": {
+      "type": "string",
+      "enum": ["none", "no_message", "missing_service", "not_an_alert"]
+    }
+  },
+  "required": ["alert_status", "defect"],
+  "additionalProperties": false
+}

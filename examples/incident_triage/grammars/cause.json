@@ -1,0 +1,23 @@
+{
+  "type": "object",
+  "properties": {
+    "cause_category": {
+      "type": "string",
+      "enum": [
+        "dependency_timeout",
+        "deploy_regression",
+        "resource_exhaustion",
+        "config_error",
+        "upstream_provider",
+        "data_corruption",
+        "unknown"
+      ]
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["high", "medium", "low"]
+    }
+  },
+  "required": ["cause_category", "confidence"],
+  "additionalProperties": false
+}
