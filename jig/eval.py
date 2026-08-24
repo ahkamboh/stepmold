@@ -156,8 +156,33 @@ def _run_case(pack, model, case, index):
         result.node = diverted.node
         result.error = diverted.reason
     else:
-        result.node = result.mismatches[0].node
+        result.node = _earliest_node(result.mismatches, run_result.path)
     return result
+
+
+def _earliest_node(mismatches, path):
+    """Blame the node the walker reached first, not the field listed first.
+
+    `expect` is a JSON object typed by hand, so its key order carries no meaning; the
+    run's visit order does. When two nodes both produced a wrong field, the earlier one
+    is the one to fix — the later node consumed its mistake. A node can be visited more
+    than once in a loop, so its first visit is what ranks it.
+    """
+    rank = {}
+    for position, node in enumerate(path):
+        rank.setdefault(node, position)
+
+    best = None
+    for mismatch in mismatches:
+        if mismatch.node is None:
+            continue  # an expectation on an input field: nobody wrote it
+        if mismatch.node not in rank:
+            continue  # provenance from outside this run's path; cannot be ordered
+        if best is None or rank[mismatch.node] < rank[best]:
+            best = mismatch.node
+    if best is not None:
+        return best
+    return mismatches[0].node
 
 
 def _compare(expect, run_result):

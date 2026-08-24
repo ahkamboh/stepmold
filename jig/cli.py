@@ -89,6 +89,7 @@ def build_parser():
 
 def command_validate(args):
     pack = load_pack(args.pack)
+    _check_output_shapes(pack)
     print(
         "%s v%s: %s, %s, %s, entry %r"
         % (
@@ -112,6 +113,7 @@ def command_run(args):
     from .state import Store, resume
 
     pack = load_pack(args.pack)
+    _check_output_shapes(pack)
     if args.resume and not args.store:
         return _fail("--resume needs --store: checkpoints live in the store")
 
@@ -131,16 +133,63 @@ def command_run(args):
         if store is not None:
             store.close()
 
-    print(json.dumps(result.state if args.state else result.output, sort_keys=True))
+    payload = result.state if args.state else result.output
+    if not args.state and not payload and result.state:
+        # `{}` printed on stdout with exit 0 reads as "the run produced nothing", when
+        # what happened is that the end node projected nothing out of a state that has
+        # content. Say which, rather than let a caller pipe an empty result onward.
+        return _fail(
+            "end node %r projected nothing: its 'output' names no key that exists in "
+            "state (state has: %s). Fix the node's 'output', or pass --state to print "
+            "the whole state." % (result.end_node, ", ".join(sorted(result.state)))
+        )
+    print(json.dumps(payload, sort_keys=True))
     return 0
 
 
 def command_eval(args):
     pack = load_pack(args.pack)
+    _check_output_shapes(pack)
     report = evaluate(pack, resolve_model(args.model, pack, _allow(args)))
     print(json.dumps(_report_json(report), sort_keys=True) if args.json
           else report.summary())
     return 0 if report.passed_all else 1
+
+
+def _check_output_shapes(pack):
+    """Refuse a pack that uses `output:` in the shape the other node type wants.
+
+    One word, two meanings: on a `generate` node `output` is the single state key to
+    commit the result under, on an `end` node it is the list of keys to project. Nothing
+    checks which one was written — `output: ticket` on an end node makes the projection
+    iterate the *string*, match no state key, and return an empty object while the state
+    still holds the data. That belongs in `pack.load_pack` at load time; until it lives
+    there, the CLI refuses the pack instead of running it and printing the silence.
+    """
+    problems = []
+    for name in sorted(pack.nodes):
+        node = pack.nodes[name]
+        if node.output is None:
+            continue
+        if node.type == "end" and not _is_key_list(node.output):
+            hint = ""
+            if isinstance(node.output, str):
+                hint = " — write 'output: [%s]' if you meant that one key" % node.output
+            problems.append(
+                "graph.yaml: end node %r: 'output' must be a list of state keys to "
+                "project, got %r%s" % (name, node.output, hint)
+            )
+        elif node.type == "generate" and not isinstance(node.output, str):
+            problems.append(
+                "graph.yaml: generate node %r: 'output' must be a single state key to "
+                "commit the result under (a string), got %r" % (name, node.output)
+            )
+    if problems:
+        raise ValueError("\n     ".join(problems))
+
+
+def _is_key_list(output):
+    return isinstance(output, list) and all(isinstance(key, str) for key in output)
 
 
 # -------------------------------------------------------------------------- models
