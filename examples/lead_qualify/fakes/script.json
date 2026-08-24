@@ -1,0 +1,108 @@
+{
+  "screen step": [
+    "{\"email_domain_kind\": \"company_domain\", \"company_named\": true}",
+    "{\"email_domain_kind\": \"free_mail\", \"company_named\": true}",
+    "{\"email_domain_kind\": \"company_domain\", \"company_named\": true}",
+    "{\"email_domain_kind\": \"company_domain\", \"company_named\": true}",
+    "{\"email_domain_kind\": \"company_domain\", \"company_named\": true}",
+    "{\"email_domain_kind\": \"free_mail\", \"company_named\": true}",
+    "{\"email_domain_kind\": \"company_domain\", \"company_named\": true}",
+    "{\"email_domain_kind\": \"company_domain\", \"company_named\": true}",
+    "{\"email_domain_kind\": \"company_domain\", \"company_named\": true}",
+    "{\"email_domain_kind\": \"company_domain\", \"company_named\": true}",
+    "{\"email_domain_kind\": \"free_mail\", \"company_named\": false}",
+    "{\"email_domain_kind\": \"company_domain\", \"company_named\": true}"
+  ],
+  "segment step": [
+    "{\"headcount_band\": \"1000+\", \"segment\": \"enterprise\"}",
+    "{\"headcount_band\": \"1000+\", \"segment\": \"enterprise\"}",
+    "{\"headcount_band\": \"250-999\", \"segment\": \"mid_market\"}",
+    "{\"headcount_band\": \"250-999\", \"segment\": \"mid_market\"}",
+    "{\"headcount_band\": \"10-49\", \"segment\": \"smb\"}",
+    "{\"headcount_band\": \"1-9\", \"segment\": \"solo\"}",
+    "{\"headcount_band\": \"250-999\", \"segment\": \"mid_market\"}",
+    "{\"headcount_band\": \"10-49\", \"segment\": \"smb\"}",
+    "{\"headcount_band\": \"1000+\", \"segment\": \"enterprise\"}",
+    "{\"headcount_band\": \"10-49\", \"segment\": \"smb\"}",
+    "{\"headcount_band\": \"1000+\", \"segment\": \"enterprise\"}",
+    "{\"headcount_band\": \"1-9\", \"segment\": \"solo\"}"
+  ],
+  "gate step": [
+    "{\"disqualified\": false, \"disqualify_reason\": \"none\"}",
+    "{\"disqualified\": true, \"disqualify_reason\": \"free_mail_enterprise\"}",
+    "{\"disqualified\": false, \"disqualify_reason\": \"none\"}",
+    "{\"disqualified\": false, \"disqualify_reason\": \"none\"}",
+    "{\"disqualified\": false, \"disqualify_reason\": \"none\"}",
+    "{\"disqualified\": false, \"disqualify_reason\": \"none\"}",
+    "{\"disqualified\": false, \"disqualify_reason\": \"none\"}",
+    "{\"disqualified\": false, \"disqualify_reason\": \"none\"}",
+    "{\"disqualified\": false, \"disqualify_reason\": \"none\"}",
+    "{\"disqualified\": false, \"disqualify_reason\": \"none\"}",
+    "{\"disqualified\": true, \"disqualify_reason\": \"free_mail_enterprise\"}",
+    "{\"disqualified\": false, \"disqualify_reason\": \"none\"}"
+  ],
+  "decline step": [
+    "{\"next_action\": \"reject\", \"reply_note\": \"Thanks for getting in touch, Dan - could you write to us again from your Northwind Logistics work address so we can verify the account?\"}",
+    "{\"next_action\": \"reject\", \"reply_note\": \"Thanks for writing in - please send this again from your company email address so we can confirm who you are.\"}"
+  ],
+  "enrich step": [
+    "{\"industry\": \"manufacturing\", \"seniority\": \"manager\"}",
+    "{\"industry\": \"healthcare\", \"seniority\": \"manager\"}",
+    "{\"industry\": \"other\", \"seniority\": \"executive\"}",
+    "{\"industry\": \"other\", \"seniority\": \"unknown\"}",
+    "{\"industry\": \"other\", \"seniority\": \"executive\"}",
+    "{\"industry\": \"financial_services\", \"seniority\": \"manager\"}",
+    "{\"industry\": \"retail\", \"seniority\": \"unknown\"}",
+    "{\"industry\": \"public_sector\", \"seniority\": \"manager\"}",
+    "{\"industry\": \"software\", \"seniority\": \"manager\"}",
+    "{\"industry\": \"other\", \"seniority\": \"unknown\"}"
+  ],
+  "signals step": [
+    "{\"budget_signal\": \"budget_approved\", \"urgency\": \"high\"}",
+    "{\"budget_signal\": \"exploring\", \"urgency\": \"medium\"}",
+    "{\"budget_signal\": \"budget_approved\", \"urgency\": \"high\"}",
+    "{\"budget_signal\": \"none\", \"urgency\": \"low\"}",
+    "{\"budget_signal\": \"none\", \"urgency\": \"low\"}",
+    "{\"budget_signal\": \"budget_approved\", \"urgency\": \"medium\"}",
+    "{\"budget_signal\": \"none\", \"urgency\": \"low\"}",
+    "{\"budget_signal\": \"none\", \"urgency\": \"low\"}",
+    "{\"budget_signal\": \"none\", \"urgency\": \"high\"}",
+    "{\"budget_signal\": \"none\", \"urgency\": \"low\"}"
+  ],
+  "score reasoning step": [
+    "A two-thousand-person manufacturer with money already approved and a vendor contract they want out of within the month. The person speaks for a team. Nothing here is speculative.",
+    "Six hundred people in healthcare, asking about price for a shortlist next year. Real buyer, but nobody has approved anything and the date is far out.",
+    "The head of operations at a four-hundred-person freight firm, with money approved and an incumbent contract expiring in six weeks. Both the authority and the deadline are real.",
+    "A twenty-two person design studio saying outright that they are browsing with no timeline. No money mentioned and no sign of who is asking.",
+    "One person, evaluating for himself, no money mentioned and no date. He owns the decision, but there is almost nothing to sell.",
+    "Four hundred people in insurance, money already set aside, and an active two-vendor comparison running this quarter. The form left headcount blank but the message did not.",
+    "Nothing to weigh. A one-line request for information, no size, no money, no date and no clue who is asking.",
+    "Large public body, but this is information gathering for a procurement that may not happen, with no money and no date. Size alone does not make it urgent.",
+    "A small software team losing their tool on Friday. The need is real and immediate even though nobody has said what they can spend.",
+    "This is not an inbound lead at all. Someone is selling to us, not buying, and there is nothing on our side to weigh."
+  ],
+  "score step": [
+    "{\"fit_band\": \"strong\", \"fit_reason\": \"Large manufacturer with approved budget and a hard replacement deadline this month.\"}",
+    "{\"fit_band\": \"moderate\", \"fit_reason\": \"Real mid-market buyer, but pricing questions only and no approved budget.\"}",
+    "{\"fit_band\": \"strong\", \"fit_reason\": \"Operations lead with approved budget and an incumbent contract ending in six weeks.\"}",
+    "{\"fit_band\": \"weak\", \"fit_reason\": \"Small studio browsing with no budget, no timeline and no stated owner.\"}",
+    "{\"fit_band\": \"weak\", \"fit_reason\": \"Sole consultant evaluating single-user use with no budget and no timeline.\"}",
+    "{\"fit_band\": \"strong\", \"fit_reason\": \"Four-hundred-person insurer with money set aside and an active vendor comparison.\"}",
+    "{\"fit_band\": \"weak\", \"fit_reason\": \"One-line information request with no size, budget or timeline given.\"}",
+    "{\"fit_band\": \"moderate\", \"fit_reason\": \"Large public buyer gathering information for a procurement that is not yet funded.\"}",
+    "{\"fit_band\": \"moderate\", \"fit_reason\": \"Small team with an immediate replacement deadline but no confirmed budget.\"}",
+    "{\"fit_band\": \"weak\", \"fit_reason\": \"Inbound pitch selling services to us rather than a buying enquiry.\"}"
+  ],
+  "route step": [
+    "{\"next_action\": \"route_to_sales\", \"owner\": \"ae_enterprise\"}",
+    "{\"next_action\": \"nurture\", \"owner\": \"marketing_nurture\"}",
+    "{\"next_action\": \"route_to_sales\", \"owner\": \"ae_mid_market\"}",
+    "{\"next_action\": \"nurture\", \"owner\": \"marketing_nurture\"}",
+    "{\"next_action\": \"nurture\", \"owner\": \"marketing_nurture\"}",
+    "{\"next_action\": \"route_to_sales\", \"owner\": \"ae_mid_market\"}",
+    "{\"next_action\": \"nurture\", \"owner\": \"marketing_nurture\"}",
+    "{\"next_action\": \"nurture\", \"owner\": \"marketing_nurture\"}",
+    "{\"next_action\": \"route_to_sales\", \"owner\": \"sdr\"}",
+    "{\"next_action\": \"nurture\", \"owner\": \"marketing_nurture\"}"
+  ]
+}

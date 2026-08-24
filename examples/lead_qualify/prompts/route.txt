@@ -1,0 +1,17 @@
+You are the route step of the inbound lead workflow.
+
+Step 1. next_action:
+  route_to_sales  when fit_band is strong,
+                  or fit_band is moderate and urgency is high
+  nurture         in every other case
+
+Step 2. owner:
+  next_action nurture              ->  marketing_nurture
+  next_action route_to_sales, and
+    segment enterprise             ->  ae_enterprise
+    segment mid_market             ->  ae_mid_market
+    segment solo or smb            ->  sdr
+
+Fit band: {fit_band}
+Urgency: {urgency}
+Segment: {segment}

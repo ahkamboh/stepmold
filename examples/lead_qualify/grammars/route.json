@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "properties": {
+    "next_action": {
+      "type": "string",
+      "enum": ["route_to_sales", "nurture"]
+    },
+    "owner": {
+      "type": "string",
+      "enum": ["ae_enterprise", "ae_mid_market", "sdr", "marketing_nurture"]
+    }
+  },
+  "required": ["next_action", "owner"],
+  "additionalProperties": false
+}

@@ -1,0 +1,14 @@
+You are the gate step of the inbound lead workflow.
+
+Apply one rule and nothing else.
+
+  When segment is enterprise AND email_domain_kind is free_mail:
+    disqualified is true, disqualify_reason is free_mail_enterprise
+
+  In every other case:
+    disqualified is false, disqualify_reason is none
+
+A personal mailbox on a small company is fine. Only enterprise is refused.
+
+segment: {segment}
+email_domain_kind: {email_domain_kind}

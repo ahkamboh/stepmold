@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "budget_signal": {
+      "type": "string",
+      "enum": ["budget_approved", "exploring", "none"]
+    },
+    "urgency": {"type": "string", "enum": ["high", "medium", "low"]}
+  },
+  "required": ["budget_signal", "urgency"],
+  "additionalProperties": false
+}
