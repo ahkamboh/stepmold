@@ -196,3 +196,130 @@ class TestErrors(unittest.TestCase):
 
     def test_unterminated_quote(self):
         self.assertIn("unterminated", self._error("a: 'oops\n"))
+
+
+class TestBlockScalarRefusals(unittest.TestCase):
+    """The gaps in `refuse rather than mis-parse` that block scalars used to have."""
+
+    def _error(self, text):
+        with self.assertRaises(YamlError) as caught:
+            parse(text, filename="graph.yaml")
+        return str(caught.exception)
+
+    def test_a_block_scalar_under_a_sequence_key_keeps_its_key(self):
+        doc = parse("edges:\n  - when: |-\n      hi\n      there\n    to: done\n")
+        self.assertEqual(doc["edges"], [{"when": "hi\nthere", "to": "done"}])
+
+    def test_a_block_scalar_under_a_sequence_key_stops_at_the_sibling_key(self):
+        doc = parse("edges:\n  - when: |-\n      hi\n    to: done\n  - to: next\n")
+        self.assertEqual(doc["edges"], [{"when": "hi", "to": "done"}, {"to": "next"}])
+
+    def test_a_folded_scalar_under_a_sequence_key_keeps_its_key(self):
+        doc = parse("edges:\n  - note: >-\n      a folded\n      note\n    to: done\n")
+        self.assertEqual(doc["edges"], [{"note": "a folded note", "to": "done"}])
+
+    def test_an_under_indented_block_line_is_refused_not_truncated(self):
+        message = self._error("text: |-\n    aaaa\n  bbbb\n")
+        self.assertIn("graph.yaml:3", message)
+        self.assertIn("block scalar", message)
+
+    def test_an_under_indented_short_block_line_is_refused(self):
+        message = self._error("text: |-\n    aaaa\n  bb\n")
+        self.assertIn("graph.yaml:3", message)
+        self.assertIn("block scalar", message)
+
+    def test_an_empty_block_scalar_is_the_empty_string(self):
+        self.assertEqual(parse("text: |\nafter: 1\n"), {"text": "", "after": 1})
+        self.assertEqual(parse("text: >-\nafter: 1\n"), {"text": "", "after": 1})
+
+
+class TestFoldedIndentation(unittest.TestCase):
+    def test_more_indented_lines_are_kept_literally(self):
+        self.assertEqual(parse("text: >-\n  a\n    indented\n  b\n")["text"],
+                         "a\n  indented\nb")
+
+    def test_a_blank_line_before_a_more_indented_line_adds_a_break(self):
+        self.assertEqual(parse("text: >-\n  a\n\n    indented\n  b\n")["text"],
+                         "a\n\n  indented\nb")
+
+    def test_two_blank_lines_become_two_breaks(self):
+        self.assertEqual(parse("text: >-\n  a\n\n\n  b\n")["text"], "a\n\nb")
+
+
+class TestCommentsInPlainScalars(unittest.TestCase):
+    def test_an_apostrophe_in_a_plain_scalar_does_not_hide_a_comment(self):
+        doc = parse("model: fake:fakes/o'brien.json  # local copy\n")
+        self.assertEqual(doc["model"], "fake:fakes/o'brien.json")
+
+    def test_a_double_quote_inside_a_plain_scalar_does_not_hide_a_comment(self):
+        doc = parse('note: 6" pipe  # imperial\n')
+        self.assertEqual(doc["note"], '6" pipe')
+
+    def test_a_quote_after_a_colon_does_not_open_a_string(self):
+        # Real YAML reads this as the plain scalar `b:'c` plus a comment.
+        self.assertEqual(parse("a: b:'c # d\n"), {"a": "b:'c"})
+
+    def test_a_quoted_value_still_hides_a_hash(self):
+        self.assertEqual(parse("t: 'a # b'  # real comment\n"), {"t": "a # b"})
+        self.assertEqual(parse('k: ["a # b"]  # real\n'), {"k": ["a # b"]})
+
+
+class TestDocumentMarkers(unittest.TestCase):
+    def _error(self, text):
+        with self.assertRaises(YamlError) as caught:
+            parse(text, filename="graph.yaml")
+        return str(caught.exception)
+
+    def test_a_second_document_is_refused(self):
+        message = self._error("a: 1\n---\nb: 2\n")
+        self.assertIn("graph.yaml:2", message)
+        self.assertIn("multiple documents", message)
+
+    def test_content_after_the_end_marker_is_refused(self):
+        message = self._error("a: 1\n...\nb: 2\n")
+        self.assertIn("graph.yaml:3", message)
+        self.assertIn("multiple documents", message)
+
+    def test_a_repeated_start_marker_is_refused(self):
+        self.assertIn("multiple documents", self._error("---\na: 1\n---\nb: 2\n"))
+
+
+class TestFlowRefusals(unittest.TestCase):
+    def _error(self, text):
+        with self.assertRaises(YamlError) as caught:
+            parse(text, filename="graph.yaml")
+        return str(caught.exception)
+
+    def test_a_trailing_comma_does_not_invent_an_entry(self):
+        self.assertEqual(parse("k: [a, b,]\n"), {"k": ["a", "b"]})
+        self.assertEqual(parse("k: {a: 1,}\n"), {"k": {"a": 1}})
+
+    def test_an_empty_flow_entry_is_refused(self):
+        self.assertIn("empty entry", self._error("k: [a,,b]\n"))
+        self.assertIn("empty entry", self._error("k: [,a]\n"))
+
+    def test_a_flow_mapping_needs_a_space_after_the_colon(self):
+        message = self._error("k: {key:value}\n")
+        self.assertIn("graph.yaml:1", message)
+        self.assertIn("space after", message)
+
+    def test_a_quoted_flow_key_may_hug_the_colon(self):
+        self.assertEqual(parse('k: {"a":1}\n'), {"k": {"a": 1}})
+
+    def test_an_empty_flow_value_is_still_null(self):
+        self.assertEqual(parse("k: {a:}\n"), {"k": {"a": None}})
+
+
+class TestControlCharacters(unittest.TestCase):
+    def test_c0_controls_are_refused(self):
+        for char in ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e"):
+            with self.assertRaises(YamlError) as caught:
+                parse("a: x%sb: y\n" % char, filename="graph.yaml")
+            message = str(caught.exception)
+            self.assertIn("graph.yaml:1", message)
+            self.assertIn("control character", message)
+
+    def test_the_line_number_of_a_late_control_character(self):
+        with self.assertRaises(YamlError) as caught:
+            parse("a: 1\nb: 2\nc: \x0c\n", filename="graph.yaml")
+        self.assertIn("graph.yaml:3", str(caught.exception))

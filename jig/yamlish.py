@@ -10,8 +10,12 @@ folded scalars (`|`, `>`, with `-`/`+` chomping), and the scalar types
 null / bool / int / float / str.
 
 Deliberately unsupported, each with a clear error: anchors and aliases, tags, multiple
-documents, and complex keys. Pack files do not need them, and every unsupported construct
-fails loudly rather than silently.
+documents, complex keys, block scalar lines indented less than the block they are in,
+`key:value` without a space in a flow mapping, empty flow entries, and the C0 controls
+`str.splitlines()` would mistake for line breaks. Pack files do not need them, and every
+unsupported construct fails loudly rather than silently: where this parser cannot match
+real YAML it refuses the input by name rather than guessing a value, because the pack
+format is meant to read the same in a future Go or TypeScript runtime (docs/PLAN.md §7).
 """
 
 import re
@@ -35,6 +39,10 @@ _UNSUPPORTED = {
     "!": "tags (`!`)",
 }
 _BLOCK_HEADER = re.compile(r"^([|>])([-+]?)$")
+# str.splitlines() breaks on these, so a document containing one would be silently
+# re-flowed into extra lines. Real YAML rejects them outright, so jig does too. (NEL
+# and U+2028/U+2029 are left alone: real YAML treats those as line breaks as well.)
+_CONTROLS = "\x0b\x0c\x1c\x1d\x1e"
 
 
 class _Line(object):
@@ -64,9 +72,12 @@ def parse(text, filename="<yaml>"):
 
 
 def _lex(text, filename):
+    _reject_controls(text, filename)
     raw_lines = text.splitlines()
     out = []
     index = 0
+    started = False  # a `---` has opened the one document jig accepts
+    ended = False  # a `...` has closed it
     while index < len(raw_lines):
         raw = raw_lines[index]
         number = index + 1
@@ -75,9 +86,27 @@ def _lex(text, filename):
                 "%s:%d: tabs cannot be used for indentation" % (filename, number)
             )
         stripped = _strip_comment(raw)
-        if not stripped.strip() or stripped.strip() in ("---", "..."):
+        if not stripped.strip():
             index += 1
             continue
+        marker = stripped.strip()
+        if marker in ("---", "..."):
+            # One document is fine to frame; a second one would be silently merged
+            # into the first, so refuse it by name.
+            if marker == "---" and (started or out or ended):
+                raise YamlError(
+                    "%s:%d: jig's YAML subset does not support multiple "
+                    "documents (`---`)" % (filename, number)
+                )
+            started = started or marker == "---"
+            ended = ended or marker == "..."
+            index += 1
+            continue
+        if ended:
+            raise YamlError(
+                "%s:%d: content after `...`; jig's YAML subset does not support "
+                "multiple documents" % (filename, number)
+            )
         indent = len(stripped) - len(stripped.lstrip(" "))
         content = stripped.strip()
 
@@ -93,9 +122,43 @@ def _lex(text, filename):
                 "%s:%d: jig's YAML subset does not support keep chomping (`%s+`)"
                 % (filename, number, style)
             )
-        body, index = _block_body(raw_lines, index + 1, indent)
+        parent = _block_parent_indent(indent, content)
+        body, index = _block_body(raw_lines, index + 1, parent, filename, number)
         out.append(_Line(indent, content, number, block=_fold(body, style, chomp)))
     return out
+
+
+def _reject_controls(text, filename):
+    """Refuse the C0 controls `str.splitlines()` would treat as line breaks."""
+    hits = [found for found in (text.find(char) for char in _CONTROLS) if found >= 0]
+    if not hits:
+        return
+    at = min(hits)
+    # The sentinel keeps a break that ends the prefix from being dropped by
+    # splitlines(), so a control on a fresh line reports that line, not the one before.
+    number = len((text[:at] + ".").splitlines())
+    raise YamlError(
+        "%s:%d: control character %r is not allowed" % (filename, number, text[at])
+    )
+
+
+def _block_parent_indent(indent, content):
+    """The column a line must out-indent to stay inside the block scalar in `content`.
+
+    A block scalar's body belongs to its parent node. For `- |` the parent is the
+    sequence, so the body only has to clear the dash. For `- key: |` the parent is the
+    mapping that starts after the dash, so a sibling key in that mapping ends the body
+    instead of being swallowed and re-sliced into the value.
+    """
+    while _is_item(content):
+        rest = content[2:]
+        offset = 2 + (len(rest) - len(rest.lstrip(" ")))
+        rest = rest.strip()
+        if _split_key(rest) is None and not _is_item(rest):
+            break
+        indent += offset
+        content = rest
+    return indent
 
 
 def _block_header(content):
@@ -112,7 +175,7 @@ def _block_header(content):
     return (match.group(1), match.group(2)) if match else None
 
 
-def _block_body(raw_lines, index, indent):
+def _block_body(raw_lines, index, indent, filename, opened_at):
     """Collect the raw lines belonging to a block scalar opened at `indent`."""
     body = []
     block_indent = None
@@ -124,7 +187,14 @@ def _block_body(raw_lines, index, indent):
                 break
             if block_indent is None:
                 block_indent = current
-            body.append(raw[block_indent:] if len(raw) > block_indent else raw.strip())
+            if current < block_indent:
+                # Slicing at block_indent would delete leading characters and hand
+                # back a plausible-looking wrong value, so refuse instead.
+                raise YamlError(
+                    "%s:%d: line is indented less than the block scalar opened on "
+                    "line %d" % (filename, index + 1, opened_at)
+                )
+            body.append(raw[block_indent:])
         else:
             body.append("")
         index += 1
@@ -135,19 +205,39 @@ def _block_body(raw_lines, index, indent):
 
 def _fold(body, style, chomp):
     """Apply literal/folded joining and `-`/`+` chomping to a block scalar body."""
+    if not body:
+        return ""  # an empty block scalar is the empty string, not a lone break
     if style == "|":
         text = "\n".join(body)
     else:
-        parts = []
-        for line in body:
-            if not line.strip():
-                parts.append("\n")
-            elif parts and parts[-1] not in ("", "\n"):
-                parts.append(" " + line.strip())
-            else:
-                parts.append(line.strip())
-        text = "".join(parts)
+        text = _fold_lines(body)
     return text.rstrip("\n") if chomp == "-" else text + "\n"
+
+
+def _fold_lines(body):
+    """Join a folded (`>`) body: breaks become spaces only between plain lines.
+
+    A run of blank lines becomes that many breaks, and a line more indented than the
+    block is kept verbatim with the breaks around it, because YAML folds only the
+    lines it can safely re-flow.
+    """
+    parts = []
+    previous = None  # the last non-blank line, or None before any content
+    blanks = 0
+    for line in body:
+        if not line.strip():
+            blanks += 1
+            continue
+        if previous is None:
+            parts.append("\n" * blanks)
+        elif previous.startswith(" ") or line.startswith(" "):
+            parts.append("\n" * (blanks + 1))
+        else:
+            parts.append("\n" * blanks if blanks else " ")
+        parts.append(line.rstrip() if line.startswith(" ") else line.strip())
+        previous = line
+        blanks = 0
+    return "".join(parts)
 
 
 def _strip_comment(raw):
@@ -156,7 +246,10 @@ def _strip_comment(raw):
         if quote:
             if char == quote:
                 quote = None
-        elif char in "'\"":
+        elif char in "'\"" and (index == 0 or raw[index - 1] in " \t[{,"):
+            # A quote only opens a string where a token may start. Inside a plain
+            # scalar (`o'brien`, `6" pipe`, `b:'c`) it is just a character, and
+            # treating it as a string would swallow the `#` of any comment after it.
             quote = char
         elif char == "#" and (index == 0 or raw[index - 1] in " \t"):
             return raw[:index]
@@ -227,18 +320,17 @@ def _parse_sequence(lines, index, indent, filename):
                 value, index = None, index + 1
             out.append(value)
             continue
-        if line.block is not None:
-            out.append(line.block)
-            index += 1
-            continue
         rest = line.text[2:]
         offset = 2 + (len(rest) - len(rest.lstrip(" ")))
         rest = rest.strip()
         if _split_key(rest) is not None or _is_item(rest):
             # A collection opened on the dash line: re-read it as its own block,
-            # indented to the column the content actually starts at.
-            lines[index] = _Line(indent + offset, rest, line.lineno)
+            # indented to the column the content actually starts at. Any block scalar
+            # belongs to that inner mapping's key (`- when: |`), so it travels along.
+            lines[index] = _Line(indent + offset, rest, line.lineno, line.block)
             value, index = _parse_block(lines, index, indent + offset, filename)
+        elif line.block is not None:
+            value, index = line.block, index + 1
         else:
             value, index = _value(rest, filename, line), index + 1
         out.append(value)
@@ -290,15 +382,21 @@ def _flow(text, filename, line):
 def _flow_collection(text, closer, filename, line, mapping):
     out = {} if mapping else []
     rest = text[1:].lstrip()
-    if rest.startswith(closer):
-        return out, rest[1:]
     while True:
         if not rest:
             raise _err(filename, line, "unterminated flow collection")
+        if rest.startswith(closer):
+            # The collection is empty, or a comma just ended the last entry: real
+            # YAML allows a trailing comma, and it must not invent an entry.
+            return out, rest[1:]
+        if rest.startswith(","):
+            raise _err(filename, line, "empty entry in flow collection")
         if rest[0] in "[{":
             item, rest = _flow(rest, filename, line)
             key = None
+            quoted = False
         else:
+            quoted = rest[0] in "'\""
             token, rest = _flow_token(rest, closer, filename, line)
             item = None
             key = token
@@ -308,6 +406,12 @@ def _flow_collection(text, closer, filename, line, mapping):
             if not key.endswith(":") and not rest.startswith(":"):
                 raise _err(filename, line, "expected 'key: value' in flow mapping")
             if rest.startswith(":"):
+                if not quoted and rest[1:2] not in ("", " ", ",", closer):
+                    # Real YAML reads `{key:value}` as the single scalar 'key:value',
+                    # so guessing a pair here would diverge from every other reader.
+                    raise _err(filename, line,
+                               "flow mapping needs a space after ':' (real YAML reads "
+                               "'key:value' as one scalar)")
                 rest = rest[1:].lstrip()
             else:
                 key = key[:-1].strip()
