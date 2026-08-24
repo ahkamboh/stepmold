@@ -16,12 +16,15 @@ values observed when it was written — they are exact, because every draw is a 
 What it found, in one paragraph. jig's ladder+verification is worth an enormous amount
 when the model's re-samples are *independent* draws — at N=50, p=0.10 it turns a 0.5%
 analytical survival rate into 96.5%, an effective per-step error of 0.07% against a real
-one of 10%. Three things break it, and all three are real: a model whose re-sample
-reproduces the same mistake (a greedy decoder — jig has no sampling knob to prevent
-this) gets *nothing* from the ladder; a `two_stage` node whose error is in its scratchpad
-gets nothing either, because `verify.run_node` reuses the scratchpad from the rejected
-attempt and never re-runs `think`; and verification with retries turned off scores
-*below* no verification at all. Details in the classes below and in the findings.
+one of 10%. Three things broke that, and two of them have since been fixed here. A model
+whose re-sample reproduces the same mistake — a greedy decoder — got *nothing* from the
+ladder, because nothing in the protocol could ask for a different draw; the ladder now
+sends a per-call sampling hint (`codegen.Sampling`) and a backend that honours it scores
+97.3% where the same model scored 0.7%. A `two_stage` node got nothing either, because
+`verify.run_node` reused the scratchpad from the rejected attempt and never re-ran
+`think`; it now discards it, and that arm goes from 0.0% to 96.0% at N=50 p=0.10. What
+remains is the third: verification with retries turned off scores *below* no
+verification at all, which is a trade rather than a bug. Details in the classes below.
 """
 
 import json
@@ -31,12 +34,13 @@ import tempfile
 import unittest
 from dataclasses import dataclass
 
+from jig.codegen import accepts_sampling
 from jig.errors import RunError
 from jig.graph import run
 from jig.model import FakeModel
 from jig.pack import Node
 from jig.state import Store
-from jig.verify import Rejected, extract_json, run_node, verify
+from jig.verify import Rejected, extract_json, run_node, sampling_for, verify
 
 from tests.production import longpack as L
 
@@ -117,15 +121,38 @@ def pack_for(n, arm):
     return _PACKS[key]
 
 
-def trial(n, arm, seed, p, stubborn=False):
+class StubbornUnlessAsked(L.FlakyModel):
+    """A greedy backend that honours the ladder's per-call sampling hint.
+
+    `FlakyModel(stubborn=True)` is a server at temperature 0: ask it the same question
+    twice and it makes the same mistake twice, which is what made jig's first rung dead
+    weight. This one is that same server, with the one difference the fix introduces —
+    a request carrying a `Sampling` is a *different* request, so its draw moves with the
+    rung. It declares the optional `sampling` keyword, which is how `codegen._generate`
+    knows the hint is worth sending at all.
+
+    It lives here rather than in `longpack` because it is the fix's measurement
+    instrument, not a way small models fail.
+    """
+
+    def generate(self, prompt, grammar=None, max_tokens=512, sampling=None):
+        # Stubborn exactly while nothing has asked it to vary.
+        self.stubborn = sampling is None
+        return L.FlakyModel.generate(
+            self, prompt, grammar=grammar, max_tokens=max_tokens
+        )
+
+
+def trial(n, arm, seed, p, stubborn=False, model_type=L.FlakyModel):
     """One run. Returns (outcome, model, result-or-error).
 
     `v0` is derived from the seed, so two arms sharing a seed share an input as well as
     a fault schedule — that is what makes the arm comparison paired rather than merely
-    averaged.
+    averaged. `model_type` swaps the backend for one that answers the sampling hint,
+    which is the only thing separating the two independent-draw columns below.
     """
     pack = pack_for(n, arm)
-    model = L.FlakyModel(seed=seed, p=p, stubborn=stubborn)
+    model = model_type(seed=seed, p=p, stubborn=stubborn)
     v0 = seed % L.STEP_MOD
     try:
         result = run(pack, model, inputs={"v0": v0})
@@ -138,14 +165,15 @@ def trial(n, arm, seed, p, stubborn=False):
     return "silent_wrong", model, result
 
 
-def cell(n, p, arm, trials=TRIALS, stubborn=False):
+def cell(n, p, arm, trials=TRIALS, stubborn=False, model_type=L.FlakyModel):
     """Measure one (n, p, arm) cell, memoised — several tests read the same numbers."""
-    key = (n, p, arm.name, trials, stubborn)
+    key = (n, p, arm.name, trials, stubborn, model_type.__name__)
     if key in _CELLS:
         return _CELLS[key]
     out = Cell(n=n, p=p, arm=arm.name, trials=trials)
     for seed in range(trials):
-        outcome, model, _ = trial(n, arm, seed, p, stubborn=stubborn)
+        outcome, model, _ = trial(n, arm, seed, p, stubborn=stubborn,
+                                  model_type=model_type)
         setattr(out, outcome if outcome != "success" else "successes",
                 getattr(out, outcome if outcome != "success" else "successes") + 1)
         out.calls += model.call_count
@@ -368,85 +396,130 @@ class WhereJigStopsRescuingTheRun(unittest.TestCase):
         self.assertGreater(five.call_overhead, two.call_overhead)
 
 
-# ------------------------------------------------------------------- the three gaps
+# ----------------------------------------------------------- the gaps, and their fixes
 
 
 class TheLadderNeedsAnIndependentResample(unittest.TestCase):
-    """FINDING: against a model that repeats itself, jig's ladder does nothing at all.
+    """FIXED: the ladder asks for a different draw, and a backend that can, gives one.
 
-    `jig/verify.py`'s own docstring admits the plan's first rung ("re-sample (temp bump)")
-    is unimplemented, because the `Model` protocol carries no sampling parameter and
-    `OpenAICompatModel` pins temperature at 0.0. So every re-sample is the same request
-    plus a line of feedback. A greedy server answering the same question the same way is
-    the *expected* case, not an exotic one — and `FlakyModel(stubborn=True)` is exactly
-    that model.
-
-    Measured (TRIALS=150), jig arm, independent draws vs stubborn:
+    The defect this class was written for: every re-sample was the same request plus a
+    line of feedback, because the `Model` protocol carried no sampling parameter and
+    `OpenAICompatModel` pins temperature at 0.0. A greedy server answering the same
+    question the same way is the *expected* case, not an exotic one — and
+    `FlakyModel(stubborn=True)` is exactly that model. Measured then (TRIALS=150), jig
+    arm, independent draws vs stubborn:
 
         N=20 p=0.10   99.3%  ->  12.7%
         N=50 p=0.02  100.0%  ->  40.0%
         N=50 p=0.10   97.3%  ->   0.7%
         N=50 p=0.30   42.0%  ->   0.0%
 
-    The stubborn column is the naive baseline's curve. Every point jig scores over the
-    analytical prediction is bought by the assumption that a re-sample is a fresh draw,
-    and nothing in jig makes it one.
+    The stubborn column is the naive baseline's curve: every point jig scored over the
+    analytical prediction was bought by an assumption nothing in jig made true.
+
+    The fix is a per-call hint (`codegen.Sampling`) that `verify.sampling_for` climbs
+    across the rungs, sent only to a model whose `generate` declares it. Same seeds,
+    same faults, same stubborn server — now told that rung 2 wants a different draw
+    (`StubbornUnlessAsked`):
+
+        N     p     stubborn   + honours the hint   independent draws
+        20    0.02    60.7%          100.0%              100.0%
+        20    0.10    12.7%           99.3%               99.3%
+        50    0.02    40.0%          100.0%              100.0%
+        50    0.10     0.7%           97.3%               97.3%
+        50    0.30     0.0%           42.0%               42.0%
+
+    A backend that honours the hint scores *identically* to a model that re-draws on its
+    own, which is the whole claim: the ladder's arithmetic was always right, and what
+    was missing was a way to ask. A backend that ignores the hint still gets nothing —
+    that residual is now the backend's property rather than a hole in jig, and it is the
+    one number in this file an operator can fix by changing a server flag.
     """
 
-    def test_a_stubborn_model_gets_nothing_from_the_ladder(self):
+    def test_a_backend_that_ignores_the_hint_still_gets_nothing(self):
+        """`FlakyModel` does not declare `sampling`, so it is called exactly as before."""
         free = cell(50, 0.10, L.JIG, trials=150)
         stuck = cell(50, 0.10, L.JIG, trials=150, stubborn=True)
         self.assertGreater(free.rate, 0.90)
         self.assertLess(stuck.rate, 0.05)
 
-    def test_a_stubborn_run_that_succeeds_never_spent_a_retry(self):
-        """Proof the ladder contributed zero, not merely little.
+    def test_honouring_the_hint_restores_the_whole_of_the_ladder(self):
+        hinted = cell(50, 0.10, L.JIG, trials=150, stubborn=True,
+                      model_type=StubbornUnlessAsked)
+        free = cell(50, 0.10, L.JIG, trials=150)
+        self.assertGreater(hinted.rate, 0.95)             # 97.3%, from 0.7%
+        self.assertEqual(hinted.successes, free.successes)
 
-        Every successful stubborn run used exactly N generations: the runs that survive
-        are the runs where nothing went wrong, never the runs the ladder rescued.
+    def test_the_rescue_is_the_ladder_and_not_a_luckier_model(self):
+        """Proof the rungs did the work: successful runs cost more than N generations.
+
+        The un-hinted stubborn arm's successes cost exactly N — they are the runs where
+        nothing went wrong, never the runs the ladder rescued.
         """
         stuck = cell(50, 0.02, L.JIG, trials=150, stubborn=True)
-        self.assertGreater(stuck.successes, 0)
+        hinted = cell(50, 0.02, L.JIG, trials=150, stubborn=True,
+                      model_type=StubbornUnlessAsked)
         self.assertEqual(stuck.calls_on_success, stuck.successes * 50)
+        self.assertGreater(hinted.calls_on_success, hinted.successes * 50)
 
-    def test_a_stubborn_run_matches_the_analytical_curve_jig_claims_to_beat(self):
-        stuck = cell(50, 0.02, L.JIG, trials=150, stubborn=True)
-        # Only the two harmless fault kinds survive, so the curve is (1 - 0.9p)^N.
-        self.assertLess(abs(stuck.rate - (1.0 - 0.9 * 0.02) ** 50), 0.08)
+    def test_the_first_attempt_is_never_perturbed(self):
+        """Rung 0 asks for nothing, so a run that never stumbles is byte-identical."""
+        self.assertIsNone(sampling_for(0))
+        clean = cell(50, 0.0, L.JIG, trials=20, model_type=StubbornUnlessAsked)
+        self.assertEqual(clean.successes, 20)
+        self.assertEqual(clean.calls, 20 * 50)
+
+    def test_the_hint_climbs_with_the_rung(self):
+        first, second = sampling_for(1), sampling_for(2)
+        self.assertGreater(second.temperature, first.temperature)
+        self.assertNotEqual(second.seed, first.seed)
+        # A deeper ladder stays at the top of the measured range rather than inventing
+        # temperatures nobody has run.
+        self.assertLessEqual(sampling_for(9).temperature, 1.0)
+
+    def test_a_model_that_does_not_ask_for_the_hint_is_called_as_it_always_was(self):
+        """The compatibility claim, checked rather than asserted in a docstring."""
+        self.assertFalse(accepts_sampling(FakeModel(["{}"])))
+        self.assertTrue(accepts_sampling(StubbornUnlessAsked(seed=0, p=0.0)))
+        model = FakeModel(['{"v1": 0}', '{"v1": 0}'])
+        node = Node(name="n1", type="generate", prompt="p", grammar=L.node_schema(1),
+                    assert_expr="v1 == 1", retries=1)
+        with self.assertRaises(RunError):
+            run_node(node, {}, model)
+        self.assertEqual([call.max_tokens for call in model.calls], [512, 512])
 
 
-class TwoStageRetriesCannotEscapeTheScratchpad(unittest.TestCase):
-    """FINDING: a `two_stage` node's retry is conditioned on the rejected attempt's notes.
+class TwoStageRetriesReThinkInsteadOfReEmitting(unittest.TestCase):
+    """FIXED: a rejected `two_stage` answer takes its reasoning down with it.
 
-    `verify.run_node` keeps `scratchpad = candidate.scratchpad` across rungs and
-    `codegen.generate_once` only calls `think` when the scratchpad is None. So the think
-    stage runs exactly once per node, and every re-sample re-reads the same reasoning —
-    including the reasoning that produced the answer just rejected.
+    The defect: `verify.run_node` kept `scratchpad = candidate.scratchpad` across rungs
+    and `codegen.generate_once` only calls `think` when the scratchpad is None, so the
+    think stage ran exactly once per node and every re-sample re-read the same
+    reasoning — including the reasoning that produced the answer just rejected. For a
+    model whose emit follows its own notes, which is what conditioning on a scratchpad
+    means and the exact case PLAN.md Bug 2 introduced the think stage to serve, the
+    ladder had no rung that could reach the error.
 
     `README.md` and `codegen.py` both describe the scratchpad as thrown away and never
-    committed, and that is true of *state*. It is not true of the retry prompt.
-    `tests/test_invariants.py` checks that the rejected emit is never quoted back; the
-    notes behind it are not covered, and they are model-generated text from the same
-    failed attempt.
+    committed, and that is true of *state*. It was not true of the retry prompt.
 
-    Consequence, measured (TRIALS=150) on a model whose emit follows its own notes —
-    which is what conditioning on a scratchpad means, and the exact case PLAN.md Bug 2
-    introduced the think stage to serve:
+    Measured (TRIALS=150), the two_stage arm before and after `run_node` learned to drop
+    the scratchpad on a rejection:
 
-        N     p      jig     two_stage   (1-p)^N   two_stage with the one-line fix
-        20    0.02  100.0%     64.7%      66.8%           100.0%
-        20    0.10   99.3%     14.0%      12.2%            (not measured)
-        50    0.02  100.0%     34.0%      36.4%           100.0%
-        50    0.10   97.3%      0.0%       0.5%            96.0%
+        N     p     two_stage (before)   (1-p)^N   two_stage (after)    jig
+        20    0.02        64.7%           66.8%         100.0%        100.0%
+        20    0.10        14.0%           12.2%          96.7%         99.3%
+        50    0.02        34.0%           36.4%         100.0%        100.0%
+        50    0.10         0.0%            0.5%          96.0%         97.3%
+        50    0.30         0.0%            0.0%          24.0%         42.0%
 
-    The two_stage column *is* the analytical curve. For this class of error a two-stage
-    node is a naive loop with double the token bill. The last column is what the same
-    cells score with `verify.run_node` changed to drop the scratchpad between rungs
-    (`scratchpad = None` instead of `scratchpad = candidate.scratchpad`) so that `think`
-    re-runs: 0.0% -> 96.0% at N=50 p=0.10, for one line.
+    The before column *is* the analytical curve: for this class of error a two-stage
+    node was a naive loop with double the token bill. The after column is a two-stage
+    node behaving like a single-stage one, at the two calls per rung it costs.
 
-    The four tests below fail if that fix lands, and say so — they document a defect, so
-    fixing it is supposed to make them go red.
+    It stays a little behind the single-stage `jig` arm, and that is not noise: a
+    re-thought rung re-rolls two draws instead of one, so it has two chances to go wrong
+    per attempt. That is the honest price of a think stage, not a defect in the ladder.
     """
 
     SCHEMA = {
@@ -464,49 +537,65 @@ class TwoStageRetriesCannotEscapeTheScratchpad(unittest.TestCase):
             assert_expr="v == 1",
         )
 
-    def test_the_think_stage_runs_once_no_matter_how_many_rungs_are_spent(self):
-        model = FakeModel([self.NOTES, '{"v": 99}', '{"v": 99}', '{"v": 1}'])
+    def test_a_rejected_rung_re_thinks_before_it_re_emits(self):
+        model = FakeModel([self.NOTES, '{"v": 99}', "second thoughts", '{"v": 1}'])
 
         run_node(self._node(), {}, model)
 
         unconstrained = [call for call in model.calls if call.grammar is None]
         self.assertEqual(
-            len(unconstrained), 1,
-            "the ladder re-sampled the emit stage but never re-thought, so a node whose "
-            "error is in its reasoning has no rung that can reach the error",
+            len(unconstrained), 2,
+            "a node whose error is in its reasoning needs a rung that reaches the "
+            "reasoning",
         )
 
-    def test_the_rejected_attempt_s_notes_are_replayed_into_every_retry(self):
-        """Documents the actual behaviour. It SHOULD re-think, or drop the scratchpad."""
-        model = FakeModel([self.NOTES, '{"v": 99}', '{"v": 99}', '{"v": 1}'])
+    def test_the_rejected_attempt_s_notes_reach_no_later_prompt(self):
+        """The anti-self-conditioning invariant, extended to the notes behind an answer."""
+        model = FakeModel([self.NOTES, '{"v": 99}', "second thoughts", '{"v": 1}'])
 
         run_node(self._node(), {}, model)
 
-        retries = [call for call in model.calls[2:] if call.grammar is not None]
-        self.assertTrue(retries)
-        for call in retries:
-            self.assertIn(
+        for call in model.calls[2:]:
+            self.assertNotIn(
                 self.NOTES, call.prompt,
-                "PLAN.md §3 wants a rejected attempt out of the model's context; the "
-                "scratchpad that produced it is still there on every rung",
+                "PLAN.md §3 wants a rejected attempt out of the model's context, and "
+                "the scratchpad that produced it is part of that attempt",
             )
+        # The notes that were *not* rejected are still there to condition the emit.
+        self.assertIn("second thoughts", model.calls[3].prompt)
 
-    def test_end_to_end_a_two_stage_pack_collapses_onto_the_analytical_curve(self):
+    def test_end_to_end_a_two_stage_pack_now_beats_the_analytical_curve(self):
         measured = cell(50, 0.02, L.JIG_TWO_STAGE, trials=150)
-        self.assertLess(abs(measured.rate - measured.analytic), 0.05)
-        self.assertLess(measured.rate, cell(50, 0.02, L.JIG, trials=150).rate - 0.50)
+        self.assertEqual(measured.successes, 150)
+        self.assertGreater(measured.rate - measured.analytic, 0.60)
 
-    def test_and_the_ladder_is_provably_inert_there(self):
-        """Successful two-stage runs cost exactly 2N calls: think + emit, no retries."""
-        measured = cell(50, 0.02, L.JIG_TWO_STAGE, trials=150)
-        self.assertGreater(measured.successes, 0)
-        self.assertEqual(measured.calls_on_success, measured.successes * 100)
+    def test_the_ladder_is_what_is_doing_it(self):
+        """Successful runs cost more than the 2N calls a retry-free run would."""
+        measured = cell(50, 0.10, L.JIG_TWO_STAGE, trials=150)
+        self.assertGreater(measured.rate, 0.90)           # 96.0%, from 0.0%
+        self.assertGreater(measured.calls_on_success, measured.successes * 100)
 
-    def test_it_is_not_the_stubbornness_flag_doing_this(self):
-        """The scratchpad defeat is independent of whether re-samples are fresh draws."""
+    def test_a_re_thought_rung_costs_two_calls_not_one(self):
+        """The price of the fix, stated: ~2.2 generations per node per successful run."""
+        measured = cell(50, 0.10, L.JIG_TWO_STAGE, trials=150)
+        self.assertGreater(measured.call_overhead, 2.0)
+        self.assertLess(measured.call_overhead, 2.5)
+
+    def test_a_stubborn_model_is_a_separate_problem_with_a_separate_fix(self):
+        """Re-thinking cannot help a model that repeats itself; the hint can.
+
+        The two defects were independent, and so are their fixes: dropping the
+        scratchpad re-rolls a draw, and a stubborn backend's re-roll is the same draw
+        until something asks it to vary.
+        """
         free = cell(50, 0.02, L.JIG_TWO_STAGE, trials=150)
         stuck = cell(50, 0.02, L.JIG_TWO_STAGE, trials=150, stubborn=True)
-        self.assertEqual(free.successes, stuck.successes)
+        hinted = cell(50, 0.02, L.JIG_TWO_STAGE, trials=150, stubborn=True,
+                      model_type=StubbornUnlessAsked)
+        self.assertEqual(free.successes, 150)
+        self.assertLess(stuck.rate, 0.40)                 # 34.0% — the analytical curve
+        self.assertEqual(hinted.successes, free.successes)
+
 
 
 class VerificationWithoutALadderScoresBelowNoVerification(unittest.TestCase):
@@ -674,49 +763,91 @@ class OnFailRoutingSurvivesFiftyNodes(unittest.TestCase):
         self.fail("no run gave up — the test is vacuous")
 
 
-# ----------------------------------------------------- what a long run cannot tell you
+# ------------------------------------------------------ what a long run can now tell you
 
 
-class RetriesLeaveNoTraceInAFinishedRun(unittest.TestCase):
-    """FINDING: a rescued run is indistinguishable from a clean one, after the fact.
+class ARescuedRunSaysHowCloseItCame(unittest.TestCase):
+    """FIXED: retries used to leave no trace, so a rescued run looked like a clean one.
 
-    README.md sells auditability: *"we can't prove what our AI did"* is problem 4 and
-    *"a versioned pack, a grammar per step, and an evalset that passes can be"* audited.
-    But `RunResult` records a node's failure only when the ladder is *spent*. A 50-node
-    run in which 40 nodes were rejected once and recovered reports `failures == []`,
+    README.md sells auditability: *"we can't prove what our AI did"* is problem 4. But
+    `RunResult` records a node's failure only when the ladder is *spent*, so a 50-node
+    run in which 40 nodes were rejected once and recovered reported `failures == []`,
     `steps == 51`, and a provenance map identical to a run where nothing went wrong. The
-    rejection detail is written to the checkpoint only on the `on_fail` path.
+    two things an operator most wants from a long run — how close it came to failing,
+    and what it cost — were in neither the result nor the checkpoint.
 
-    So the two things an operator most wants from a long run — how close it came to
-    failing, and what it cost — are not in the result, the state, or the checkpoint.
+    `RunResult.attempts` now carries the generations each `generate` node spent. A run
+    where every value is 1 is a run that never stumbled; a node sitting at `retries + 1`
+    is a node that was one rung from taking its `on_fail` edge, which is the signal that
+    a pack's reliability is degrading *before* the run that fails.
+
+    Measured at N=50 p=0.30 over the 33 of 80 seeds that finished after spending at
+    least five re-samples: the median rescued run has 14 of its 50 nodes above one
+    attempt, 3 of them at the ladder's ceiling, and 67 generations against an ideal of
+    50. None of that appears in `failures`, because nothing failed.
     """
 
-    def test_a_run_that_needed_retries_reports_no_failures(self):
-        found = False
+    def _rescued(self):
         for seed in range(80):
             outcome, model, result = trial(50, L.JIG, seed, 0.30)
-            if outcome != "success" or model.wasted_calls() < 5:
-                continue
-            found = True
-            self.assertEqual(
-                result.failures, [],
-                "if this now records recovered rejections, the finding is fixed — "
-                "update the docstring",
-            )
-            self.assertEqual(result.steps, 51)
-            self.assertEqual(len(result.provenance), 50)
-            break
-        self.assertTrue(found, "no run needed retries — the test is vacuous")
+            if outcome == "success" and model.wasted_calls() >= 5:
+                return model, result
+        self.fail("no run needed retries — the test would be vacuous")
 
-    def test_and_the_checkpoint_does_not_hold_them_either(self):
+    def test_a_run_that_needed_retries_says_which_nodes_needed_them(self):
+        model, result = self._rescued()
+
+        retried = {name: spent for name, spent in result.attempts.items() if spent > 1}
+
+        self.assertEqual(result.failures, [], "nothing here was diverted")
+        self.assertTrue(retried, "the run was rescued and the result does not show it")
+        self.assertEqual(len(result.attempts), 50, "every generate node is counted")
+
+    def test_the_counts_are_the_generations_that_were_actually_spent(self):
+        """Checked against the model's own call log, not against the walker's arithmetic."""
+        model, result = self._rescued()
+        self.assertEqual(sum(result.attempts.values()), model.call_count)
+
+    def test_a_clean_run_is_visibly_clean(self):
+        _, _, result = trial(50, L.JIG, 5, 0.0)
+        self.assertEqual(sorted(set(result.attempts.values())), [1])
+
+    def test_no_node_reports_more_attempts_than_its_ladder_allows(self):
+        for seed in range(20):
+            outcome, _, result = trial(50, L.JIG, seed, 0.30)
+            if outcome == "raised":     # a RunError, not a RunResult
+                continue
+            self.assertLessEqual(max(result.attempts.values()), 3)
+
+    def test_a_store_that_records_them_is_offered_them(self):
+        """The walker hands the counts to any store whose `save` accepts them.
+
+        `jig.state.Store` predates the field and does not, so it is offered nothing and
+        keeps working — the column is the store's to add, and this is the assertion that
+        will notice when it does.
+        """
+        seen = []
+
+        class RecordingStore:
+            def save(self, run_id, step, node, next_node, state, path=None,
+                     provenance=None, failures=None, output=None, pack=None,
+                     pack_version=None, attempts=None):
+                seen.append(attempts)
+
+        run(pack_for(20, L.JIG), L.FlakyModel(seed=7, p=0.30), inputs={"v0": 7},
+            run_id="recorded", store=RecordingStore())
+
+        self.assertTrue(seen)
+        self.assertGreater(max(sum(record.values()) for record in seen), 20)
+
+    def test_a_store_that_predates_the_field_still_checkpoints(self):
         store = Store(os.path.join(_ROOT, "audit.sqlite"))
         try:
-            pack = pack_for(20, L.JIG)
             model = L.FlakyModel(seed=7, p=0.30)
-            run(pack, model, inputs={"v0": 7}, run_id="audited", store=store)
+            run(pack_for(20, L.JIG), model, inputs={"v0": 7}, run_id="audited",
+                store=store)
             self.assertGreater(model.wasted_calls(), 0)
-            for checkpoint in store.history("audited"):
-                self.assertEqual(checkpoint.failures, [])
+            self.assertEqual(len(store.history("audited")), 21)
         finally:
             store.close()
 
@@ -752,42 +883,57 @@ class CheckpointStorageGrowsWithTheSquareOfTheHorizon(unittest.TestCase):
         self.assertLess(large, small * 150)
 
 
-class ExtractJsonTakesTheFirstObjectItFinds(unittest.TestCase):
-    """FINDING: an echoed format example is committed in preference to the answer.
+class ExtractJsonPrefersTheObjectTheModelAuthored(unittest.TestCase):
+    """FIXED: an echoed format example used to be committed in preference to the answer.
 
     `verify.extract_json` is deliberately forgiving about *finding* an object in prose,
-    and `_first_object` returns the first balanced `{...}` span. A small model that
-    restates the requested shape before answering — one of the most common small-model
-    habits there is — gets its restatement committed instead of its answer.
+    and it used to take the first balanced `{...}` span. A small model that restates the
+    requested shape before answering — one of the most common small-model habits there
+    is — got its restatement committed instead of its answer. In a pack with a semantic
+    `assert:` the ladder caught it and the only cost was generations; in a pack without
+    one the wrong object was committed having passed "verification", which is the one
+    thing verify-before-commit exists to prevent.
 
-    In a pack with a semantic `assert:` the ladder catches it and the only cost is
-    generations. In a pack without one the wrong object is committed having passed
-    "verification", which is the one thing verify-before-commit is supposed to prevent.
+    The scan now walks the balanced spans from the end. What a model says last is its
+    answer; what comes before it is preamble, quoted input, or a format example, and
+    none of those are things the node asked it to produce.
+
+    Selection is deliberately blind to the node's schema. "Prefer the object that
+    validates" reads better until the model's own answer is the imperfect one: the echo
+    then outranks it, and a rejection the ladder could have repaired becomes a silent
+    commit of quoted input — the same defect wearing a schema.
     """
 
-    def test_the_echoed_example_wins_over_the_real_answer(self):
+    def test_the_real_answer_wins_over_the_echoed_example(self):
         text = 'The format is {"v7": 0}. My answer: {"v7": 913}'
-        self.assertEqual(
-            extract_json(text), {"v7": 0},
-            "if this now returns 913, extract_json learned to prefer the last object — "
-            "update the finding",
-        )
+        self.assertEqual(extract_json(text), {"v7": 913})
 
-    def test_and_it_passes_a_schema_so_a_pack_without_an_assert_commits_it(self):
+    def test_a_pack_without_an_assert_commits_the_answer_and_not_the_echo(self):
         node = Node(name="n7", type="generate", prompt="x",
                     grammar=L.node_schema(7, strict=True))
         self.assertEqual(verify(node, 'Format: {"v7": 0}\nAnswer: {"v7": 913}', {}),
-                         {"v7": 0})
+                         {"v7": 913})
 
-    def test_an_unparseable_leading_brace_span_discards_a_valid_object_behind_it(self):
-        """Related, and cheaper: recovery gives up at the first span, not the first hit.
+    def test_a_fence_after_prose_is_reached_now_that_the_scan_runs_backwards(self):
+        """`_unfence` only fires on a leading fence; prose-then-fence is the common shape."""
+        text = 'user said {"v7": 0}\n```json\n{"v7": 913}\n```'
+        self.assertEqual(extract_json(text), {"v7": 913})
 
-        `_first_object` returns one candidate. When the first balanced span is prose in
-        braces, the valid JSON after it is never tried, and a recoverable generation
-        costs a rung.
-        """
+    def test_an_unparseable_trailing_span_falls_back_instead_of_failing(self):
+        """Preferring the last object must not mean giving up at the last object."""
+        text = 'Answer: {"v7": 913}. Schema for reference: {v7: integer}'
+        self.assertEqual(extract_json(text), {"v7": 913})
+
+    def test_an_unparseable_leading_span_no_longer_costs_a_rung(self):
+        """The old scan returned one candidate; a recoverable generation cost a retry."""
+        self.assertEqual(
+            extract_json('Using the schema {v7: integer} I get {"v7": 913}'),
+            {"v7": 913},
+        )
+
+    def test_text_with_no_object_in_it_is_still_rejected(self):
         with self.assertRaises(Rejected):
-            extract_json('Using the schema {v7: integer} I get {"v7": 913}')
+            extract_json("I could not work out step 7, sorry.")
 
 
 # ------------------------------------------------------------------------- the report
@@ -823,11 +969,14 @@ def report():
             two = cell(n, p, L.JIG)
             five = cell(n, p, L.JIG_LADDER_5, trials=150)
             stuck = cell(n, p, L.JIG, trials=150, stubborn=True)
+            hinted = cell(n, p, L.JIG, trials=150, stubborn=True,
+                          model_type=StubbornUnlessAsked)
             stage = cell(n, p, L.JIG_TWO_STAGE, trials=150)
             print("N=%2d p=%.2f  retries=2 %5.1f%%   retries=5 %5.1f%%   "
-                  "stubborn %5.1f%%   two_stage %5.1f%%   calls/success %.2fx"
+                  "stubborn %5.1f%%   stubborn+hint %5.1f%%   two_stage %5.1f%%   "
+                  "calls/success %.2fx"
                   % (n, p, 100 * two.rate, 100 * five.rate, 100 * stuck.rate,
-                     100 * stage.rate, two.call_overhead))
+                     100 * hinted.rate, 100 * stage.rate, two.call_overhead))
     finally:
         tearDownModule()
 

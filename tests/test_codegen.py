@@ -2,7 +2,8 @@
 
 import unittest
 
-from jig.codegen import SCRATCHPAD, generate_once
+from jig.codegen import SCRATCHPAD, Sampling, accepts_sampling, generate_once
+from jig.errors import BackendError
 from jig.graph import run
 from jig.model import FakeModel
 from jig.pack import Edge, Node, Pack
@@ -162,3 +163,72 @@ class TestScratchpadNeverReachesState(unittest.TestCase):
         model = FakeModel(['{"category": "billing"}'])
         run(pack_of(node()), model, {"ticket": "t"})
         self.assertEqual(model.call_count, 1)
+
+
+class TestTheSamplingHint(unittest.TestCase):
+    """The optional per-call knob the retry ladder spends (`verify.run_node`)."""
+
+    class Hintable:
+        def __init__(self, responses):
+            self.responses = list(responses)
+            self.seen = []
+
+        def generate(self, prompt, grammar=None, max_tokens=512, sampling=None):
+            self.seen.append(sampling)
+            return self.responses.pop(0)
+
+    class Flexible:
+        """A model that takes anything — a wrapper or a mock, and still a `Model`."""
+
+        def __init__(self):
+            self.seen = []
+
+        def generate(self, prompt, **kwargs):
+            self.seen.append(kwargs.get("sampling"))
+            return '{"category": "billing"}'
+
+    def test_a_model_that_declares_it_is_sent_it(self):
+        model = self.Hintable(['{"category": "billing"}'])
+        hint = Sampling(temperature=0.7, seed=1)
+        generate_once(node(), {"ticket": "t"}, model, sampling=hint)
+        self.assertEqual(model.seen, [hint])
+
+    def test_both_stages_of_a_two_stage_node_get_it(self):
+        model = self.Hintable(["notes", '{"category": "billing"}'])
+        hint = Sampling(temperature=0.7, seed=1)
+        generate_once(node(two_stage=True), {"ticket": "t"}, model, sampling=hint)
+        self.assertEqual(model.seen, [hint, hint])
+
+    def test_a_model_that_does_not_declare_it_never_sees_it(self):
+        """FakeModel is written against the three-argument protocol and must stay valid."""
+        model = FakeModel(['{"category": "billing"}'])
+        self.assertFalse(accepts_sampling(model))
+        generate_once(node(), {"ticket": "t"}, model,
+                      sampling=Sampling(temperature=1.0))
+        self.assertEqual(model.call_count, 1)
+
+    def test_a_model_that_takes_arbitrary_keywords_counts_as_declaring_it(self):
+        model = self.Flexible()
+        self.assertTrue(accepts_sampling(model))
+        generate_once(node(), {"ticket": "t"}, model, sampling=Sampling(temperature=0.5))
+        self.assertEqual(model.seen, [Sampling(temperature=0.5)])
+
+    def test_no_hint_means_the_call_is_exactly_what_it_always_was(self):
+        model = self.Hintable(['{"category": "billing"}'])
+        generate_once(node(), {"ticket": "t"}, model)
+        self.assertEqual(model.seen, [None])
+
+
+class TestNotesSurviveABackendFailure(unittest.TestCase):
+    """A think stage that already ran is not paid for twice by a backend hiccup."""
+
+    class ThinkThenFail:
+        def generate(self, prompt, grammar=None, max_tokens=512):
+            if grammar is None:
+                return "MY-NOTES"
+            raise BackendError("no content in that choice")
+
+    def test_the_scratchpad_rides_out_on_the_exception(self):
+        with self.assertRaises(BackendError) as caught:
+            generate_once(node(two_stage=True), {"ticket": "t"}, self.ThinkThenFail())
+        self.assertEqual(caught.exception.scratchpad, "MY-NOTES")

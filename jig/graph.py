@@ -20,8 +20,10 @@ escapes as an exception when the node declares none. A node's failure edge is a 
 in the pack; the walker keeps it whatever the node failed on.
 """
 
+import inspect
 import uuid
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 from .errors import (
@@ -77,7 +79,16 @@ class Failure:
 
 @dataclass
 class RunResult:
-    """What a finished run leaves behind."""
+    """What a finished run leaves behind.
+
+    `attempts` counts the generations each `generate` node spent, so a run that was
+    rescued is distinguishable from one that never needed rescuing. `failures` records
+    only the nodes that ran out of ladder; a node that was rejected twice and got there
+    on the third rung leaves no failure and used to leave no trace at all — which is
+    exactly the run an operator wants to see *before* the next one fails. A node absent
+    from the map spent one generation or none; a node at `retries + 1` was one rung from
+    diverting.
+    """
 
     run_id: str
     output: Dict[str, Any]
@@ -87,6 +98,7 @@ class RunResult:
     provenance: Dict[str, str] = field(default_factory=dict)
     end_node: Optional[str] = None
     failures: List["Failure"] = field(default_factory=list)
+    attempts: Dict[str, int] = field(default_factory=dict)
 
 
 def run(pack, model, inputs=None, run_id=None, max_steps=None, store=None,
@@ -117,6 +129,9 @@ def run(pack, model, inputs=None, run_id=None, max_steps=None, store=None,
         provenance = dict(resume_from.provenance)
         path = list(resume_from.path)
         failures = [Failure(**record) for record in resume_from.failures]
+        # A store older than per-node attempt counts has no column for them; the run
+        # resumes with what it can and keeps counting from there.
+        attempts = dict(getattr(resume_from, "attempts", None) or {})
         steps = resume_from.step
         node = _node(pack, resume_from.next_node, "resume point of run %r" % run_id)
     else:
@@ -124,6 +139,7 @@ def run(pack, model, inputs=None, run_id=None, max_steps=None, store=None,
         provenance = {}
         path = []
         failures = []
+        attempts = {}
         steps = 0
         node = _node(pack, pack.entry, "entry node")
     run_id = run_id or uuid.uuid4().hex
@@ -140,7 +156,7 @@ def run(pack, model, inputs=None, run_id=None, max_steps=None, store=None,
         if node.type == "end":
             output = _project(node, state)
             _checkpoint(store, pack, run_id, steps, node.name, None, state, path,
-                        provenance, failures, output)
+                        provenance, failures, attempts, output)
             return RunResult(
                 run_id=run_id,
                 output=output,
@@ -150,25 +166,28 @@ def run(pack, model, inputs=None, run_id=None, max_steps=None, store=None,
                 provenance=provenance,
                 end_node=node.name,
                 failures=failures,
+                attempts=attempts,
             )
 
         if node.type == "generate":
             try:
-                value = run_node(node, state, model)
+                value = run_node(node, state, model, attempts=attempts)
             except (NodeFailed, MissingVariable) as exc:
                 # The two ways a generate node can fail to produce a verified output, and
                 # `on_fail` is the declared answer to both: a spent retry ladder, and a
                 # prompt that never rendered because it names state nobody wrote. The
                 # second one costs no generation — no re-sample can fix a template — so
-                # the ladder is skipped, not silently bypassed. Anything else (a backend
-                # that is down, say) is not the node's declared failure mode and still
-                # stops the run. Either way the rejected output is dropped and never
-                # touches state.
+                # the ladder is skipped, not silently bypassed. A backend that is *down*
+                # is not the node's declared failure mode and still stops the run, but a
+                # 200 that carried no text is a bad sample rather than a dead endpoint:
+                # `verify.run_node` spends a rung on it, so it arrives here as a
+                # NodeFailed and takes this edge like any other. Either way the rejected
+                # output is dropped and never touches state.
                 if not node.on_fail:
                     raise
                 failures.append(_failure(node, exc))
                 _checkpoint(store, pack, run_id, steps, node.name, node.on_fail, state,
-                            path, provenance, failures)
+                            path, provenance, failures, attempts)
                 node = _node(pack, node.on_fail, "on_fail of %r" % node.name)
                 continue
             commit(node, value, state, provenance)
@@ -182,10 +201,10 @@ def run(pack, model, inputs=None, run_id=None, max_steps=None, store=None,
                 # (`state.Checkpoint.finished`) — this one did not, and an operator who
                 # repairs the graph resumes by running this node again.
                 _checkpoint(store, pack, run_id, steps, node.name, node.name, state,
-                            path, provenance, failures)
+                            path, provenance, failures, attempts)
                 raise
             _checkpoint(store, pack, run_id, steps, node.name, following, state, path,
-                        provenance, failures)
+                        provenance, failures, attempts)
             node = _node(pack, following, "edge from %r" % node.name)
             continue
 
@@ -210,7 +229,7 @@ def run(pack, model, inputs=None, run_id=None, max_steps=None, store=None,
             else:
                 raise AssertFailed(node.name, node.expr)
             _checkpoint(store, pack, run_id, steps, node.name, following, state, path,
-                        provenance, failures)
+                        provenance, failures, attempts)
             node = _node(pack, following, "edge from %r" % node.name)
             continue
 
@@ -301,10 +320,11 @@ def _project(node, state):
 
 
 def _checkpoint(store, pack, run_id, step, node, next_node, state, path, provenance,
-                failures, output=None):
+                failures, attempts, output=None):
     """Persist one completed node, if this run is being checkpointed at all."""
     if store is None:
         return
+    extra = {"attempts": dict(attempts)} if _store_records_attempts(store) else {}
     store.save(
         run_id=run_id,
         step=step,
@@ -319,7 +339,36 @@ def _checkpoint(store, pack, run_id, step, node, next_node, state, path, provena
         # version, and `state.resume` needs both to catch a graph that moved on under
         # a run. Passing pack.name here threw the version away before the store saw it.
         pack=pack,
+        **extra
     )
+
+
+@lru_cache(maxsize=None)
+def _save_accepts_attempts(store_type):
+    """Whether this store's `save` can record per-node attempt counts.
+
+    `store` is documented as anything with a `save(...)` method, so the counts are
+    offered rather than imposed: a store written against the older signature would raise
+    `TypeError` on a keyword it never asked for, and losing the checkpoint entirely is a
+    worse outcome than losing one diagnostic field from it.
+    """
+    save = getattr(store_type, "save", None)
+    if save is None:
+        return False
+    try:
+        parameters = inspect.signature(save).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    kinds = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        or (parameter.name == "attempts" and parameter.kind in kinds)
+        for parameter in parameters
+    )
+
+
+def _store_records_attempts(store):
+    return _save_accepts_attempts(type(store))
 
 
 def replay(checkpoint):
@@ -333,4 +382,5 @@ def replay(checkpoint):
         provenance=dict(checkpoint.provenance),
         end_node=checkpoint.node,
         failures=[Failure(**record) for record in checkpoint.failures],
+        attempts=dict(getattr(checkpoint, "attempts", None) or {}),
     )

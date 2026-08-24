@@ -14,7 +14,7 @@ from jig.errors import (
 from jig.model import FakeModel
 from jig.pack import Edge, Node, Pack
 from jig.state import Store
-from jig.graph import StateCollision, commit, run
+from jig.graph import StateCollision, commit, replay, run
 
 
 def build(nodes, edges, entry, max_steps=100):
@@ -519,3 +519,115 @@ class TestCommitCollisions(unittest.TestCase):
                    state, provenance)
         self.assertEqual(state, {"ticket": "original"})
         self.assertEqual(provenance, {})
+
+
+ENUM = {
+    "type": "object",
+    "properties": {"category": {"type": "string", "enum": ["billing", "technical"]}},
+    "required": ["category"],
+    "additionalProperties": False,
+}
+
+
+class TestAttemptsAreOnTheResult(unittest.TestCase):
+    """What a finished run says about how close it came (README problem 4).
+
+    `failures` only ever holds the nodes that ran out of ladder. A node that was
+    rejected twice and got there on the third rung used to leave no trace at all.
+    """
+
+    def _pack(self, **kwargs):
+        return build(
+            nodes=[generate("classify", schema=ENUM, **kwargs),
+                   Node(name="done", type="end"), Node(name="bail", type="end")],
+            edges=[("classify", "done")],
+            entry="classify",
+        )
+
+    def test_every_generate_node_reports_what_it_spent(self):
+        model = FakeModel(['{"category": "nope"}', '{"category": "billing"}'])
+        result = run(self._pack(retries=2), model, {"ticket": "t"})
+        self.assertEqual(result.attempts, {"classify": 2})
+        self.assertEqual(result.failures, [])
+
+    def test_a_clean_run_reports_one_attempt_per_node(self):
+        result = run(self._pack(), FakeModel(['{"category": "billing"}']), {"ticket": "t"})
+        self.assertEqual(result.attempts, {"classify": 1})
+
+    def test_a_diverted_node_reports_the_whole_ladder_it_spent(self):
+        model = FakeModel(['{"category": "nope"}'] * 3)
+        result = run(self._pack(retries=2, on_fail="bail"), model, {"ticket": "t"})
+        self.assertEqual(result.attempts, {"classify": 3})
+        self.assertEqual(result.failures[0].attempts, 3)
+
+    def test_an_unrenderable_prompt_spends_nothing_and_says_so(self):
+        pack = build(
+            nodes=[generate("classify", prompt="Classify: {nobody_wrote_this}",
+                            on_fail="bail"),
+                   Node(name="done", type="end"), Node(name="bail", type="end")],
+            edges=[("classify", "done")],
+            entry="classify",
+        )
+        result = run(pack, FakeModel(['{"a": 1}']), {"ticket": "t"})
+        self.assertEqual(result.attempts, {})
+
+    def test_a_node_visited_twice_counts_both_visits(self):
+        """A loop's counter node is one node with two visits, and cost is what is asked."""
+        pack = build(
+            nodes=[generate("tick"), Node(name="done", type="end", output=["count"])],
+            edges=[Edge("tick", "done", {"finished": True}), Edge("tick", "tick", None)],
+            entry="tick",
+        )
+        model = FakeModel(
+            ['{"count": 1, "finished": false}', '{"count": 2, "finished": true}']
+        )
+        self.assertEqual(run(pack, model).attempts, {"tick": 2})
+
+    def test_a_store_that_can_record_them_is_offered_them(self):
+        seen = []
+
+        class RecordingStore:
+            def save(self, run_id, step, node, next_node, state, path=None,
+                     provenance=None, failures=None, output=None, pack=None,
+                     pack_version=None, attempts=None):
+                seen.append(attempts)
+
+        model = FakeModel(['{"category": "nope"}', '{"category": "billing"}'])
+        run(self._pack(retries=2), model, {"ticket": "t"}, run_id="r",
+            store=RecordingStore())
+        self.assertEqual(seen[-1], {"classify": 2})
+
+    def test_a_store_that_predates_the_field_is_not_broken_by_it(self):
+        """`store` is documented as anything with a `save(...)`, so the counts are
+        offered rather than imposed."""
+        saved = []
+
+        class OlderStore:
+            def save(self, run_id, step, node, next_node, state, path=None,
+                     provenance=None, failures=None, output=None, pack=None,
+                     pack_version=None):
+                saved.append(node)
+
+        run(self._pack(), FakeModel(['{"category": "billing"}']), {"ticket": "t"},
+            run_id="r", store=OlderStore())
+        self.assertEqual(saved, ["classify", "done"])
+
+    def test_a_real_store_still_checkpoints_every_node(self):
+        store = Store(":memory:")
+        self.addCleanup(store.close)
+        model = FakeModel(['{"category": "nope"}', '{"category": "billing"}'])
+        result = run(self._pack(retries=2), model, {"ticket": "t"}, run_id="r",
+                     store=store)
+        self.assertEqual(len(store.history("r")), 2)
+        self.assertEqual(result.attempts, {"classify": 2})
+
+    def test_replay_restores_the_counts_a_checkpoint_carries(self):
+        store = Store(":memory:")
+        self.addCleanup(store.close)
+        run(self._pack(), FakeModel(['{"category": "billing"}']), {"ticket": "t"},
+            run_id="r", store=store)
+        checkpoint = store.latest("r")
+        # A store that has nowhere to keep them replays a run with none, rather than
+        # inventing numbers it was never given.
+        self.assertEqual(replay(checkpoint).attempts,
+                         dict(getattr(checkpoint, "attempts", None) or {}))
