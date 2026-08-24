@@ -24,17 +24,72 @@ import json
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
 from ..errors import BackendError
 
-__all__ = ["GRAMMAR_MODES", "OpenAICompatModel"]
+__all__ = [
+    "DEFAULT_OPENER",
+    "GRAMMAR_MODES",
+    "NoCrossOriginRedirect",
+    "OpenAICompatModel",
+]
 
 GRAMMAR_MODES = ("response_format", "json_schema", "json_object", "none")
 API_KEY_VARIABLES = ("JIG_API_KEY", "OPENAI_API_KEY")
 RETRY_STATUSES = (408, 429, 500, 502, 503, 504)
+DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+class NoCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only while it stays on the origin the operator chose.
+
+    urllib's stock handler copies the request headers onto the next hop, so the
+    `Authorization: Bearer ...` this client attaches is delivered to whatever host the
+    endpoint names in a `Location` — verified here for a 302, which urllib follows as a
+    GET carrying the header. The endpoint is not necessarily trusted with the operator's
+    key: `base_url` can come from a shared config or a proxy someone stood up. Chat
+    completions needs no cross-origin hop, so refuse it by name rather than follow it
+    silently and return the other host's reply as if it were the model's.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        here, there = _origin(req.full_url), _origin(newurl)
+        if here != there:
+            # Raised, not returned as None: returning None makes urllib hand the caller
+            # the redirect response as if it were an answer, which reads like a
+            # malformed reply instead of a refusal.
+            raise BackendError(
+                "refusing to follow an HTTP %s redirect from %s to %s: the request "
+                "carries your API key, and a redirect must not move it to another "
+                "origin" % (code, _text(here), _text(there))
+            )
+        return urllib.request.HTTPRedirectHandler.redirect_request(
+            self, req, fp, code, msg, headers, newurl
+        )
+
+
+def _origin(url):
+    """(scheme, host, port) — what a redirect must keep identical."""
+    parts = urllib.parse.urlsplit(url)
+    scheme = parts.scheme.lower()
+    try:
+        port = parts.port
+    except ValueError:  # a Location with a nonsense port is not an origin we can match
+        port = None
+    return scheme, (parts.hostname or "").lower(), port or DEFAULT_PORTS.get(scheme)
+
+
+def _text(origin):
+    scheme, host, port = origin
+    return "%s://%s:%s" % (scheme, host, port)
+
+
+# Built once at import; constructing an opener performs no IO.
+DEFAULT_OPENER = urllib.request.build_opener(NoCrossOriginRedirect)
 
 
 @dataclass
@@ -42,7 +97,9 @@ class OpenAICompatModel:
     """A `Model` backed by an OpenAI-compatible chat completions endpoint.
 
     `opener` and `sleeper` exist so the HTTP layer can be replaced in a test. Nothing
-    else in jig should ever need them.
+    else in jig should ever need them. The default opener is not bare `urlopen`: it
+    refuses cross-origin redirects so the API key cannot be walked off the chosen host
+    (see `NoCrossOriginRedirect`).
     """
 
     base_url: str
@@ -54,7 +111,7 @@ class OpenAICompatModel:
     max_retries: int = 2
     schema_name: str = "jig_node"
     extra_body: Dict[str, Any] = field(default_factory=dict)
-    opener: Callable = urllib.request.urlopen
+    opener: Callable = DEFAULT_OPENER.open
     sleeper: Callable = time.sleep
 
     def __post_init__(self):

@@ -4,6 +4,7 @@ NOTHING IN THIS FILE MAKES A NETWORK CALL. Every test injects a fake opener; the
 `urllib.request.urlopen` is only ever compared by identity, never invoked.
 """
 
+import email.message
 import io
 import json
 import unittest
@@ -13,7 +14,12 @@ import urllib.request
 from jig.errors import BackendError
 from jig.grammar import schema_to_grammar
 from jig.model import Model
-from jig.backends.openai_compat import GRAMMAR_MODES, OpenAICompatModel
+from jig.backends.openai_compat import (
+    DEFAULT_OPENER,
+    GRAMMAR_MODES,
+    NoCrossOriginRedirect,
+    OpenAICompatModel,
+)
 
 SCHEMA = {
     "type": "object",
@@ -83,9 +89,10 @@ class TestNoNetwork(unittest.TestCase):
         model(http)
         self.assertEqual(http.count, 0)
 
-    def test_the_default_opener_is_urlopen_but_is_never_called_here(self):
+    def test_the_default_opener_is_the_guarded_one_and_is_never_called_here(self):
         built = OpenAICompatModel(base_url="http://localhost:8000", model="m")
-        self.assertIs(built.opener, urllib.request.urlopen)
+        # Bound methods compare equal but are not identical objects, so assertEqual.
+        self.assertEqual(built.opener, DEFAULT_OPENER.open)
 
 
 class TestProtocol(unittest.TestCase):
@@ -297,3 +304,91 @@ class TestApiKeyFromEnvironment(unittest.TestCase):
 
     def test_no_key_anywhere_is_fine(self):
         self.assertIsNone(model().api_key)
+
+
+class TestRedirectsCannotLeakTheKey(unittest.TestCase):
+    """A redirect must never hand the Authorization header to another origin.
+
+    urllib's stock `HTTPRedirectHandler` copies request headers onto the next hop with
+    no same-origin check, so a `base_url` that answers 302 could walk the operator's API
+    key — and the rendered prompt — to any host it names. Still no network here: the
+    handler is driven directly, the way urllib would drive it.
+    """
+
+    ENDPOINT = "http://localhost:8000/v1/chat/completions"
+
+    def redirect(self, handler, to_url, from_url=None):
+        request = urllib.request.Request(
+            from_url or self.ENDPOINT,
+            data=b"{}",
+            headers={"Authorization": "Bearer secret",
+                     "Content-Type": "application/json"},
+            method="POST",
+        )
+        return handler.redirect_request(
+            request, io.BytesIO(b""), 302, "Found", email.message.Message(), to_url
+        )
+
+    def test_the_stdlib_handler_really_does_carry_the_key(self):
+        """Why the guard exists — this is the leak, reproduced."""
+        carried = self.redirect(
+            urllib.request.HTTPRedirectHandler(), "http://elsewhere.example/collect"
+        )
+        self.assertEqual(carried.headers["Authorization"], "Bearer secret")
+
+    def test_a_cross_origin_redirect_is_refused(self):
+        with self.assertRaises(BackendError) as caught:
+            self.redirect(NoCrossOriginRedirect(), "http://elsewhere.example/collect")
+        self.assertIn("elsewhere.example", str(caught.exception))
+
+    def test_a_scheme_downgrade_is_refused(self):
+        with self.assertRaises(BackendError):
+            self.redirect(
+                NoCrossOriginRedirect(),
+                "http://api.example/v1/chat/completions",
+                from_url="https://api.example/v1/chat/completions",
+            )
+
+    def test_another_port_on_the_same_host_is_refused(self):
+        with self.assertRaises(BackendError):
+            self.redirect(NoCrossOriginRedirect(), "http://localhost:9999/collect")
+
+    def test_a_same_origin_redirect_is_still_followed(self):
+        moved = self.redirect(
+            NoCrossOriginRedirect(), "http://localhost:8000/v2/chat/completions"
+        )
+        self.assertEqual(moved.full_url, "http://localhost:8000/v2/chat/completions")
+
+    def test_the_default_port_is_not_treated_as_a_different_origin(self):
+        moved = self.redirect(
+            NoCrossOriginRedirect(),
+            "http://api.example:80/v1/chat/completions",
+            from_url="http://api.example/v1/chat/completions",
+        )
+        self.assertEqual(moved.full_url, "http://api.example:80/v1/chat/completions")
+
+    def test_the_default_opener_installs_the_guard_instead_of_the_stock_handler(self):
+        handlers = DEFAULT_OPENER.handlers
+        self.assertTrue(
+            any(isinstance(handler, NoCrossOriginRedirect) for handler in handlers)
+        )
+        self.assertFalse(
+            any(type(handler) is urllib.request.HTTPRedirectHandler
+                for handler in handlers)
+        )
+
+    def test_a_refused_redirect_is_not_retried(self):
+        """It is a refusal, not a flaky server: one attempt, then the error."""
+
+        class Redirecting:
+            def __init__(self):
+                self.count = 0
+
+            def __call__(self, request, timeout=None):
+                self.count += 1
+                raise BackendError("refusing to follow a redirect")
+
+        http = Redirecting()
+        with self.assertRaises(BackendError):
+            model(http, max_retries=2).generate("hi")
+        self.assertEqual(http.count, 1)

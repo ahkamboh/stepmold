@@ -217,3 +217,54 @@ class TestReportShape(unittest.TestCase):
         pack = two_node_pack()
         report = evaluate(pack, scripted([1, 2]), cases=pack.evalset[:2])
         self.assertEqual(report.total, 2)
+
+
+class TestAttributionOrder(unittest.TestCase):
+    """Which node gets blamed must come from the run, not from the evalset's key order.
+
+    `expect` is a JSON object the pack author typed; its key order is an accident of
+    editing. `run_result.path` is the order the walker actually visited nodes in, and
+    the earliest failing node is the one worth fixing first — a wrong `category` from
+    `classify` is usually why `extract` went on to produce a wrong `amount`.
+    """
+
+    def failing_both_nodes(self):
+        return FakeModel(
+            {"classify": '{"category": "technical"}', "extract": '{"amount": 99}'}
+        )
+
+    def test_the_earliest_node_is_blamed_whatever_order_expect_lists(self):
+        pack = two_node_pack()
+        pack.evalset[:] = [
+            EvalCase({"ticket": "t1"}, {"amount": 1, "category": "billing"}, "one")
+        ]
+        report = evaluate(pack, self.failing_both_nodes())
+        self.assertEqual(report.cases[0].node, "classify")
+        self.assertEqual(report.by_node, {"classify": 1})
+
+    def test_the_same_case_written_the_other_way_round_blames_the_same_node(self):
+        """The point of the fix: reordering the JSON keys changes nothing."""
+        pack = two_node_pack()
+        pack.evalset[:] = [
+            EvalCase({"ticket": "t1"}, {"category": "billing", "amount": 1}, "one")
+        ]
+        report = evaluate(pack, self.failing_both_nodes())
+        self.assertEqual(report.cases[0].node, "classify")
+
+    def test_a_field_no_node_wrote_does_not_swallow_the_blame(self):
+        """An expectation on an input field has no provenance; it must not hide the node."""
+        pack = two_node_pack()
+        pack.evalset[:] = [
+            EvalCase({"ticket": "t1"}, {"ticket": "other", "category": "technical"}, "one")
+        ]
+        model = FakeModel({"classify": '{"category": "billing"}', "extract": '{"amount": 1}'})
+        report = evaluate(pack, model)
+        self.assertEqual(report.cases[0].node, "classify")
+
+    def test_the_summary_names_the_earliest_node(self):
+        pack = two_node_pack()
+        pack.evalset[:] = [
+            EvalCase({"ticket": "t1"}, {"amount": 1, "category": "billing"}, "one")
+        ]
+        summary = evaluate(pack, self.failing_both_nodes()).summary()
+        self.assertIn("FAIL one [classify]", summary)

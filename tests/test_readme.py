@@ -62,6 +62,38 @@ def run(command):
     )
 
 
+
+# Numbers spell out, and a comparison needs no number at all — a digit check alone is
+# not a guard. These are the shapes a fabricated benchmark takes.
+NUMBER_WORDS = (
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen "
+    "fourteen fifteen sixteen seventeen eighteen nineteen twenty thirty forty fifty "
+    "sixty seventy eighty ninety hundred thousand million billion dozen "
+    "half twice thrice double triple quadruple percent"
+).split()
+
+CLAIM_PHRASES = (
+    "faster", "slower", "cheaper", "costlier", "outperform", "beats", "beat the",
+    "we measured", "we ran", "measured at", "as fast as", "orders of magnitude",
+    "on par with", "matched the", "matches the", "scored", "achiev", "up to",
+    "improved", "improvement", "speedup", "in our runs", "in practice we",
+)
+
+DIGIT_OR_PERCENT = re.compile(r"\d|%")
+NUMBER_WORD = re.compile(
+    r"\b(?:%s)(?:s|fold)?\b" % "|".join(NUMBER_WORDS), re.IGNORECASE
+)
+CLAIM = re.compile("|".join(re.escape(phrase) for phrase in CLAIM_PHRASES), re.IGNORECASE)
+
+
+def unmeasured_claims(text):
+    """Every fragment of `text` that reads as a measured result. Empty means honest."""
+    found = [match.group(0) for match in DIGIT_OR_PERCENT.finditer(text)]
+    found += [match.group(0) for match in NUMBER_WORD.finditer(text)]
+    found += [match.group(0) for match in CLAIM.finditer(text)]
+    return found
+
+
 class TestReadmeExists(unittest.TestCase):
     def test_the_readme_is_there(self):
         self.assertTrue(os.path.isfile(README))
@@ -138,9 +170,112 @@ class TestNoInventedNumbers(unittest.TestCase):
                     "benchmark cell %r is not a TODO" % cell,
                 )
 
-    def test_the_benchmark_section_states_no_numbers_at_all(self):
-        prose = sections()["Benchmarks"]
-        self.assertFalse(
-            re.search(r"\d", prose),
-            "the benchmark section contains a digit — nothing here has been measured",
+    def test_the_benchmark_section_states_no_result_at_all(self):
+        self.assertEqual(
+            unmeasured_claims(sections()["Benchmarks"]), [],
+            "the benchmark section states a result — nothing here has been measured",
+        )
+
+
+class TestTheGuardCatchesFabrications(unittest.TestCase):
+    """The guard is only worth having if it survives someone spelling the number out.
+
+    A digit check alone is evaded by writing "forty-eight of fifty" or by dropping the
+    number entirely and keeping the comparison ("cheaper than the frontier baseline").
+    Both are still claims about a measurement nobody has run, which is exactly what this
+    section must not contain.
+    """
+
+    def test_a_digit_is_caught(self):
+        self.assertTrue(unmeasured_claims("jig scores 48/50 on the gold cases."))
+
+    def test_a_spelled_out_number_is_caught(self):
+        self.assertTrue(
+            unmeasured_claims(
+                "jig plus a small model passed forty-eight of the fifty gold cases."
+            )
+        )
+
+    def test_a_comparison_with_no_number_at_all_is_caught(self):
+        self.assertTrue(
+            unmeasured_claims("Running it this way is cheaper than the frontier baseline.")
+        )
+
+    def test_a_multiplier_written_as_a_word_is_caught(self):
+        self.assertTrue(unmeasured_claims("Throughput improved tenfold on the target GPU."))
+
+    def test_a_percentage_sign_is_caught(self):
+        self.assertTrue(unmeasured_claims("Pass rate: 96%."))
+
+    def test_the_honest_disclaimer_is_not_caught(self):
+        """Over-strictness would push the next author into deleting the disclaimer."""
+        self.assertEqual(
+            unmeasured_claims(
+                "TODO: measure. Every number that belongs here is a number nobody has "
+                "measured yet, and someone still has to run it on a GPU."
+            ),
+            [],
+        )
+
+
+def flatten(suite):
+    """Every TestCase in a suite tree, in discovery order."""
+    for item in suite:
+        if isinstance(item, unittest.TestSuite):
+            for test in flatten(item):
+                yield test
+        else:
+            yield item
+
+
+class TestTheOracleCollectsTheWholeSuite(unittest.TestCase):
+    """`python3 -m pytest -q` is the only oracle this project has, and a green run only
+    means something if it ran everything.
+
+    Discovery is by filename pattern, so a file that stops matching — renamed, moved,
+    or made un-importable — takes its tests out of the count without turning the run
+    red. That is the failure mode this guards: not a wrong answer, a missing question.
+    """
+
+    # The suite must not fall below the count the project commits to (see the repo's
+    # test requirement). It is a floor, not a target: adding tests raises it.
+    MINIMUM_TESTS = 360
+
+    def discovered(self):
+        loader = unittest.TestLoader()
+        suite = loader.discover(
+            os.path.join(ROOT, "tests"), pattern="test_*.py", top_level_dir=ROOT
+        )
+        return list(flatten(suite))
+
+    def files_on_disk(self):
+        names = os.listdir(os.path.join(ROOT, "tests"))
+        return {
+            "tests." + os.path.splitext(name)[0]
+            for name in names
+            if name.startswith("test_") and name.endswith(".py")
+        }
+
+    def test_every_test_file_on_disk_is_collected(self):
+        collected = {type(test).__module__ for test in self.discovered()}
+        missing = sorted(self.files_on_disk() - collected)
+        self.assertEqual(
+            missing, [],
+            "these test files exist but contribute no tests to the run: %s" % missing,
+        )
+
+    def test_no_test_file_failed_to_import(self):
+        """An import error is collected as a placeholder; it must not pass unnoticed."""
+        broken = [
+            test.id() for test in self.discovered()
+            if type(test).__name__ == "_FailedTest"
+        ]
+        self.assertEqual(broken, [], "these modules could not be imported: %s" % broken)
+
+    def test_the_suite_has_not_shrunk(self):
+        count = len(self.discovered())
+        self.assertGreaterEqual(
+            count, self.MINIMUM_TESTS,
+            "discovery found %d tests, below the floor of %d — something stopped being "
+            "collected" % (count, self.MINIMUM_TESTS),
         )

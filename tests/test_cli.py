@@ -230,3 +230,79 @@ class TestUsage(unittest.TestCase):
         code, out, _ = jig("--version")
         self.assertEqual(code, 0)
         self.assertIn(".", out)
+
+
+class TestOutputShapeIsSurfaced(unittest.TestCase):
+    """`output:` means two different things, and nothing catches the wrong one.
+
+    On a `generate` node it is one state key (a string); on an `end` node it is the list
+    of keys to project. Writing `output: ticket` on an end node makes the projection
+    iterate the *string*, match no state key, and return an empty object while the state
+    still holds the answer. Until pack.py validates this at load time, the CLI has to be
+    the one that says so out loud rather than printing `{}` as if it were a result.
+    """
+
+    def setUp(self):
+        self.directory = tempfile.mkdtemp()
+        self.pack = os.path.join(self.directory, "pack")
+        shutil.copytree(PACK, self.pack)
+
+    def tearDown(self):
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+    def rewrite_graph(self, old, new):
+        path = os.path.join(self.pack, "graph.yaml")
+        with open(path) as handle:
+            text = handle.read()
+        assert old in text, old
+        with open(path, "w") as handle:
+            handle.write(text.replace(old, new))
+
+    def test_validate_reports_an_end_node_whose_output_is_a_string(self):
+        self.rewrite_graph("output: [category]", "output: category")
+        code, out, err = jig("validate", self.pack)
+        self.assertEqual(code, 1)
+        self.assertIn("done", err)
+        self.assertIn("output", err)
+        self.assertEqual(out.strip(), "")
+
+    def test_validate_reports_a_generate_node_whose_output_is_a_list(self):
+        self.rewrite_graph("    type: generate", "    type: generate\n    output: [category]")
+        code, _, err = jig("validate", self.pack)
+        self.assertEqual(code, 1)
+        self.assertIn("classify", err)
+
+    def test_run_refuses_the_pack_instead_of_printing_an_empty_object(self):
+        self.rewrite_graph("output: [category]", "output: category")
+        code, out, err = jig("run", self.pack, "--input", '{"ticket": "I was charged twice"}')
+        self.assertEqual(code, 1)
+        self.assertEqual(out.strip(), "")
+        self.assertIn("output", err)
+
+    def test_eval_refuses_the_pack_too(self):
+        self.rewrite_graph("output: [category]", "output: category")
+        code, out, err = jig("eval", self.pack)
+        self.assertEqual(code, 1)
+        self.assertIn("output", err)
+
+    def test_a_projection_that_selects_nothing_is_not_reported_as_a_result(self):
+        """A well-shaped list of keys that simply do not exist is the same silence."""
+        self.rewrite_graph("output: [category]", "output: [catgeory]")
+        code, out, err = jig("run", self.pack, "--input", '{"ticket": "I was charged twice"}')
+        self.assertEqual(code, 1)
+        self.assertEqual(out.strip(), "")
+        self.assertIn("--state", err)
+        self.assertIn("done", err)
+
+    def test_state_still_shows_what_the_run_actually_produced(self):
+        self.rewrite_graph("output: [category]", "output: [catgeory]")
+        code, out, err = jig(
+            "run", self.pack, "--input", '{"ticket": "I was charged twice"}', "--state"
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["category"], "billing")
+
+    def test_an_untouched_pack_is_unaffected(self):
+        code, out, err = jig("validate", self.pack)
+        self.assertEqual(code, 0, err)
+        self.assertIn("cli_demo", out)
