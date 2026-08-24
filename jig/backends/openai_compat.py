@@ -24,6 +24,7 @@ import datetime
 import email.utils
 import http.client
 import json
+import socket
 import os
 import time
 import urllib.error
@@ -437,7 +438,10 @@ def _transport_error(url, timeout, exc):
     "RemoteDisconnected" on its own tells an operator nothing about which endpoint died
     or what to change; `_no_content_reason` sets the standard for the rest of this file.
     """
-    if isinstance(exc, TimeoutError):
+    # socket.timeout only became an alias of TimeoutError in Python 3.10; on 3.9 it is a
+    # plain OSError, so checking TimeoutError alone let a read timeout fall through to the
+    # generic message and lose the one number the operator needs — the timeout itself.
+    if isinstance(exc, (TimeoutError, socket.timeout)):
         return BackendError(
             "%s did not answer within the %ss timeout. Raise the backend's `timeout` if "
             "the model is simply slow to start emitting tokens." % (url, timeout)

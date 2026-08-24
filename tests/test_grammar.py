@@ -262,10 +262,19 @@ class TestValuesThatAreNotJson(unittest.TestCase):
         self.assertIn("levels deep", str(self._fails({"v": deep})))
 
     def test_nesting_deep_enough_to_exhaust_the_interpreter_is_refused(self):
+        """Build the structure directly rather than by parsing it.
+
+        The original test constructed its own fixture with json.loads, which on CPython
+        before 3.12 exhausts the decoder's stack while BUILDING the input — so the test
+        died with RecursionError before reaching the code it was meant to exercise. The
+        validator's ceiling is what is under test here; the decoder's is covered by
+        tests/test_verify.py, where extract_json turns it into a Rejected.
+        """
         import sys
 
-        text = "[" * (sys.getrecursionlimit() * 3)
-        deep = json.loads(text + "]" * (sys.getrecursionlimit() * 3))
+        deep = []
+        for _ in range(sys.getrecursionlimit() * 3):
+            deep = [deep]
         self._fails({"v": deep})
 
     def test_ordinary_nesting_is_untouched(self):

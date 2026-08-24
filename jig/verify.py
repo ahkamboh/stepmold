@@ -300,6 +300,16 @@ def extract_json(text):
             return json.loads(attempt)
         except ValueError:
             continue
+        except RecursionError:
+            # Deeply nested output exhausts the decoder's own stack. On CPython before
+            # 3.12 this escapes json.loads as RecursionError rather than ValueError, so
+            # without this it is not a Rejected, bypasses the retry ladder and the node's
+            # on_fail edge, and kills the run. A model that emits 10,000 nested arrays is
+            # a bad generation, not a broken runtime — reject it like any other.
+            raise Rejected(
+                "output nested too deeply to parse (%d bytes)" % len(text),
+                feedback="output was nested too deeply — return a flat JSON object",
+            )
     raise Rejected(
         "output was not valid JSON: %s" % _clip(text),
         feedback="output was not valid JSON — return a single JSON object and nothing else",
