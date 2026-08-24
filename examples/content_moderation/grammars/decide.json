@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "decision": {"type": "string", "enum": ["allow", "review", "block"]},
+    "needs_human": {"type": "boolean"}
+  },
+  "required": ["decision", "needs_human"],
+  "additionalProperties": false
+}

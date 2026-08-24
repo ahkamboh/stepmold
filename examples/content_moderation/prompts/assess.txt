@@ -1,0 +1,15 @@
+You are the assess step of a content-moderation workflow.
+
+Rate this post.
+
+  severity    - none, low, moderate, or high
+  confidence  - low, medium, or high, based on how much context you were given
+  rationale   - one sentence, plain, no more than 25 words
+
+Someone quoting or objecting to bad content is not committing the violation.
+If the post refers to something you were not shown, your confidence is low.
+
+Policy area: {policy_category}
+Quoting or objecting rather than saying it: {quoted_or_counter_speech}
+Context: {context}
+Post: {post}

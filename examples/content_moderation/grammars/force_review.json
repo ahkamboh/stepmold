@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "decision": {
+      "type": "string",
+      "description": "One legal value. This node exists because something upstream could not be trusted, so it is not offered a choice.",
+      "enum": ["review"]
+    },
+    "needs_human": {"type": "boolean", "enum": [true]},
+    "review_note": {
+      "type": "string",
+      "description": "one short sentence a human moderator can act on"
+    }
+  },
+  "required": ["decision", "needs_human", "review_note"],
+  "additionalProperties": false
+}

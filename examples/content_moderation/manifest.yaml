@@ -1,0 +1,19 @@
+name: content_moderation
+version: 1
+entry: screen
+model: fake:fakes/script.json
+description: >-
+  Moderate a user post against a policy: screen, classify the policy area,
+  assess severity in context, decide allow/review/block, then pass a
+  deterministic gate before any of it is trusted.
+
+  The pack is built to fail safe rather than fail open. Every route out of a
+  doubt ends at a human, never at `allow`: `decide` may not commit a `block`
+  that names no policy category, the `gate` node refuses any non-allow decision
+  that is not flagged for a human, and both failures land on `force_review`,
+  whose grammar admits no decision except `review`.
+
+  The model below is a scripted stand-in, so the evalset scores offline with no
+  GPU and no network. It replays the thirteen evalset cases in order and does
+  not read the post, so a `jig run` of anything other than the first case will
+  answer the first case. Point --model at a real backend to moderate real posts.

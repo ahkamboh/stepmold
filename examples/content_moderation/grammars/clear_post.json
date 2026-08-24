@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "decision": {
+      "type": "string",
+      "description": "This node cannot block. Unsure is 'review', never 'allow'.",
+      "enum": ["allow", "review"]
+    },
+    "policy_category": {"type": "string", "enum": ["none"]},
+    "severity": {"type": "string", "enum": ["none"]},
+    "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+    "needs_human": {"type": "boolean"}
+  },
+  "required": ["decision", "policy_category", "severity", "confidence", "needs_human"],
+  "additionalProperties": false
+}

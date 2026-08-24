@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "signal": {
+      "type": "string",
+      "description": "clean = nothing a policy touches; suspect = worth a closer look; severe = looks like a serious violation",
+      "enum": ["clean", "suspect", "severe"]
+    }
+  },
+  "required": ["signal"],
+  "additionalProperties": false
+}

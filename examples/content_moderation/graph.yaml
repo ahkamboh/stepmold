@@ -1,0 +1,132 @@
+# screen ─┬─(signal: clean)─> clear_post ─┐
+#         │                               ├─> gate ─┬─(block)──> blocked
+#         └──────────────────> classify   │         ├─(review)─> review_queue
+#                                 |       │         └──────────> allowed
+#                                 v       │
+#                              assess ─> decide ────┘
+#
+#                     decide --assert fails--> force_review --> human_review
+#                     gate   --assert fails--> force_review --> human_review
+#
+# Two locks, and neither one can open. `decide` may not commit a `block` that
+# names no policy category (verify-before-commit, so the bad record never
+# reaches state). `gate` then re-reads committed state and refuses any decision
+# other than `allow` that is not flagged for a human. Both failures divert to
+# `force_review`, whose grammar has exactly one legal decision, so the failure
+# mode of this pack is "a human looks at it", never "it went out".
+
+max_steps: 12
+
+nodes:
+
+  screen:
+    description: One cheap look — is there anything here a policy could touch?
+    type: generate
+    max_tokens: 24
+
+  clear_post:
+    description: >-
+      The confirm step for posts the screen found nothing in. It is a second
+      look, not a rubber stamp: its grammar can say `review`, and it cannot say
+      `block`, so the fast path can slow down but can never punish.
+    type: generate
+    max_tokens: 64
+
+  classify:
+    description: Name the policy area the post implicates, and whether it is quoted.
+    type: generate
+    max_tokens: 48
+
+  assess:
+    description: >-
+      How bad is it, actually, given the context. This is the only node in the
+      pack holding a judgement rather than a lookup — the same words are a
+      violation from an author and a report from a bystander, and severity
+      turns on which one this is. So it reasons into a scratchpad first and
+      emits under its grammar second, and the scratchpad is thrown away.
+    type: generate
+    two_stage: true
+    think_max_tokens: 160
+    max_tokens: 128
+
+  decide:
+    description: Turn category plus severity plus confidence into one decision.
+    type: generate
+    max_tokens: 32
+    # Model output is never trusted to police itself. A block is the one
+    # decision that silences a person, so it must name the policy it is
+    # enforcing. Checked before the commit, so a block with no category never
+    # enters state, never reaches the output, and never conditions a retry.
+    assert: decision != "block" or policy_category != "none"
+    on_fail: force_review
+
+  gate:
+    description: >-
+      The deterministic second lock, read from committed state. Anything that
+      is not a plain allow must be flagged for a human; a model that decided
+      `review` and then cleared the human flag is diverted, not obeyed.
+    type: assert
+    expr: needs_human == (decision != "allow")
+    on_fail: force_review
+
+  force_review:
+    description: >-
+      Where every doubt in this pack lands. Its grammar permits one decision
+      and one value for the human flag, so the escalation cannot be talked out
+      of by the model that caused it. It declares no `on_fail` on purpose: if
+      even this record cannot be produced, the run stops with an error rather
+      than returning a decision nobody verified.
+    type: generate
+    max_tokens: 96
+    assert: decision == "review" and needs_human == true
+
+  blocked:
+    type: end
+    output: [decision, policy_category, severity, confidence, needs_human, rationale]
+
+  review_queue:
+    type: end
+    output: [decision, policy_category, severity, confidence, needs_human, rationale]
+
+  allowed:
+    type: end
+    output: [decision, policy_category, severity, confidence, needs_human]
+
+  human_review:
+    type: end
+    output: [decision, policy_category, confidence, needs_human, review_note]
+
+edges:
+
+  - from: screen
+    to: clear_post
+    when: {signal: clean}
+
+  - from: screen
+    to: classify
+
+  - from: clear_post
+    to: gate
+
+  - from: classify
+    to: assess
+
+  - from: assess
+    to: decide
+
+  - from: decide
+    to: gate
+
+  - from: gate
+    to: blocked
+    when: {decision: block}
+
+  - from: gate
+    to: review_queue
+    when: {decision: review}
+
+  - from: gate
+    to: allowed
+
+  - from: force_review
+    to: human_review

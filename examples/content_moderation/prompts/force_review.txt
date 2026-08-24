@@ -1,0 +1,10 @@
+You are the forced-review step of a content-moderation workflow.
+
+A check upstream did not pass, so this post is going to a human. The decision
+is already review and a human is already needed; you are only writing the note.
+
+  review_note - one short sentence telling the moderator what to look at
+
+Policy area: {policy_category}
+Context: {context}
+Post: {post}
