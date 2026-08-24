@@ -13,17 +13,37 @@ back into its later context is the self-conditioning decay this whole design exi
 avoid. `Attempt` carries the scratchpad; `graph.commit` writes only `Attempt.text`.
 
 Single-stage nodes skip straight to emit, so trivial nodes stay one call cheap.
+
+This module is also where the `Model` protocol's *optional* per-call sampling hint is
+spent (`Sampling`). The retry ladder decides what to ask for; `_generate` decides whether
+the model in front of it can hear the question. A model whose `generate` does not declare
+a `sampling` parameter is called exactly as before, which is what keeps every existing
+`Model` — `FakeModel`, the production harness's `FlakyModel`, `OpenAICompatModel` — a
+valid `Model` without a line of change. See `verify.run_node` for why a re-sample needs
+the hint at all.
 """
 
+import inspect
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Optional
 
+from .errors import BackendError
 from .grammar import schema_to_grammar
 from .render import render
 
-__all__ = ["Attempt", "SCRATCHPAD", "generate_once", "think", "emit"]
+__all__ = [
+    "Attempt",
+    "SCRATCHPAD",
+    "Sampling",
+    "accepts_sampling",
+    "generate_once",
+    "think",
+    "emit",
+]
 
 SCRATCHPAD = "scratchpad"
+SAMPLING = "sampling"
 
 DEFAULT_THINK_SUFFIX = (
     "\n\nThink this through in a few short sentences. "
@@ -36,6 +56,23 @@ ERROR_BLOCK = (
 )
 
 
+@dataclass(frozen=True)
+class Sampling:
+    """What the ladder asks a backend for when it wants a *different* draw.
+
+    A hint, not a command: it is the one thing this layer can change that makes a
+    re-sample an independent draw rather than the identical request twice. Backends that
+    cannot vary their sampling ignore it, and the ladder still has its feedback rung.
+
+    `seed` is here because a server pinned to temperature 0 is deterministic in its
+    *stream*, not in its arithmetic: llama.cpp, vLLM and SGLang all accept a per-request
+    seed, and changing it is the only knob a greedy server has.
+    """
+
+    temperature: float
+    seed: Optional[int] = None
+
+
 @dataclass
 class Attempt:
     """One pass at a node's output. `text` is what gets verified and committed."""
@@ -45,40 +82,94 @@ class Attempt:
     calls: int = 0
 
 
-def generate_once(node, state, model, error=None, scratchpad=None):
+def generate_once(node, state, model, error=None, scratchpad=None, sampling=None):
     """Produce one candidate output for `node`.
 
     `error` is the previous rejection, appended so a re-sample can correct itself
     (T6's ladder). `scratchpad` reuses an earlier think stage instead of paying for
-    another one — a re-sample re-rolls the *emit*, which is the cheap half.
+    another one; the caller decides whether reusing it is honest — see
+    `verify.run_node`, which throws it away whenever the reasoning behind it is what got
+    rejected. `sampling` is the ladder's request for a different draw, and it applies to
+    *both* stages: re-thinking at the same temperature as the notes that were just
+    discarded would reproduce them.
     """
     calls = 0
     if node.two_stage and scratchpad is None:
-        scratchpad = think(node, state, model)
+        scratchpad = think(node, state, model, sampling=sampling)
         calls += 1
-    text = emit(node, state, model, scratchpad=scratchpad, error=error)
+    try:
+        text = emit(node, state, model, scratchpad=scratchpad, error=error,
+                    sampling=sampling)
+    except BackendError as exc:
+        # The notes survive the failure they were not part of. A backend that returned
+        # nothing has said nothing about the reasoning, and a ladder that re-samples on
+        # it should not pay for a second think stage — see `verify.run_node`.
+        exc.scratchpad = scratchpad
+        raise
     return Attempt(text=text, scratchpad=scratchpad, calls=calls + 1)
 
 
-def think(node, state, model):
+def think(node, state, model, sampling=None):
     """The unconstrained first stage. Its output never leaves the scratchpad."""
     template = node.think_prompt or (node.prompt + DEFAULT_THINK_SUFFIX)
     # The default template is the emit prompt, which may itself hold a {scratchpad}
     # placeholder. There are no notes yet, so it renders empty rather than exploding.
     scope = dict(state)
     scope.setdefault(SCRATCHPAD, "")
-    return model.generate(
-        render(template, scope), grammar=None, max_tokens=node.think_max_tokens
+    return _generate(
+        model, render(template, scope), None, node.think_max_tokens, sampling
     )
 
 
-def emit(node, state, model, scratchpad=None, error=None):
+def emit(node, state, model, scratchpad=None, error=None, sampling=None):
     """The constrained stage: the only output that can ever be committed."""
-    return model.generate(
+    return _generate(
+        model,
         build_prompt(node, state, scratchpad=scratchpad, error=error),
-        grammar=schema_to_grammar(node.grammar) if node.grammar else None,
-        max_tokens=node.max_tokens,
+        schema_to_grammar(node.grammar) if node.grammar else None,
+        node.max_tokens,
+        sampling,
     )
+
+
+def _generate(model, prompt, grammar, max_tokens, sampling):
+    """Call the model, passing the sampling hint only to a model that declares one.
+
+    The hint is optional in the protocol, so it cannot be sent unconditionally: a model
+    written against the three-argument signature would raise `TypeError` on a keyword it
+    never asked for, and jig would have broken every existing backend to gain a knob most
+    of them ignore anyway.
+    """
+    if sampling is None or not accepts_sampling(model):
+        return model.generate(prompt, grammar=grammar, max_tokens=max_tokens)
+    return model.generate(
+        prompt, grammar=grammar, max_tokens=max_tokens, sampling=sampling
+    )
+
+
+def accepts_sampling(model):
+    """True when `model.generate` declares the optional `sampling` keyword."""
+    return _accepts_sampling(type(model))
+
+
+@lru_cache(maxsize=None)
+def _accepts_sampling(model_type):
+    # Cached on the type, not the instance: the signature belongs to the class, and a
+    # ladder asks this question once per generation.
+    generate = getattr(model_type, "generate", None)
+    if generate is None:
+        return False
+    try:
+        parameters = inspect.signature(generate).parameters.values()
+    except (TypeError, ValueError):  # a builtin or C-level callable has no signature
+        return False
+    kinds = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    for parameter in parameters:
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if parameter.name == SAMPLING and parameter.kind in kinds:
+            return True
+    return False
 
 
 def build_prompt(node, state, scratchpad=None, error=None):

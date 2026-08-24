@@ -718,14 +718,21 @@ class TheAppendedSchemaSurvivesThinkThenEmit(ProxyTest):
         self.assertEqual([call["max_tokens"] for call in self.proxy.calls], [64, 48])
 
     def test_the_schema_is_still_there_after_the_ladder_appends_a_correction(self):
-        """Every rung keeps the contract — including the ones that also carry feedback."""
+        """Every rung keeps the contract — including the ones that also carry feedback.
+
+        A rejection now costs a fresh think stage as well as a fresh emit (see
+        `verify.run_node`), so the ladder is six calls: think, emit, think, emit, think,
+        emit. Only the emits carry the schema.
+        """
         self.proxy.script(["ok", "garbage", "garbage", "garbage"], default="garbage")
         with self.assertRaises(NodeFailed):
             run_node(_node(**self.NODE), {"ticket": "help"},
                      self.proxy.client("json_object"))
-        self.assertEqual(len(self.proxy.calls), 4)  # one think, three emits
-        for index in (1, 2, 3):
+        self.assertEqual(len(self.proxy.calls), 6)  # three think/emit pairs
+        for index in (1, 3, 5):
             self.assertEqual(_prompt_schema(self.proxy.prompt(index)), ENUM_SCHEMA, index)
+        for index in (0, 2, 4):
+            self.assertIsNone(_prompt_schema(self.proxy.prompt(index)), index)
 
     def test_the_correction_is_present_from_the_second_emit_onwards(self):
         self.proxy.script(["ok", "badschema", "badschema", "badschema"],
@@ -734,8 +741,23 @@ class TheAppendedSchemaSurvivesThinkThenEmit(ProxyTest):
             run_node(_node(**self.NODE), {"ticket": "help"},
                      self.proxy.client("json_object"))
         self.assertNotIn("previous answer was rejected", self.proxy.prompt(1))
-        for index in (2, 3):
+        for index in (3, 5):
             self.assertIn("previous answer was rejected", self.proxy.prompt(index))
+
+    def test_the_re_thought_rung_is_a_fresh_draw_and_not_a_corrected_one(self):
+        """The think stage is deliberately not told what was wrong.
+
+        Its job on a retry is to reason again from nothing, which is what makes the rung
+        an independent draw; the emit that follows is where the correction belongs.
+        """
+        self.proxy.script(["ok", "badschema", "badschema", "badschema"],
+                          default="badschema")
+        with self.assertRaises(NodeFailed):
+            run_node(_node(**self.NODE), {"ticket": "help"},
+                     self.proxy.client("json_object"))
+        for index in (0, 2, 4):
+            self.assertNotIn("previous answer was rejected", self.proxy.prompt(index))
+            self.assertIn("notes only", self.proxy.prompt(index))
 
     def test_the_correction_never_quotes_the_rejected_value(self):
         """verify.py rule 2 over a real socket, in the mode where the prompt is the API.
@@ -748,18 +770,24 @@ class TheAppendedSchemaSurvivesThinkThenEmit(ProxyTest):
         with self.assertRaises(NodeFailed):
             run_node(_node(**self.NODE), {"ticket": "help"},
                      self.proxy.client("json_object"))
-        for index in (2, 3):
+        for index in (2, 3, 4, 5):
             self.assertNotIn("definitely-not-in-the-enum", self.proxy.prompt(index))
+        for index in (3, 5):
             self.assertIn("not one of", self.proxy.prompt(index))
 
-    def test_the_think_stage_is_paid_for_once_across_the_whole_ladder(self):
-        """The scratchpad is reused; a re-sample re-rolls only the cheap half."""
+    def test_every_rung_pays_for_its_own_think_stage(self):
+        """The scratchpad behind a rejected answer is discarded, so the rung re-thinks.
+
+        That is the price of the fix measured in `test_longhorizon.py`: a two-stage
+        ladder costs two calls per rung, and buys a rung that can reach an error made in
+        the reasoning rather than in the formatting.
+        """
         self.proxy.script(["ok", "garbage", "garbage", "garbage"], default="garbage")
         with self.assertRaises(NodeFailed):
             run_node(_node(**self.NODE), {"ticket": "help"},
                      self.proxy.client("json_object"))
         thinking = [call for call in self.proxy.calls if call["max_tokens"] == 64]
-        self.assertEqual(len(thinking), 1)
+        self.assertEqual(len(thinking), 3)
 
     def test_the_schema_block_is_appended_after_the_volatile_correction(self):
         """DEFECT (minor, prompt ordering): the most stable block is placed last.
@@ -779,7 +807,8 @@ class TheAppendedSchemaSurvivesThinkThenEmit(ProxyTest):
             run_node(_node(retries=1, **{k: v for k, v in self.NODE.items()
                                          if k != "retries"}),
                      {"ticket": "help"}, self.proxy.client("json_object"))
-        retry = self.proxy.prompt(2)
+        # think, emit, think, emit — the second emit is the rung that carries feedback.
+        retry = self.proxy.prompt(3)
         self.assertLess(retry.index("previous answer was rejected"),
                         retry.index(SCHEMA_PREAMBLE.strip()))
 
