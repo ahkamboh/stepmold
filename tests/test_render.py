@@ -52,3 +52,53 @@ class TestRender(unittest.TestCase):
 
     def test_unclosed_brace_is_left_alone(self):
         self.assertEqual(render("100% of {a", {"a": 1}), "100% of {a")
+
+
+class TestSubstitutionIsSinglePass(unittest.TestCase):
+    """A substituted value is text, never template.
+
+    Run state holds every value the workflow has seen, so a second pass would let a
+    ticket reading `{card_number}` print another state key into the prompt. These fail
+    under `str.format`, under a `while "{" in text` loop, and under any two-pass render.
+    """
+
+    def test_a_value_that_looks_like_a_placeholder_stays_literal(self):
+        state = {"ticket": "{card}", "card": "4111-1111-1111-1111"}
+        self.assertEqual(render("T: {ticket}", state), "T: {card}")
+
+    def test_a_value_cannot_use_the_templates_own_escape(self):
+        state = {"ticket": "{{card}}", "card": "4111-1111-1111-1111"}
+        self.assertEqual(render("T: {ticket}", state), "T: {{card}}")
+
+    def test_a_json_rendered_value_does_not_re_expand_its_own_braces(self):
+        """`as_text` writes an object as JSON — a value made mostly of braces.
+
+        No hostile ticket is needed for this one: any object-valued state key carries
+        braces into the prompt, and a second pass would resolve whatever is inside them.
+        """
+        state = {"payload": {"note": "{card}"}, "card": "4111-1111-1111-1111"}
+        rendered = render("P: {payload}", state)
+        self.assertEqual(rendered, 'P: {"note": "{card}"}')
+        self.assertNotIn("4111", rendered)
+
+    def test_a_self_referential_value_does_not_recurse(self):
+        self.assertEqual(render("T: {ticket}", {"ticket": "{ticket}"}), "T: {ticket}")
+
+
+class TestTheMissingVariableMessage(unittest.TestCase):
+    """The message is built from caller-supplied key names, so it is escaped and clipped."""
+
+    def test_the_key_list_is_repr_d_so_an_invisible_key_is_visible(self):
+        with self.assertRaises(MissingVariable) as caught:
+            render("{ticket}", {"tick\u200bet": 1})
+        self.assertIn("\\u200b", str(caught.exception))
+
+    def test_a_giant_key_does_not_become_a_giant_message(self):
+        with self.assertRaises(MissingVariable) as caught:
+            render("{ticket}", {"z" * 100000: 1})
+        self.assertLess(len(str(caught.exception)), 300)
+
+    def test_an_empty_state_still_says_so(self):
+        with self.assertRaises(MissingVariable) as caught:
+            render("{ticket}", {})
+        self.assertIn("nothing", str(caught.exception))

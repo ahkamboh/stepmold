@@ -34,11 +34,24 @@ __all__ = [
     "Node",
     "Pack",
     "PackError",
+    "RESERVED_STATE_NAMES",
     "UnsafePath",
     "load_pack",
 ]
 
 NODE_TYPES = ("generate", "assert", "end")
+
+# Names jig binds in a run's scope for its own purposes. `codegen.think` renders the
+# think template with a `scratchpad` of its own, so anything else that lands under that
+# name is served to the model in the slot the prompt labels "your notes from thinking
+# this through" — the most persuasive position in the whole prompt, filled with text that
+# is not the model's reasoning at all.
+#
+# A pack cannot claim the name: `_build_node` refuses a node whose `output` is one of
+# these. A *run input* with that name is the same hole from the other side, and closing
+# it belongs where inputs enter a run (`graph.run`), not here — this tuple is public so
+# that check has one list to read.
+RESERVED_STATE_NAMES = ("scratchpad",)
 DEFAULT_MAX_STEPS = 100
 DEFAULT_MAX_TOKENS = 512
 DEFAULT_THINK_MAX_TOKENS = 256
@@ -145,7 +158,10 @@ def load_pack(path):
     """Read the pack at `path`, validate it, and return a `Pack`."""
     path = os.path.normpath(path)
     if not os.path.isdir(path):
-        raise MissingArtifactError("pack directory not found: %s" % path)
+        # Clipped: this argument is whatever was on the command line, and pasting a
+        # ticket where a pack path belongs is a common enough slip that the message
+        # must not be a megabyte long.
+        raise MissingArtifactError("pack directory not found: %s" % _clip(path))
 
     manifest = _load_yaml(path, "manifest.yaml", ManifestError)
     graph = _load_yaml(path, "graph.yaml", GraphError)
@@ -264,6 +280,13 @@ def _build_node(path, node_name, node_type, spec):
         if os.path.isfile(_resolve_inside(path, think_relative)):
             think_prompt = _read_text(path, think_relative)
 
+    if spec.get("output") in RESERVED_STATE_NAMES:
+        raise GraphError(
+            "graph.yaml: node %r has output %r, which is a name jig reserves for its "
+            "own scope — committing there would write the node's answer into the think "
+            "stage's notes slot" % (node_name, spec.get("output"))
+        )
+
     if node_type == "assert" and not spec.get("expr"):
         raise GraphError("graph.yaml: assert node %r needs an 'expr'" % node_name)
 
@@ -295,6 +318,12 @@ def _positive_int(spec, key, node_name, default, floor=1):
     return value
 
 
+def _clip(text, limit=120):
+    """Keep a message bounded — the offending text is usually not ours."""
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
 def _resolve_inside(path, relative):
     """Resolve `relative` against the pack root, refusing anything that escapes it.
 
@@ -305,18 +334,22 @@ def _resolve_inside(path, relative):
     if not isinstance(relative, str) or not relative:
         raise UnsafePath("artifact reference must be a non-empty string")
     if os.path.isabs(relative) or os.path.splitdrive(relative)[0]:
-        raise UnsafePath("%s: absolute paths are not allowed in a pack" % relative)
+        raise UnsafePath(
+            "%s: absolute paths are not allowed in a pack" % _clip(relative)
+        )
     root = os.path.realpath(path)
     full = os.path.realpath(os.path.join(root, relative))
     if full != root and not full.startswith(root + os.sep):
-        raise UnsafePath("%s: resolves outside the pack directory" % relative)
+        raise UnsafePath("%s: resolves outside the pack directory" % _clip(relative))
     return full
 
 
 def _read_text(path, relative):
     full = _resolve_inside(path, relative)
     if not os.path.isfile(full):
-        raise MissingArtifactError("%s: required file is missing (%s)" % (relative, full))
+        raise MissingArtifactError(
+            "%s: required file is missing (%s)" % (_clip(relative), _clip(full))
+        )
     with open(full, "r") as handle:
         return handle.read()
 

@@ -131,6 +131,7 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     pack        TEXT,
     pack_version TEXT,
     state_kind  TEXT,
+    attempts    TEXT,
     created_at  TEXT    NOT NULL,
     PRIMARY KEY (run_id, step)
 );
@@ -147,7 +148,8 @@ CREATE TABLE IF NOT EXISTS runs (
 # Columns added after the first release. A store file written by an older jig has the
 # table already, so CREATE TABLE IF NOT EXISTS silently leaves it short a column and
 # every read of that column fails. Adding them on open keeps old files readable.
-_ADDED_COLUMNS = (("pack_version", "TEXT"), ("state_kind", "TEXT"))
+_ADDED_COLUMNS = (("pack_version", "TEXT"), ("state_kind", "TEXT"),
+                  ("attempts", "TEXT"))
 
 #: The walker's first checkpoint of a fresh run. `graph.run` starts its step counter at
 #: zero and increments before the first node, so step 1 is the moment a run id is taken
@@ -180,6 +182,7 @@ class Checkpoint:
     output: Optional[Dict[str, Any]] = None
     pack: Optional[str] = None
     pack_version: Optional[str] = None
+    attempts: Dict[str, int] = field(default_factory=dict)
     created_at: Optional[str] = None
 
     @property
@@ -262,7 +265,7 @@ class Store:
             _add_column(self._connection, column, declared_type)
 
     def save(self, run_id, step, node, next_node, state, path=None, provenance=None,
-             failures=None, output=None, pack=None, pack_version=None):
+             failures=None, output=None, pack=None, pack_version=None, attempts=None):
         """Record one completed node. Re-saving the same step replaces it.
 
         `pack` is the pack's identity: either its name, or the pack itself, in which case
@@ -301,9 +304,10 @@ class Store:
             self._connection.execute(
                 "INSERT OR REPLACE INTO checkpoints "
                 "(run_id, step, node, next_node, state, path, provenance, failures, "
-                " output, pack, pack_version, state_kind, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (run_id, step, node, next_node) + blobs + tail + (kind, created_at),
+                " output, pack, pack_version, state_kind, attempts, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (run_id, step, node, next_node) + blobs + tail
+                + (kind, _dump(dict(attempts or {}), "attempts"), created_at),
             )
         # Only once the transaction committed: a cache entry for a row that was rolled
         # back would describe a chain the file does not have.
@@ -884,6 +888,20 @@ def _check(value, where, open_containers):
     )
 
 
+def _attempts_of(row):
+    try:
+        raw = row["attempts"]
+    except (IndexError, KeyError):
+        return {}
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def _to_checkpoint(row, frame):
     state, path, provenance = frame
     return Checkpoint(
@@ -898,5 +916,8 @@ def _to_checkpoint(row, frame):
         output=None if row["output"] is None else json.loads(row["output"]),
         pack=row["pack"],
         pack_version=row["pack_version"],
+        # A checkpoint written before this column existed has no attempt counts. That is
+        # a missing diagnostic, not a broken chain, so it reads back as {}.
+        attempts=_attempts_of(row),
         created_at=row["created_at"],
     )

@@ -10,7 +10,7 @@ import threading
 import unittest
 
 import jig.state
-from jig.errors import JigError, RunIdInUse, UnknownRun
+from jig.errors import JigError, NodeFailed, RunIdInUse, UnknownRun
 from jig.graph import run
 from jig.model import FakeModel, ModelExhausted
 from jig.pack import Edge, Node, Pack
@@ -336,11 +336,19 @@ class TestTheRoundTripContract(unittest.TestCase):
         self.assertIn("state.self", str(caught.exception))
 
     def test_a_model_supplied_nan_never_reaches_the_store(self):
-        """json.loads accepts JSON's NaN extension, so a model can commit one."""
-        with self.assertRaises(ValueError) as caught:
-            run(three_step_pack(), FakeModel(['{"a": NaN}', '{"b": 2}', '{"c": 3}']),
+        """json.loads accepts JSON's NaN extension, so a model can try to commit one.
+
+        It no longer gets as far as the store: `grammar.validate_against` refuses a
+        non-finite number where the value enters, so the retry ladder sees an ordinary
+        rejection and a run that never answers otherwise ends as `NodeFailed` — a
+        `JigError` the walker can route — instead of a bare `ValueError` raised from
+        inside the checkpoint after the node had already committed. The store's own
+        refusal, tested above, is the belt to that pair of braces.
+        """
+        with self.assertRaises(NodeFailed) as caught:
+            run(three_step_pack(), FakeModel(['{"a": NaN}'] * 3),
                 {"ticket": "t"}, run_id="nan-run", store=self.store)
-        self.assertIn("state.a", str(caught.exception))
+        self.assertIn("not a JSON number", str(caught.exception))
         self.assertIsNone(self.store.latest("nan-run"))
 
     def test_what_is_written_to_the_file_is_strict_json(self):

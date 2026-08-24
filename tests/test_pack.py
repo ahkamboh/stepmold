@@ -1,9 +1,12 @@
 """T2 — a JigPack loads, and every malformed pack fails with a specific error."""
 
 import os
+import shutil
+import tempfile
 import unittest
 
 from jig.pack import (
+    RESERVED_STATE_NAMES,
     EvalsetError,
     GrammarError,
     GraphError,
@@ -165,3 +168,53 @@ class TestMalformedPacks(unittest.TestCase):
         ):
             with self.assertRaises(PackError):
                 load_pack(fixture(name))
+
+
+class TestReservedStateNames(unittest.TestCase):
+    """`scratchpad` is jig's own binding in a run's scope, so a pack may not commit there.
+
+    `codegen.think` renders the think template with a `scratchpad` of its own, and the
+    prompt labels that slot "your notes from thinking this through". A node whose output
+    landed there would be handing the next think stage a value the model reads as its own
+    reasoning — the most persuasive position in a prompt, filled by something that is not
+    reasoning at all. Refusing it at load time means no run can reach that state.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+
+    def _pack(self, output):
+        directory = os.path.join(self.root, "p%d" % len(os.listdir(self.root)))
+        os.makedirs(os.path.join(directory, "prompts"))
+        os.makedirs(os.path.join(directory, "grammars"))
+        _write(directory, "manifest.yaml", "name: p\nversion: 1\nentry: a\n")
+        _write(directory, "graph.yaml",
+               "nodes:\n"
+               "  a:\n"
+               "    type: generate\n"
+               "    output: %s\n"
+               "  z:\n"
+               "    type: end\n"
+               "edges:\n"
+               "  - from: a\n"
+               "    to: z\n" % output)
+        _write(directory, os.path.join("prompts", "a.txt"), "go\n")
+        _write(directory, os.path.join("grammars", "a.json"), '{"type": "object"}')
+        return directory
+
+    def test_the_reserved_names_are_public_so_callers_can_check_their_own_inputs(self):
+        self.assertIn("scratchpad", RESERVED_STATE_NAMES)
+
+    def test_a_node_that_commits_to_the_scratchpad_is_refused(self):
+        with self.assertRaises(GraphError) as caught:
+            load_pack(self._pack("scratchpad"))
+        self.assertIn("scratchpad", str(caught.exception))
+
+    def test_an_ordinary_output_name_still_loads(self):
+        self.assertEqual(load_pack(self._pack("result")).nodes["a"].output, "result")
+
+
+def _write(directory, relative, text):
+    with open(os.path.join(directory, relative), "w") as handle:
+        handle.write(text)
