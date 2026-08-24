@@ -10,6 +10,14 @@ comparisons, `and`/`or`/`not`, `in`, arithmetic, indexing, literals, and a fixed
 helper functions. No attribute access on non-mappings, no method calls, no lambdas, no
 comprehensions, no assignment. If an assert needs more than this, it wants to be a
 deterministic node in the graph, not a one-liner in YAML.
+
+The other half of the contract is that *every* way an expression can fail arrives as
+`ExprError`. `verify._check_assert` catches `ExprError` and turns it into a `Rejected`,
+which the retry ladder and `on_fail` edges know how to route; anything else — a raw
+`TypeError` from a bad operand, a `RecursionError` from a deeply nested expression, a
+`MemoryError` from a huge repetition — escapes that handler and kills the whole run. So
+the walker converts what it can and refuses, up front, what it cannot survive: nesting
+past `_MAX_DEPTH` and sequence repetition past `_MAX_REPEAT`.
 """
 
 import ast
@@ -20,6 +28,18 @@ from .errors import ExprError
 __all__ = ["evaluate", "is_true"]
 
 _LITERALS = {"true": True, "false": False, "null": None, "none": None}
+
+# How deep a single expression may nest. `_eval` recurses once per AST level, so without
+# a ceiling `1+1+1+...` walks straight into CPython's own recursion limit and raises a
+# RecursionError the caller is not expecting. The ceiling is far above anything a
+# readable one-line assert reaches, and well under the interpreter's own.
+_MAX_DEPTH = 100
+
+# How long a sequence `*` may produce. `"a" * n * n` is the one operator here that can
+# amplify a small expression into gigabytes, and MemoryError is not an ExprError. The
+# limit is a refusal threshold, not a measurement: anything a sane assert compares
+# against is orders of magnitude below it.
+_MAX_REPEAT = 1_000_000
 
 _HELPERS = {
     "len": len,
@@ -74,7 +94,11 @@ def evaluate(expression, state):
         tree = ast.parse(expression.strip(), mode="eval")
     except SyntaxError as exc:
         raise ExprError("could not parse expression %r (%s)" % (expression, exc.msg))
-    return _eval(tree.body, state, expression)
+    except RecursionError:
+        # Which inputs exhaust the parser rather than the walker is a CPython detail that
+        # moves between versions, so cover it here too rather than assume a version.
+        raise ExprError("expression %r is nested too deeply to parse" % expression)
+    return _eval(tree.body, state, expression, 0)
 
 
 def is_true(expression, state):
@@ -82,7 +106,14 @@ def is_true(expression, state):
     return bool(evaluate(expression, state))
 
 
-def _eval(node, state, source):
+def _eval(node, state, source, depth):
+    """Walk one AST node. `depth` is how many levels of expression are already open."""
+    if depth > _MAX_DEPTH:
+        raise ExprError(
+            "expression %r is nested more than %d levels deep, which jig refuses to "
+            "evaluate" % (source, _MAX_DEPTH)
+        )
+    inner = depth + 1
     if isinstance(node, ast.Constant):
         return node.value
     if isinstance(node, ast.Name):
@@ -90,28 +121,25 @@ def _eval(node, state, source):
     if isinstance(node, ast.Attribute):
         return _attribute(node, state, source)
     if isinstance(node, ast.Subscript):
-        return _subscript(node, state, source)
+        return _subscript(node, state, source, inner)
     if isinstance(node, ast.BoolOp):
-        return _bool_op(node, state, source)
+        return _bool_op(node, state, source, inner)
     if isinstance(node, ast.UnaryOp):
-        return _unary(node, state, source)
+        return _unary(node, state, source, inner)
     if isinstance(node, ast.BinOp):
-        return _binary(node, state, source)
+        return _binary(node, state, source, inner)
     if isinstance(node, ast.Compare):
-        return _compare(node, state, source)
+        return _compare(node, state, source, inner)
     if isinstance(node, ast.Call):
-        return _call(node, state, source)
+        return _call(node, state, source, inner)
     if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-        return [_eval(item, state, source) for item in node.elts]
+        return [_eval(item, state, source, inner) for item in node.elts]
     if isinstance(node, ast.Dict):
-        return {
-            _eval(key, state, source): _eval(value, state, source)
-            for key, value in zip(node.keys, node.values)
-        }
+        return _dict(node, state, source, inner)
     if isinstance(node, ast.IfExp):
-        if _eval(node.test, state, source):
-            return _eval(node.body, state, source)
-        return _eval(node.orelse, state, source)
+        if _eval(node.test, state, source, inner):
+            return _eval(node.body, state, source, inner)
+        return _eval(node.orelse, state, source, inner)
     raise ExprError(_refuse(node, source))
 
 
@@ -166,58 +194,104 @@ def _attribute(node, state, source):
     return current
 
 
-def _subscript(node, state, source):
-    container = _eval(node.value, state, source)
-    key = _eval(node.slice, state, source)
+def _subscript(node, state, source, depth):
+    container = _eval(node.value, state, source, depth)
+    key = _eval(node.slice, state, source, depth)
     try:
         return container[key]
     except (KeyError, IndexError, TypeError) as exc:
         raise ExprError("cannot index %r in %r (%s)" % (key, source, exc))
 
 
-def _bool_op(node, state, source):
-    values = [_eval(value, state, source) for value in node.values]
-    if isinstance(node.op, ast.And):
-        result = True
-        for value in values:
-            if not value:
-                return value
-            result = value
-        return result
-    for value in values:
-        if value:
-            return value
-    return values[-1]
+def _dict(node, state, source, depth):
+    result = {}
+    for key_node, value_node in zip(node.keys, node.values):
+        if key_node is None:
+            # `{**other}`. ast puts a None key there; refuse it by name rather than let
+            # the walker report the placeholder's type.
+            raise ExprError(
+                "** unpacking is not allowed in a jig expression (in %r)" % source
+            )
+        key = _eval(key_node, state, source, depth)
+        value = _eval(value_node, state, source, depth)
+        try:
+            result[key] = value
+        except TypeError as exc:
+            raise ExprError("cannot use %r as a dict key in %r (%s)" % (key, source, exc))
+    return result
 
 
-def _unary(node, state, source):
-    value = _eval(node.operand, state, source)
+def _bool_op(node, state, source, depth):
+    """`and` / `or`, short-circuiting exactly like Python.
+
+    Evaluating every operand up front would break the one idiom pack authors reach for
+    most — `x is not null and len(x) > 2` — by running the guarded half against the
+    value the guard exists to exclude. So stop at the first operand that decides the
+    result and never look at the rest.
+    """
+    wants_truthy = isinstance(node.op, ast.And)
+    result = None
+    for value_node in node.values:
+        result = _eval(value_node, state, source, depth)
+        if bool(result) is not wants_truthy:
+            return result
+    # Every operand agreed; Python yields the last one, whatever its type.
+    return result
+
+
+def _unary(node, state, source, depth):
+    value = _eval(node.operand, state, source, depth)
     if isinstance(node.op, ast.Not):
         return not value
-    if isinstance(node.op, ast.USub):
-        return -value
-    if isinstance(node.op, ast.UAdd):
-        return +value
-    raise ExprError(_refuse(node.op, source))
+    if not isinstance(node.op, (ast.USub, ast.UAdd)):
+        raise ExprError(_refuse(node.op, source))
+    try:
+        return -value if isinstance(node.op, ast.USub) else +value
+    except TypeError as exc:
+        # `-"text"`: a mis-written assert, and the caller only handles ExprError.
+        raise ExprError("cannot evaluate %r (%s)" % (source, exc))
 
 
-def _binary(node, state, source):
+def _binary(node, state, source, depth):
     handler = _BINARY.get(type(node.op))
     if handler is None:
         raise ExprError(_refuse(node.op, source))
+    left = _eval(node.left, state, source, depth)
+    right = _eval(node.right, state, source, depth)
+    if isinstance(node.op, ast.Mult):
+        _check_repeat(left, right, source)
     try:
-        return handler(_eval(node.left, state, source), _eval(node.right, state, source))
+        return handler(left, right)
     except (TypeError, ZeroDivisionError) as exc:
         raise ExprError("cannot evaluate %r (%s)" % (source, exc))
 
 
-def _compare(node, state, source):
-    left = _eval(node.left, state, source)
+def _check_repeat(left, right, source):
+    """Refuse `sequence * n` before it allocates, if the result would be huge.
+
+    Sequence repetition is the only whitelisted operator that turns a short expression
+    into an arbitrarily large object, and the MemoryError it would raise is not an
+    ExprError, so it would escape the caller's handler instead of failing the node.
+    """
+    for sequence, count in ((left, right), (right, left)):
+        if not isinstance(sequence, (str, bytes, list, tuple)):
+            continue
+        if not isinstance(count, int):
+            continue
+        if len(sequence) * count > _MAX_REPEAT:
+            raise ExprError(
+                "repetition in %r would build a sequence of %d items, which is too "
+                "large (limit %d)" % (source, len(sequence) * count, _MAX_REPEAT)
+            )
+
+
+def _compare(node, state, source, depth):
+    left = _eval(node.left, state, source, depth)
     for op, comparator in zip(node.ops, node.comparators):
         handler = _COMPARE.get(type(op))
         if handler is None:
             raise ExprError(_refuse(op, source))
-        right = _eval(comparator, state, source)
+        right = _eval(comparator, state, source, depth)
         try:
             if not handler(left, right):
                 return False
@@ -227,7 +301,7 @@ def _compare(node, state, source):
     return True
 
 
-def _call(node, state, source):
+def _call(node, state, source, depth):
     if not isinstance(node.func, ast.Name) or node.func.id not in _HELPERS:
         called = getattr(node.func, "id", None) or _path(node.func) or "<expression>"
         raise ExprError(
@@ -236,7 +310,7 @@ def _call(node, state, source):
         )
     if node.keywords:
         raise ExprError("jig expression helpers take positional arguments only")
-    arguments = [_eval(argument, state, source) for argument in node.args]
+    arguments = [_eval(argument, state, source, depth) for argument in node.args]
     try:
         return _HELPERS[node.func.id](*arguments)
     except Exception as exc:
