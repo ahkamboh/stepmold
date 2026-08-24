@@ -18,6 +18,13 @@ which the retry ladder and `on_fail` edges know how to route; anything else — 
 `MemoryError` from a huge repetition — escapes that handler and kills the whole run. So
 the walker converts what it can and refuses, up front, what it cannot survive: nesting
 past `_MAX_DEPTH` and sequence repetition past `_MAX_REPEAT`.
+
+There is a third rule, and it is about *what those errors say*. An assert exists to read
+the candidate object, so every failure here happens with model-authored values in hand —
+`_check_assert` puts `str(exc)` straight into a `Rejected`, whose feedback is shown to
+the model on the next rung. So `str(exc)` is built only from text the pack wrote (the
+expression, a helper name, a type name); the offending values live on `exc.detail`, for
+logs and for a caller that asks. See `_error`.
 """
 
 import ast
@@ -28,6 +35,10 @@ from .errors import ExprError
 __all__ = ["evaluate", "is_true"]
 
 _LITERALS = {"true": True, "false": False, "null": None, "none": None}
+
+# How much of a value a *diagnostic* may show. A ticket is a megabyte often enough that
+# an unclipped repr is a real hazard, and nothing here needs more than a glimpse.
+_SHOW_LIMIT = 120
 
 # How deep a single expression may nest. `_eval` recurses once per AST level, so without
 # a ceiling `1+1+1+...` walks straight into CPython's own recursion limit and raises a
@@ -86,18 +97,48 @@ _COMPARE = {
 }
 
 
+def _error(safe, detail=None):
+    """An `ExprError` whose message is safe to put in front of the model.
+
+    `verify._check_assert` turns `str(exc)` into the `Rejected` a retry prompt is built
+    from, and an assert reads exactly the values that were just rejected — so a message
+    quoting one would carry the rejected generation into the next prompt, which is the
+    self-conditioning spiral jig is designed around (docs/PLAN.md §3). `str(exc)` is
+    therefore pack-authored text only; `exc.detail` keeps the whole story for the
+    operator, because bytes in a log cannot condition anything.
+    """
+    exc = ExprError(safe)
+    exc.detail = safe if detail is None else detail
+    return exc
+
+
+def _show(value):
+    """A value, rendered for `detail` only — bounded, because the value is not ours."""
+    return _bound(repr(value))
+
+
+def _why(exc):
+    """A builtin's own message, bounded: several of them quote the whole operand."""
+    return _bound(str(exc))
+
+
+def _bound(text):
+    text = " ".join(text.split())
+    return text if len(text) <= _SHOW_LIMIT else text[:_SHOW_LIMIT] + "..."
+
+
 def evaluate(expression, state):
     """Evaluate `expression` against `state`. Raises `ExprError` on anything unsafe."""
     if not isinstance(expression, str) or not expression.strip():
-        raise ExprError("expression is empty")
+        raise _error("expression is empty")
     try:
         tree = ast.parse(expression.strip(), mode="eval")
     except SyntaxError as exc:
-        raise ExprError("could not parse expression %r (%s)" % (expression, exc.msg))
+        raise _error("could not parse expression %r (%s)" % (expression, exc.msg))
     except RecursionError:
         # Which inputs exhaust the parser rather than the walker is a CPython detail that
         # moves between versions, so cover it here too rather than assume a version.
-        raise ExprError("expression %r is nested too deeply to parse" % expression)
+        raise _error("expression %r is nested too deeply to parse" % expression)
     return _eval(tree.body, state, expression, 0)
 
 
@@ -109,7 +150,7 @@ def is_true(expression, state):
 def _eval(node, state, source, depth):
     """Walk one AST node. `depth` is how many levels of expression are already open."""
     if depth > _MAX_DEPTH:
-        raise ExprError(
+        raise _error(
             "expression %r is nested more than %d levels deep, which jig refuses to "
             "evaluate" % (source, _MAX_DEPTH)
         )
@@ -140,7 +181,7 @@ def _eval(node, state, source, depth):
         if _eval(node.test, state, source, inner):
             return _eval(node.body, state, source, inner)
         return _eval(node.orelse, state, source, inner)
-    raise ExprError(_refuse(node, source))
+    raise _error(_refuse(node, source))
 
 
 def _refuse(node, source):
@@ -154,14 +195,17 @@ def _name(identifier, state):
     if identifier in _LITERALS:
         return _LITERALS[identifier]
     if identifier.startswith("__"):
-        raise ExprError("name %r is not allowed in a jig expression" % identifier)
+        raise _error("name %r is not allowed in a jig expression" % identifier)
     if identifier in state:
         return state[identifier]
     if identifier in _HELPERS:
         return _HELPERS[identifier]
-    raise ExprError(
-        "expression references %r, which is not in state (state has: %s)"
-        % (identifier, ", ".join(sorted(state)) or "nothing")
+    # The key list is diagnostics only: in merge mode the candidate's own property names
+    # *are* state keys, so listing them to the model would echo the rejected output back.
+    raise _error(
+        "expression references %r, which is not in state" % identifier,
+        detail="expression references %r, which is not in state (state has: %s)"
+        % (identifier, _bound(", ".join(sorted(state))) or "nothing"),
     )
 
 
@@ -180,14 +224,14 @@ def _path(node):
 def _attribute(node, state, source):
     path = _path(node)
     if path is None:
-        raise ExprError(_refuse(node, source))
+        raise _error(_refuse(node, source))
     if path.startswith("__") or ".__" in path:
-        raise ExprError("name %r is not allowed in a jig expression" % path)
+        raise _error("name %r is not allowed in a jig expression" % path)
     parts = path.split(".")
     current = _name(parts[0], state)
     for part in parts[1:]:
         if not isinstance(current, dict) or part not in current:
-            raise ExprError(
+            raise _error(
                 "expression references %r, which is not a mapping key in state" % path
             )
         current = current[part]
@@ -200,7 +244,12 @@ def _subscript(node, state, source, depth):
     try:
         return container[key]
     except (KeyError, IndexError, TypeError) as exc:
-        raise ExprError("cannot index %r in %r (%s)" % (key, source, exc))
+        # The key is routinely a value out of the candidate — `queues[category]` is the
+        # shape every routing assert takes — so it belongs in `detail`, never in `str`.
+        raise _error(
+            "cannot index by the value %r asks for" % source,
+            detail="cannot index %s in %r (%s)" % (_show(key), source, _why(exc)),
+        )
 
 
 def _dict(node, state, source, depth):
@@ -209,7 +258,7 @@ def _dict(node, state, source, depth):
         if key_node is None:
             # `{**other}`. ast puts a None key there; refuse it by name rather than let
             # the walker report the placeholder's type.
-            raise ExprError(
+            raise _error(
                 "** unpacking is not allowed in a jig expression (in %r)" % source
             )
         key = _eval(key_node, state, source, depth)
@@ -217,7 +266,11 @@ def _dict(node, state, source, depth):
         try:
             result[key] = value
         except TypeError as exc:
-            raise ExprError("cannot use %r as a dict key in %r (%s)" % (key, source, exc))
+            raise _error(
+                "cannot use that value as a dict key in %r" % source,
+                detail="cannot use %s as a dict key in %r (%s)"
+                % (_show(key), source, _why(exc)),
+            )
     return result
 
 
@@ -244,18 +297,21 @@ def _unary(node, state, source, depth):
     if isinstance(node.op, ast.Not):
         return not value
     if not isinstance(node.op, (ast.USub, ast.UAdd)):
-        raise ExprError(_refuse(node.op, source))
+        raise _error(_refuse(node.op, source))
     try:
         return -value if isinstance(node.op, ast.USub) else +value
     except TypeError as exc:
         # `-"text"`: a mis-written assert, and the caller only handles ExprError.
-        raise ExprError("cannot evaluate %r (%s)" % (source, exc))
+        raise _error(
+            "cannot evaluate %r against this value" % source,
+            detail="cannot evaluate %r (%s)" % (source, _why(exc)),
+        )
 
 
 def _binary(node, state, source, depth):
     handler = _BINARY.get(type(node.op))
     if handler is None:
-        raise ExprError(_refuse(node.op, source))
+        raise _error(_refuse(node.op, source))
     left = _eval(node.left, state, source, depth)
     right = _eval(node.right, state, source, depth)
     if isinstance(node.op, ast.Mult):
@@ -263,7 +319,10 @@ def _binary(node, state, source, depth):
     try:
         return handler(left, right)
     except (TypeError, ZeroDivisionError) as exc:
-        raise ExprError("cannot evaluate %r (%s)" % (source, exc))
+        raise _error(
+            "cannot evaluate %r against these values" % source,
+            detail="cannot evaluate %r (%s)" % (source, _why(exc)),
+        )
 
 
 def _check_repeat(left, right, source):
@@ -279,9 +338,12 @@ def _check_repeat(left, right, source):
         if not isinstance(count, int):
             continue
         if len(sequence) * count > _MAX_REPEAT:
-            raise ExprError(
-                "repetition in %r would build a sequence of %d items, which is too "
-                "large (limit %d)" % (source, len(sequence) * count, _MAX_REPEAT)
+            raise _error(
+                "repetition in %r would build a sequence that is too large (limit %d)"
+                % (source, _MAX_REPEAT),
+                detail="repetition in %r would build a sequence of %d items, which is "
+                "too large (limit %d)"
+                % (source, len(sequence) * count, _MAX_REPEAT),
             )
 
 
@@ -290,13 +352,16 @@ def _compare(node, state, source, depth):
     for op, comparator in zip(node.ops, node.comparators):
         handler = _COMPARE.get(type(op))
         if handler is None:
-            raise ExprError(_refuse(op, source))
+            raise _error(_refuse(op, source))
         right = _eval(comparator, state, source, depth)
         try:
             if not handler(left, right):
                 return False
         except TypeError as exc:
-            raise ExprError("cannot compare in %r (%s)" % (source, exc))
+            raise _error(
+                "cannot compare these values in %r" % source,
+                detail="cannot compare in %r (%s)" % (source, _why(exc)),
+            )
         left = right
     return True
 
@@ -304,14 +369,20 @@ def _compare(node, state, source, depth):
 def _call(node, state, source, depth):
     if not isinstance(node.func, ast.Name) or node.func.id not in _HELPERS:
         called = getattr(node.func, "id", None) or _path(node.func) or "<expression>"
-        raise ExprError(
+        raise _error(
             "%r is not a jig expression helper (allowed: %s)"
             % (called, ", ".join(sorted(_HELPERS)))
         )
     if node.keywords:
-        raise ExprError("jig expression helpers take positional arguments only")
+        raise _error("jig expression helpers take positional arguments only")
     arguments = [_eval(argument, state, source, depth) for argument in node.args]
     try:
         return _HELPERS[node.func.id](*arguments)
     except Exception as exc:
-        raise ExprError("helper %s() failed in %r (%s)" % (node.func.id, source, exc))
+        # `int("<a ticket>")` puts the whole argument in the ValueError it raises, so the
+        # builtin's own message is exactly the thing that must not reach a prompt.
+        raise _error(
+            "helper %s() failed in %r" % (node.func.id, source),
+            detail="helper %s() failed in %r (%s)"
+            % (node.func.id, source, _why(exc)),
+        )
