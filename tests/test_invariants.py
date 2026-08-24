@@ -565,5 +565,61 @@ class EveryCommittedNodeIsCheckpointed(unittest.TestCase):
         self.assertEqual(first.state["r1"], {"v": "1"})
 
 
+class AResumeIsRefusedIfThePackMoved(unittest.TestCase):
+    """state.py: a checkpoint records which pack wrote it, name AND version.
+
+    Resuming under a graph that has since changed silently skips newly inserted nodes
+    and trusts changed ones. The version is the cheap half of that guard, and it only
+    works if the walker actually hands the pack over — jig/graph.py:_checkpoint used to
+    pass `pack.name`, which threw the version away before it reached the store.
+    """
+
+    def _pack_at(self, root, version, extra_node=""):
+        graph = (
+            "nodes:\n"
+            "  a:\n"
+            "    type: generate\n"
+            "    output: r1\n"
+            "%s"
+            "  z:\n"
+            "    type: end\n"
+            "edges:\n"
+            "  - from: a\n"
+            "    to: z\n"
+        ) % extra_node
+        _write_pack(root, graph, {"a": STR_SCHEMA}, {"a.txt": "go\n"},
+                    manifest="name: p\nversion: %s\nentry: a\n" % version)
+        return load_pack(root)
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.store = Store(os.path.join(self.root, "ck.sqlite"))
+        self.addCleanup(self.store.close)
+
+    def test_an_ordinary_run_records_the_pack_version(self):
+        pack = self._pack_at(os.path.join(self.root, "p"), 1)
+        run(pack, FakeModel(['{"v": "x"}']), {}, run_id="r", store=self.store)
+        recorded = self.store.latest("r")
+        self.assertEqual(recorded.pack, "p")
+        self.assertEqual(recorded.pack_version, "1",
+                         "the walker dropped the version before the store saw it")
+
+    def test_resuming_under_a_bumped_version_is_refused(self):
+        pack = self._pack_at(os.path.join(self.root, "p"), 1)
+        run(pack, FakeModel(['{"v": "x"}']), {}, run_id="r", store=self.store)
+        moved = self._pack_at(os.path.join(self.root, "p2"), 2)
+        with self.assertRaises(Exception) as caught:
+            resume(moved, FakeModel(['{"v": "y"}']), "r", self.store)
+        self.assertIn("version", str(caught.exception).lower())
+
+    def test_resuming_the_same_version_still_works(self):
+        pack = self._pack_at(os.path.join(self.root, "p"), 1)
+        run(pack, FakeModel(['{"v": "x"}']), {}, run_id="r", store=self.store)
+        again = self._pack_at(os.path.join(self.root, "p3"), 1)
+        replayed = resume(again, FakeModel(['{"v": "y"}']), "r", self.store)
+        self.assertEqual(replayed.state["r1"], {"v": "x"})
+
+
 if __name__ == "__main__":
     unittest.main()

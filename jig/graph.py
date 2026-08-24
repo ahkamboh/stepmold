@@ -315,7 +315,10 @@ def _checkpoint(store, pack, run_id, step, node, next_node, state, path, provena
         provenance=provenance,
         failures=[asdict(failure) for failure in failures],
         output=output,
-        pack=pack.name,
+        # Hand over the pack itself, not just its name: the store records name AND
+        # version, and `state.resume` needs both to catch a graph that moved on under
+        # a run. Passing pack.name here threw the version away before the store saw it.
+        pack=pack,
     )
 
 
