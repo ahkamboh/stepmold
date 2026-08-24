@@ -94,6 +94,44 @@ jobs:
           print("clean: pyproject declares no dependencies")
           PY
 
+  no-private-material:
+    name: no private material
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The strategy document must never re-enter this repository
+        run: |
+          # It has come back once already, on a branch cut before it was removed. This is a
+          # public repository; a merge from a stale branch must not be the thing that
+          # notices. Checks the working tree, not history — history is clean and rewriting
+          # it again would be worse than the risk.
+          fail=0
+          if [ -e docs/PLAN.md ]; then
+            echo "docs/PLAN.md is present. It holds commercial strategy and belongs outside this repo."
+            fail=1
+          fi
+          for phrase in "Strategic fit" "Break-even volume" "three wins that close deals"; do
+            if grep -rqF "$phrase" --exclude-dir=.git --exclude-dir=.github . ; then
+              echo "found private-strategy phrase: $phrase"
+              grep -rlF "$phrase" --exclude-dir=.git --exclude-dir=.github . | sed 's/^/  /'
+              fail=1
+            fi
+          done
+          if [ "$fail" = "1" ]; then exit 1; fi
+          echo "clean: no private material in the tree"
+
+      - name: No credential-shaped strings
+        run: |
+          # Matches the same key shapes jig redacts in its own logs.
+          if grep -rEn "(c?sk|gsk|xai|xoxb|ghp)-[A-Za-z0-9_-]{20,}" \
+               --exclude-dir=.git --exclude-dir=.github . \
+               | grep -vE "CANARY|KEY_SHAPED|redact|SECRET|example|<redacted>"; then
+            echo "a credential-shaped string is present in the tree"
+            exit 1
+          fi
+          echo "clean: no credential-shaped strings"
+
   package:
     name: builds and installs
     runs-on: ubuntu-latest
