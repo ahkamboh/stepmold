@@ -127,11 +127,26 @@ class Edge:
 
 @dataclass(frozen=True)
 class EvalCase:
-    """One line of `evalset.jsonl` — the hand-maintained contract."""
+    """One line of `evalset.jsonl` — the hand-maintained contract.
+
+    `expect` compares fields, which is not the whole contract a graph makes. Two fields
+    exist because authoring real packs proved that:
+
+    * `end` — the ending the run must reach. Field comparison cannot see routing, so a
+      pack whose branches project the same shape scored full marks with its policy
+      inverted. Naming the ending makes the branch part of the contract.
+    * `rescued` — this case is *supposed* to burn a node's ladder and take its `on_fail`
+      edge. Without it a declared rescue path could never be a passing expectation, so
+      the one path an author most wants to prove was the one the evalset could not score.
+      It is checked both ways: a case that claims a rescue and does not get one fails
+      too, so it cannot be used to silence a real failure.
+    """
 
     input: dict
     expect: dict
     name: Optional[str] = None
+    end: Optional[str] = None
+    rescued: bool = False
 
 
 @dataclass(frozen=True)
@@ -188,6 +203,9 @@ def load_pack(path):
         )
     _check_reachable_targets(nodes, edges)
 
+    evalset = _load_evalset(path)
+    _check_case_endings(evalset, nodes)
+
     return Pack(
         path=path,
         name=name,
@@ -196,7 +214,7 @@ def load_pack(path):
         model=model,
         nodes=nodes,
         edges=edges,
-        evalset=_load_evalset(path),
+        evalset=evalset,
         max_steps=max_steps,
         manifest=manifest,
     )
@@ -423,6 +441,49 @@ def _check_reachable_targets(nodes, edges):
 # ------------------------------------------------------------------------ evalset
 
 
+def _case_end(raw, number):
+    """The ending a case must reach, or None. Validated against the graph by the caller."""
+    value = raw.get("end")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise EvalsetError(
+            "evalset.jsonl line %d: 'end' must be the name of an end node" % number
+        )
+    return value
+
+
+def _case_flag(raw, key, number):
+    value = raw.get(key, False)
+    if not isinstance(value, bool):
+        raise EvalsetError(
+            "evalset.jsonl line %d: %r must be true or false" % (number, key)
+        )
+    return value
+
+
+def _check_case_endings(cases, nodes):
+    """Every `end:` a case names must be a real ending in this graph.
+
+    A typo would otherwise never match and quietly fail every run of that case, which is
+    the same silent-wrongness the field exists to remove.
+    """
+    for case in cases:
+        if case.end is None:
+            continue
+        node = nodes.get(case.end)
+        if node is None:
+            raise EvalsetError(
+                "evalset.jsonl: case %r expects ending %r, which is not a node in "
+                "graph.yaml" % (case.name, case.end)
+            )
+        if node.type != "end":
+            raise EvalsetError(
+                "evalset.jsonl: case %r expects ending %r, but that node is type %r, "
+                "not 'end'" % (case.name, case.end, node.type)
+            )
+
+
 def _load_evalset(path):
     full = os.path.join(path, "evalset.jsonl")
     if not os.path.isfile(full):
@@ -448,6 +509,8 @@ def _load_evalset(path):
                     input=raw["input"],
                     expect=raw["expect"],
                     name=raw.get("name") or "case %d" % number,
+                    end=_case_end(raw, number),
+                    rescued=_case_flag(raw, "rescued", number),
                 )
             )
     return cases

@@ -145,12 +145,30 @@ def _run_case(pack, model, case, index):
     result.run_id = run_result.run_id
     result.actual = dict(run_result.output)
     result.mismatches = _compare(case.expect, run_result)
+    result.mismatches.extend(_compare_ending(case, run_result))
     diverted = run_result.failures[0] if run_result.failures else None
 
-    if not result.mismatches and diverted is None:
-        result.passed = True
+    # `rescued` says this case is meant to burn a ladder and take an on_fail edge. It is
+    # checked in both directions: an undeclared failure still fails the case, and a case
+    # that claims a rescue but sailed through is not testing what it says it tests — so
+    # it cannot be used to silence a real failure.
+    if case.rescued and diverted is None:
+        result.node = run_result.end_node
+        result.error = (
+            "case declares rescued: true but the run completed with no failure — "
+            "either the rescue path is not being exercised, or the flag is wrong"
+        )
         return result
-    if diverted is not None:
+    unexpected = diverted is not None and not case.rescued
+
+    if not result.mismatches and not unexpected:
+        result.passed = True
+        if diverted is not None:
+            # Passing, but say which node needed rescuing: an operator reading a green
+            # report should still see where the ladder was spent.
+            result.node = diverted.node
+        return result
+    if unexpected:
         # A node that burned its ladder and was diverted is the cause, even when the
         # projected output happens to look right.
         result.node = diverted.node
@@ -158,6 +176,29 @@ def _run_case(pack, model, case, index):
     else:
         result.node = _earliest_node(result.mismatches, run_result.path)
     return result
+
+
+def _compare_ending(case, run_result):
+    """The branch a run took, as part of the contract.
+
+    `expect` compares fields, and the ending is not a field — so a pack whose branches
+    project the same shape could have its routing inverted and still score full marks.
+    Naming the ending is what closes that.
+    """
+    if case.end is None:
+        return []
+    if run_result.end_node == case.end:
+        return []
+    return [
+        Mismatch(
+            field="<ending>",
+            expected=case.end,
+            actual=run_result.end_node,
+            node=run_result.path[-2] if len(run_result.path) > 1 else None,
+            # No note: the renderer substitutes a note FOR the actual value, and here the
+            # actual ending is the whole point. "<ending>" already says what the field is.
+        )
+    ]
 
 
 def _earliest_node(mismatches, path):
