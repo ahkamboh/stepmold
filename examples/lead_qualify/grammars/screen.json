@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "email_domain_kind": {
+      "type": "string",
+      "enum": ["company_domain", "free_mail", "unknown"]
+    },
+    "company_named": {"type": "boolean"}
+  },
+  "required": ["email_domain_kind", "company_named"],
+  "additionalProperties": false
+}

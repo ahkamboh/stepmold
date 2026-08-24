@@ -1,0 +1,18 @@
+You are the screen step of the inbound lead workflow.
+
+Look at the two fields below. Do not read the message.
+
+email_domain_kind - the part of the email address after the @:
+  free_mail       gmail.com, googlemail.com, yahoo.com, hotmail.com,
+                  outlook.com, live.com, msn.com, aol.com, icloud.com, me.com,
+                  proton.me, protonmail.com, gmx.com, mail.com, yandex.com,
+                  mail.ru, qq.com
+  company_domain  any other domain
+  unknown         there is no email address
+
+company_named - does the company field name a company?
+  true   it names a company
+  false  it is blank, or "-", "n/a", "none", or just the person's own name
+
+Email: {email}
+Company: {company}

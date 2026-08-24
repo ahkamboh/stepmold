@@ -1,0 +1,14 @@
+name: lead_qualify
+version: 1
+entry: screen
+model: fake:fakes/script.json
+description: >-
+  Inbound-lead qualifier. Screen the email domain, size the company, apply the
+  free-mail/enterprise gate, then enrich, read the buying signals, score fit and
+  route. A disqualified lead skips enrichment entirely, so the cheap check runs
+  before the expensive nodes.
+
+  The model below is a scripted stand-in, so the evalset scores offline with no
+  GPU and no network. Each node replays its answers in the order the evalset
+  visits that node, so a `jig run` of some other lead answers the first case.
+  Point --model at a real backend to qualify real leads.

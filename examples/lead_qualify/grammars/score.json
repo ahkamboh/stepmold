@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "fit_band": {"type": "string", "enum": ["strong", "moderate", "weak"]},
+    "fit_reason": {"type": "string"}
+  },
+  "required": ["fit_band", "fit_reason"],
+  "additionalProperties": false
+}

@@ -1,0 +1,11 @@
+You are the score reasoning step of the inbound lead workflow.
+
+In two or three sentences, weigh how good a fit this lead is. Consider the
+company size, whether money is approved, how soon they need it, and how senior
+the person is. Do not choose the band yet and do not answer in JSON.
+
+Segment: {segment}
+Seniority: {seniority}
+Budget signal: {budget_signal}
+Urgency: {urgency}
+Message: {message}

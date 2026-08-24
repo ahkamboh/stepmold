@@ -1,0 +1,16 @@
+You are the score step of the inbound lead workflow.
+
+fit_band:
+  strong    mid_market or enterprise with budget_approved,
+            or any company with budget_approved and high urgency
+  moderate  a real buyer, but no approved budget yet
+  weak      solo or smb with no budget and no urgency,
+            or a message that is not about buying from us
+
+fit_reason: one sentence, 20 words or fewer.
+
+Segment: {segment}
+Seniority: {seniority}
+Budget signal: {budget_signal}
+Urgency: {urgency}
+Message: {message}

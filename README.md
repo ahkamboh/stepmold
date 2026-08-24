@@ -51,6 +51,12 @@ examples/support_triage/
   evalset.jsonl        the contract: input -> expected output
 ```
 
+A second pack, `examples/lead_qualify/`, qualifies an inbound sales lead. It is the
+same idea with a branch in it: a cheap gate node applies the one hard rule (an
+enterprise-sized company writing in from a personal mailbox is refused), and a
+conditional edge sends a refused lead straight to its ending, so the enrichment,
+signal-reading, scoring and routing nodes below the gate never run for it.
+
 Four ideas do the work:
 
 1. **The graph decides, not the model.** Every node gets one narrow job and a short,
@@ -277,6 +283,7 @@ The runtime is complete and tested; the compiler is not written yet.
 | CLI: `run`, `eval`, `validate` | done |
 | Structured logging (`--log-level`, `--log-format=text\|json`) | done |
 | Example pack, runs offline against a scripted model | done |
+| Second example pack: branching graph, policy asserts | done |
 | OpenAI-compatible backend | written, **unverified against a live server** |
 | `jig build` — the compiler | not started |
 

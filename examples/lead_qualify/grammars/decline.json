@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "next_action": {"type": "string", "enum": ["reject"]},
+    "reply_note": {"type": "string"}
+  },
+  "required": ["next_action", "reply_note"],
+  "additionalProperties": false
+}

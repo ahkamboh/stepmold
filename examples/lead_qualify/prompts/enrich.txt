@@ -1,0 +1,16 @@
+You are the enrich step of the inbound lead workflow.
+
+industry - what the company sells or does. Choose one:
+  software, financial_services, healthcare, retail, manufacturing, education,
+  public_sector, other
+Choose other when the company is none of the first seven.
+
+seniority - how senior the person who wrote in sounds:
+  executive  owner, founder, chief, head of, director, VP, or "I run ..."
+  manager    manager, lead, or someone speaking for a team
+  ic         speaks only for their own work
+  unknown    the message gives no sign
+
+Name: {name}
+Company: {company}
+Message: {message}

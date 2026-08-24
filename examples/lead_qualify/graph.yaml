@@ -1,0 +1,171 @@
+# screen -> segment -> gate -+-> decline -> rejected
+#                            |
+#                            +-> enrich -> signals -> score -> route -+-> sales_queue
+#                                                                     |
+#                                                                     +-> nurture_queue
+#
+# The gate is the point of the shape. It costs one 48-token call and it decides
+# whether the four expensive nodes below it run at all, so the conditional edge
+# out of `gate` is a cost decision as much as a routing one: a disqualified lead
+# never reaches `enrich`, `signals`, `score` or `route`.
+#
+# Every node has one job and one grammar. Two nodes carry an `assert`, and both
+# of them restate a rule their own prompt already gave the model in words — the
+# prompt teaches it, the assert makes it non-negotiable, and `on_fail` sends the
+# lead to a human rather than letting a wrong answer out.
+
+max_steps: 12
+
+nodes:
+
+  screen:
+    type: generate
+    # Reads the email and the company field, nothing else.
+    max_tokens: 48
+
+  segment:
+    type: generate
+    max_tokens: 48
+    # headcount_band -> segment is a lookup table, not a judgement, so it is
+    # checked rather than trusted. A model that invents "enterprise" for a
+    # 30-person company is caught here instead of in the sales queue.
+    assert: >-
+      segment == ("solo" if headcount_band == "1-9"
+      else ("smb" if headcount_band == "10-49" or headcount_band == "50-249"
+      else ("mid_market" if headcount_band == "250-999" else "enterprise")))
+    on_fail: needs_review
+
+  gate:
+    type: generate
+    max_tokens: 48
+    # The whole rejection policy, as one expression: disqualified is true when
+    # and only when an enterprise-sized company wrote in from a free mailbox,
+    # and the reason field agrees with the flag.
+    assert: >-
+      disqualified == (segment == "enterprise" and email_domain_kind == "free_mail")
+      and (disqualify_reason == "free_mail_enterprise") == disqualified
+    on_fail: needs_review
+
+  decline:
+    type: generate
+    # Only reached by a disqualified lead. `next_action` is a single-value enum,
+    # so the grammar pins it; the model's actual job here is the one-sentence
+    # reply note.
+    max_tokens: 64
+
+  enrich:
+    type: generate
+    # The node a rejected lead skips.
+    max_tokens: 48
+
+  signals:
+    type: generate
+    max_tokens: 48
+
+  score:
+    type: generate
+    # The only genuine judgement in the pack: fit is a trade-off between size,
+    # budget, urgency and seniority, and nothing upstream has weighed them. So
+    # this node gets an unconstrained think pass before the constrained emit
+    # (README, "Think and emit are separate"). Every other node is a lookup or a
+    # slot fill, and pays for one call.
+    two_stage: true
+    think_max_tokens: 128
+    max_tokens: 96
+
+  route:
+    type: generate
+    max_tokens: 64
+    # The routing policy, stated once here and once in prompts/route.txt. Sales
+    # gets the lead only when the band and urgency say so, and the owner is a
+    # pure function of the action and the segment.
+    assert: >-
+      (next_action == "route_to_sales") == (fit_band == "strong"
+      or (fit_band == "moderate" and urgency == "high"))
+      and (owner == "marketing_nurture") == (next_action == "nurture")
+      and (owner == "ae_enterprise") == (next_action == "route_to_sales" and segment == "enterprise")
+      and (owner == "ae_mid_market") == (next_action == "route_to_sales" and segment == "mid_market")
+    on_fail: needs_review
+
+  sales_queue:
+    type: end
+    output:
+      - segment
+      - headcount_band
+      - email_domain_kind
+      - industry
+      - seniority
+      - budget_signal
+      - urgency
+      - fit_band
+      - fit_reason
+      - next_action
+      - owner
+
+  nurture_queue:
+    type: end
+    output:
+      - segment
+      - headcount_band
+      - email_domain_kind
+      - industry
+      - seniority
+      - budget_signal
+      - urgency
+      - fit_band
+      - fit_reason
+      - next_action
+      - owner
+
+  rejected:
+    type: end
+    output:
+      - segment
+      - headcount_band
+      - email_domain_kind
+      - company_named
+      - disqualified
+      - disqualify_reason
+      - next_action
+      - reply_note
+
+  needs_review:
+    type: end
+    # A lead whose deterministic invariant did not hold. It carries only what a
+    # human needs to see the disagreement.
+    output: [segment, headcount_band, email_domain_kind, disqualified]
+
+edges:
+
+  - from: screen
+    to: segment
+
+  - from: segment
+    to: gate
+
+  # The conditional edge: a disqualified lead leaves before enrichment.
+  - from: gate
+    to: decline
+    when: {disqualified: true}
+
+  - from: gate
+    to: enrich
+
+  - from: decline
+    to: rejected
+
+  - from: enrich
+    to: signals
+
+  - from: signals
+    to: score
+
+  - from: score
+    to: route
+
+  - from: route
+    to: sales_queue
+    when: {next_action: "route_to_sales"}
+
+  - from: route
+    to: nurture_queue

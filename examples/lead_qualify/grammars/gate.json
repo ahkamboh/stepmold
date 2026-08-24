@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "disqualified": {"type": "boolean"},
+    "disqualify_reason": {
+      "type": "string",
+      "enum": ["free_mail_enterprise", "none"]
+    }
+  },
+  "required": ["disqualified", "disqualify_reason"],
+  "additionalProperties": false
+}

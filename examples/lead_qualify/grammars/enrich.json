@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "industry": {
+      "type": "string",
+      "enum": ["software", "financial_services", "healthcare", "retail",
+               "manufacturing", "education", "public_sector", "other"]
+    },
+    "seniority": {
+      "type": "string",
+      "enum": ["executive", "manager", "ic", "unknown"]
+    }
+  },
+  "required": ["industry", "seniority"],
+  "additionalProperties": false
+}

@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "properties": {
+    "headcount_band": {
+      "type": "string",
+      "enum": ["1-9", "10-49", "50-249", "250-999", "1000+"]
+    },
+    "segment": {
+      "type": "string",
+      "enum": ["solo", "smb", "mid_market", "enterprise"]
+    }
+  },
+  "required": ["headcount_band", "segment"],
+  "additionalProperties": false
+}
