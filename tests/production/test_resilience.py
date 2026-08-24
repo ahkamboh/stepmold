@@ -16,17 +16,18 @@ What the faults are for, and what each one *should* prove:
     ok, prose, garbage, badschema   200s. The node's own ladder owns these.
     429, 500, 503                   retryable statuses. The backend's ladder owns these.
     notjson, empty, reasoning       200s that are not answers. Nobody should retry them.
-    truncated, reset, slow          the socket itself failing. jig handles these worst.
+    truncated, reset, slow          the socket itself failing. The backend's ladder owns
+                                    these too, now that it can see them.
 
-Five tests are marked `@unittest.expectedFailure`. Each one asserts what jig *should* do,
-runs red today, and is named in a FINDING docstring next to it. When someone fixes the
-defect the test becomes an unexpected success, which unittest reports as a failure — so
-the fix cannot land without deleting the marker and the finding together. That is
-deliberate: a defect that is merely commented about gets forgotten.
+This file used to carry five `@unittest.expectedFailure` tests, each asserting what jig
+*should* do next to a FINDING that said what it did instead. All five are fixed and the
+markers are gone, so every assertion below is load-bearing: the socket-level faults are
+wrapped and retried, `Retry-After` is honoured, and a model's repr no longer prints the
+key. The one FINDING that remains — `on_fail` not being taken for a content-less 200 —
+belongs to `graph.py`, not to this backend.
 """
 
 import contextlib
-import http.client
 import io
 import json
 import os
@@ -234,7 +235,10 @@ def _pack(nodes, edges):
 #
 #   "answers"  the call returns text; whatever is wrong is now the verifier's problem
 #   "backend"  BackendError — jig's own type, with a message an operator can act on
-#   "raw"      an exception from the standard library escapes jig entirely
+#
+# There used to be a third verdict, "raw": a standard-library exception escaping jig
+# entirely, which is what truncated/reset/slow did. Nothing produces it any more, and the
+# sweep below would report it if anything started to.
 BEHAVIOUR = {
     "ok": ("answers", 1),
     "prose": ("answers", 1),
@@ -246,9 +250,11 @@ BEHAVIOUR = {
     "notjson": ("backend", 1),
     "empty": ("backend", 1),
     "reasoning": ("backend", 1),
-    "truncated": ("raw", 1),
-    "reset": ("raw", 1),
-    "slow": ("raw", 1),
+    # A socket that dies is the textbook transient failure, so all three ride the same
+    # three-rung ladder as a 503.
+    "truncated": ("backend", 3),
+    "reset": ("backend", 3),
+    "slow": ("backend", 3),
 }
 
 
@@ -373,13 +379,13 @@ class TestRetryableStatuses(unittest.TestCase):
 
 
 class TestRateLimitBackoff(unittest.TestCase):
-    """FINDING: `Retry-After` is parsed by nobody — `grep -r Retry-After jig/` is empty.
+    """`Retry-After` is a provider instruction, and jig now waits at least that long.
 
-    The proxy answers 429 with `Retry-After: 1`. jig sleeps its own fixed 0.5s before the
-    first retry — *sooner* than the provider asked — and 1.0s before the second. It is not
-    a hot loop, which is the thing that gets an account banned, but it is a provider
-    instruction being ignored, and a provider that says `Retry-After: 60` still gets three
-    requests inside 1.5 seconds.
+    The proxy answers 429 with `Retry-After: 1`. jig used to sleep its own fixed 0.5s
+    before the first retry — *sooner* than the provider asked — and 1.0s before the
+    second, which is a provider that says `Retry-After: 60` getting three requests inside
+    1.5 seconds. The backoff is now `max(own backoff, Retry-After)`, capped by
+    `RETRY_AFTER_CEILING` so one node cannot disappear into an hour-long sleep.
     """
 
     def test_the_server_does_send_a_retry_after_header(self):
@@ -390,15 +396,16 @@ class TestRateLimitBackoff(unittest.TestCase):
             generate(opener=opener, max_retries=0)
         self.assertEqual(opener.errors[0].headers.get("Retry-After"), "1")
 
-    def test_the_backoff_is_fixed_exponential_and_ignores_retry_after(self):
+    def test_the_header_lifts_the_first_backoff_to_what_was_asked(self):
+        """0.5s exponential, 1s asked for: the wait is the header, not the ladder."""
         slept = []
         use("429")
         with self.assertRaises(BackendError):
             generate(sleeper=slept.append, max_retries=2)
-        self.assertEqual(slept, [0.5, 1.0])
+        self.assertEqual(slept, [1.0, 1.0])
 
-    def test_the_backoff_is_the_same_for_a_429_as_for_a_500(self):
-        """Which is the defect stated a second way: the 429 path is not special at all."""
+    def test_the_backoff_is_no_longer_the_same_for_a_429_as_for_a_500(self):
+        """A 500 says nothing, so it keeps the exponential ladder; a 429 does not."""
         rate_limited, server_error = [], []
         use("429")
         with self.assertRaises(BackendError):
@@ -406,11 +413,11 @@ class TestRateLimitBackoff(unittest.TestCase):
         use("500")
         with self.assertRaises(BackendError):
             generate(sleeper=server_error.append, max_retries=2)
-        self.assertEqual(rate_limited, server_error)
+        self.assertNotEqual(rate_limited, server_error)
+        self.assertEqual(server_error, [0.5, 1.0])
 
-    @unittest.expectedFailure
-    def test_the_first_backoff_should_honour_retry_after(self):
-        """What jig should do: wait at least as long as the provider asked."""
+    def test_the_first_backoff_honours_retry_after(self):
+        """The whole point: never go back sooner than the provider asked."""
         slept = []
         use("429")
         with self.assertRaises(BackendError):
@@ -431,22 +438,22 @@ class TestBodiesThatAreNotJson(unittest.TestCase):
             generate()
         self.assertEqual(len(started.calls), 1)
 
-    def test_the_message_says_only_that_it_was_not_json(self):
-        """FINDING (documented, not endorsed): the thinnest message jig produces.
+    def test_the_message_names_the_endpoint_the_content_type_and_the_body(self):
+        """This used to be the thinnest message jig produced.
 
-        It names neither the endpoint nor a byte of the body, so an operator staring at
-        "Expecting value: line 1 column 1 (char 0)" cannot tell a proxy's 502 page from a
-        model that returned an empty string. Compare `_no_content_reason`, which names the
-        cause AND the setting to change. What it SHOULD say: the URL, the content type,
-        and a clipped prefix of the body.
+        "Expecting value: line 1 column 1 (char 0)" names neither the endpoint nor a byte
+        of what arrived, so an operator could not tell a proxy's 502 page from a model
+        that returned an empty string — and both are HTTP 200 here, so only the body
+        says which. `_no_content_reason` sets the standard: name the cause.
         """
         started = use("notjson")
         with self.assertRaises(BackendError) as caught:
             generate()
         message = str(caught.exception)
         self.assertIn("not JSON", message)
-        self.assertNotIn(started.base_url, message)
-        self.assertNotIn("502 Bad Gateway", message)
+        self.assertIn(started.base_url, message)
+        self.assertIn("text/html", message)
+        self.assertIn("502 Bad Gateway", message)
 
 
 class TestCompletionsWithNoContent(unittest.TestCase):
@@ -605,38 +612,61 @@ class TestForgivingExtraction(unittest.TestCase):
 
 
 class TestSocketLevelFaults(unittest.TestCase):
-    """FINDING: three faults escape jig as raw standard-library exceptions.
+    """Three faults that live below urllib's own error handling, now caught by jig.
 
-    `_post` turns `HTTPError` and `URLError` into `BackendError` and retries the retryable
-    ones. It never sees these three, because urllib only wraps what
-    `http.client.HTTPConnection.request()` raises — anything raised by `getresponse()` or
-    by `response.read()` comes out untouched:
+    `_post` converted `HTTPError` and `URLError`, and urllib wraps only what
+    `http.client.HTTPConnection.request()` raises. Everything raised by `getresponse()`
+    or by `response.read()` came out untouched:
 
         reset      http.client.RemoteDisconnected
         truncated  http.client.IncompleteRead
         slow       builtins.TimeoutError  (socket.timeout, raised on read)
 
-    Three consequences, each tested below: the caller gets an exception that is not a
-    `JigError`, the retry ladder never engages for the most obviously transient failures
-    jig can meet, and `jig run` dies with a traceback instead of a diagnosis.
+    So the caller got an exception that was not a `JigError`, the retry ladder never
+    engaged for the most obviously transient failures jig can meet (1 HTTP call at
+    max_retries=2, while a strictly less transient 503 got 3), and `jig run` died with a
+    traceback because `cli.main` catches only PackError/JigError/ValidationError/
+    ValueError. `_post` now catches `OSError` and `http.client.HTTPException` around both
+    the opener call and the read, and puts them on the 503 ladder.
     """
 
-    def test_a_dead_socket_surfaces_as_a_raw_http_client_error(self):
+    def test_a_dead_socket_is_a_backend_error(self):
         use("reset")
-        with self.assertRaises(http.client.RemoteDisconnected):
+        with self.assertRaises(BackendError):
             generate()
 
-    def test_a_truncated_body_surfaces_as_a_raw_incomplete_read(self):
-        use("truncated")
-        with self.assertRaises(http.client.IncompleteRead):
+    def test_the_dead_socket_message_names_the_endpoint_and_the_cause(self):
+        """RemoteDisconnected on its own says neither which endpoint nor what died."""
+        started = use("reset")
+        with self.assertRaises(BackendError) as caught:
             generate()
+        message = str(caught.exception)
+        self.assertIn(started.base_url, message)
+        self.assertIn("RemoteDisconnected", message)
 
-    def test_a_read_timeout_surfaces_as_a_raw_timeout_error(self):
+    def test_a_truncated_body_is_a_backend_error_that_says_it_was_truncated(self):
+        """A body shorter than its own Content-Length is a lie the operator should see."""
+        started = use("truncated")
+        with self.assertRaises(BackendError) as caught:
+            generate()
+        message = str(caught.exception)
+        self.assertIn(started.base_url, message)
+        self.assertIn("truncated", message)
+
+    def test_a_read_timeout_is_a_backend_error_naming_the_timeout(self):
         use("slow")
-        with self.assertRaises(TimeoutError):
+        with self.assertRaises(BackendError) as caught:
             generate(timeout=SLOW_TIMEOUT)
+        self.assertIn(str(SLOW_TIMEOUT), str(caught.exception))
 
-    def test_none_of_the_three_is_a_jig_error(self):
+    def test_the_timeout_message_says_which_setting_to_raise(self):
+        """`_no_content_reason`'s standard: name the cause AND the knob that fixes it."""
+        use("slow")
+        with self.assertRaises(BackendError) as caught:
+            generate(timeout=SLOW_TIMEOUT)
+        self.assertIn("timeout", str(caught.exception))
+
+    def test_all_three_are_jig_errors(self):
         """The contract every caller was given: what a run raises is a `JigError`."""
         from jig.errors import JigError
 
@@ -644,35 +674,46 @@ class TestSocketLevelFaults(unittest.TestCase):
             with self.subTest(fault=fault):
                 _, exc, _ = provoke(fault, timeout=SLOW_TIMEOUT)
                 self.assertIsNotNone(exc)
-                self.assertNotIsInstance(exc, JigError)
+                self.assertIsInstance(exc, JigError)
 
-    def test_none_of_the_three_is_retried(self):
+    def test_all_three_are_retried_like_any_other_transient_failure(self):
+        """A connection closed with no response is the textbook retryable failure — and
+        `503`, which is strictly less transient, already got three tries."""
         for fault in ("reset", "truncated", "slow"):
             with self.subTest(fault=fault):
                 started = use(fault)
-                try:
+                with self.assertRaises(BackendError):
                     generate(timeout=SLOW_TIMEOUT, max_retries=2)
-                except BaseException:  # noqa: BLE001
-                    pass
-                self.assertEqual(len(started.calls), 1)
+                self.assertEqual(len(started.calls), 3)
 
-    def test_the_cli_dies_with_a_traceback_instead_of_a_message(self):
-        """`cli.main` catches PackError/JigError/ValidationError/ValueError. None of these
-        is any of them, so the exception escapes `main` entirely: no `jig: ` line on
-        stderr, no exit code 1, just a traceback out of the top of the process."""
-        for fault, expected in (("reset", http.client.RemoteDisconnected),
-                                ("truncated", http.client.IncompleteRead)):
+    def test_a_dead_socket_recovers_when_the_next_attempt_lands(self):
+        """Retrying is only worth anything if the recovery is invisible to the node."""
+        started = sequence(["reset"], default="ok")
+        result = run(one_node_pack(), model(), {"ticket": "t"})
+        self.assertEqual(result.path, ["classify", "done"])
+        self.assertEqual(result.output, {"result": SATISFYING})
+        self.assertEqual(len(started.calls), 2)
+
+    def test_the_cli_reports_a_socket_death_as_a_diagnosed_failure(self):
+        """`cli.main` catches PackError/JigError/ValidationError/ValueError. These are
+        `BackendError` now, so they are `JigError`, so the CLI exits 1 with a `jig: `
+        line instead of dumping a traceback out of the top of the process."""
+        for fault in ("reset", "truncated"):
             with self.subTest(fault=fault):
                 started = use(fault)
-                with self.assertRaises(expected):
-                    cli_main([
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    code = cli_main([
                         "run", CLI_PACK,
                         "--input", '{"ticket": "charged twice"}',
                         "--model", "openai:%s#m" % started.base_url,
                     ])
+                self.assertEqual(code, 1)
+                self.assertTrue(stderr.getvalue().startswith("jig: "), stderr.getvalue())
+                self.assertIn("BackendError", stderr.getvalue())
 
     def test_the_cli_does_report_a_backend_error_cleanly(self):
-        """The contrast that makes the test above a defect and not a style opinion."""
+        """The 5xx path, unchanged — the contrast the test above was measured against."""
         started = use("500")
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
@@ -685,35 +726,11 @@ class TestSocketLevelFaults(unittest.TestCase):
         self.assertTrue(stderr.getvalue().startswith("jig: "), stderr.getvalue())
         self.assertIn("BackendError", stderr.getvalue())
 
-    @unittest.expectedFailure
-    def test_a_dead_socket_should_be_a_backend_error(self):
-        use("reset")
-        with self.assertRaises(BackendError):
-            generate()
-
-    @unittest.expectedFailure
-    def test_a_dead_socket_should_be_retried_like_any_other_transient_failure(self):
-        """A connection closed with no response is the textbook retryable failure — and
-        `503`, which is strictly less transient, already gets three tries."""
-        started = use("reset")
-        try:
-            generate(max_retries=2)
-        except BaseException:  # noqa: BLE001
-            pass
-        self.assertEqual(len(started.calls), 3)
-
-    @unittest.expectedFailure
-    def test_a_read_timeout_should_be_a_backend_error_naming_the_timeout(self):
-        use("slow")
-        with self.assertRaises(BackendError) as caught:
-            generate(timeout=SLOW_TIMEOUT)
-        self.assertIn(str(SLOW_TIMEOUT), str(caught.exception))
-
     def test_the_timeout_at_least_bounds_the_wait(self):
-        """Whatever it raises, it does raise: a slow endpoint does not hang the run."""
+        """A slow endpoint does not hang the run: every rung times out and gives up."""
         started = use("slow")
-        with self.assertRaises(Exception):
-            generate(timeout=SLOW_TIMEOUT)
+        with self.assertRaises(BackendError):
+            generate(timeout=SLOW_TIMEOUT, max_retries=0)
         self.assertEqual(len(started.calls), 1)
 
 
@@ -758,10 +775,10 @@ class TestStateSurvivesAFailedNode(unittest.TestCase):
         self.assertIsNone(store.latest("r"))
 
     def test_a_socket_death_leaves_the_same_consistent_state_as_a_500(self):
-        """The raw-exception defect must not also corrupt the checkpoint chain."""
+        """A wrapped socket death must leave the checkpoint chain exactly as a 500 does."""
         store = Store(":memory:")
         sequence(["ok"], default="reset")
-        with self.assertRaises(http.client.RemoteDisconnected):
+        with self.assertRaises(BackendError):
             run(two_node_pack(), model(), {"ticket": "t"}, run_id="r", store=store)
         history = store.history("r")
         self.assertEqual([cp.node for cp in history], ["classify"])
@@ -839,41 +856,53 @@ class TestTheApiKeyNeverLeaks(unittest.TestCase):
                 self.assertIsNone(pattern.search(str(exc)))
                 self.assertIsNone(pattern.search(formatted))
 
-    def test_the_dataclass_repr_prints_the_key_in_full(self):
-        """FINDING: `repr(OpenAICompatModel(...))` contains the API key verbatim.
+    def test_the_repr_still_identifies_the_model_it_is_hiding_the_key_of(self):
+        """A redaction that erases everything makes people go back to printing the key.
 
-        `OpenAICompatModel` is a plain `@dataclass`, so its generated `__repr__` prints
-        every field, `api_key` included. Nothing in jig calls `repr` on a model today,
-        which is the only reason this has not burned anyone yet — but a model is an
-        ordinary object that ends up in `logging.debug("%r", model)`, in a failing
-        assertion's diff, in a `pdb` frame dump, and in any crash reporter that walks
-        locals. One `field(repr=False)` fixes it.
-
-        This test asserts the defect so it cannot be fixed silently; the next test is the
-        one that should pass.
+        The fingerprint is the trade: enough to tell "the wrong key is loaded" from "no
+        key is loaded" in a log line, far too little to authenticate with. The endpoint
+        and model must survive, or `repr` stops being worth calling.
         """
         printed = repr(model())
-        self.assertIn(FAKE_KEY, printed)
+        self.assertIn(PROXY.base_url, printed)
+        self.assertIn("api_key=", printed)
+        self.assertIn(FAKE_KEY[-3:], printed)
+        self.assertNotIn(FAKE_KEY[3:-3], printed)
 
-    @unittest.expectedFailure
-    def test_the_repr_should_redact_the_key(self):
+    def test_the_repr_redacts_the_key(self):
+        """`OpenAICompatModel` was a plain `@dataclass`, so its generated `__repr__`
+        printed every field, `api_key` included. Nothing in jig calls `repr` on a model,
+        which is the only reason it never burned anyone — but a model is an ordinary
+        object that ends up in `logging.debug("%r", model)`, in a failing assertion's
+        diff, in a `pdb` frame dump, and in any crash reporter that walks locals."""
         self.assertNotIn(FAKE_KEY, repr(model()))
+        self.assertNotIn(FAKE_KEY, repr(model(api_key=None, base_url=PROXY.base_url)))
 
-    def test_an_upstream_error_body_is_copied_into_the_exception_verbatim(self):
-        """FINDING (lower severity, same blast radius): `_read_error` splices 200 bytes of
-        the upstream's error body into the message with no filtering.
+    def test_an_echoed_authorization_header_is_redacted_out_of_the_error_body(self):
+        """`_read_error` used to splice the upstream body in with no filtering at all.
 
         Gateways that echo the offending request back in a debug body — several do — put
-        the caller's `Authorization` header in that body, and jig then puts it into an
-        exception that gets logged. jig is not the leaker here, it is the amplifier, and a
-        redaction pass over the body before it is interpolated costs one regex.
+        the caller's `Authorization` header in that body, and jig then put it into an
+        exception that gets logged. jig was not the leaker there, it was the amplifier.
+        The rest of the body still has to survive: an error nobody can read is its own
+        defect.
         """
         echoed = ('{"error": "bad request", "request_headers": '
                   '{"Authorization": "Bearer %s"}}' % FAKE_KEY).encode()
         opener = _StatusOpener(400, echoed)
         with self.assertRaises(BackendError) as caught:
             model(opener=opener).generate("hi")
-        self.assertIn(FAKE_KEY, str(caught.exception))
+        message = str(caught.exception)
+        self.assertNotIn(FAKE_KEY, message)
+        self.assertIn("bad request", message)
+        self.assertIn("<redacted>", message)
+
+    def test_a_key_shaped_string_in_an_error_body_is_redacted_even_bare(self):
+        """Not every echo comes with a `Bearer` in front of it."""
+        opener = _StatusOpener(400, ('{"error": "invalid key %s"}' % FAKE_KEY).encode())
+        with self.assertRaises(BackendError) as caught:
+            model(opener=opener).generate("hi")
+        self.assertNotIn(FAKE_KEY, str(caught.exception))
 
 
 # --------------------------------------------------------------------- the model contract

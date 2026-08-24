@@ -5,8 +5,11 @@ NOTHING IN THIS FILE MAKES A NETWORK CALL. Every test injects a fake opener; the
 """
 
 import email.message
+import email.utils
+import http.client
 import io
 import json
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -17,6 +20,7 @@ from jig.model import Model
 from jig.backends.openai_compat import (
     DEFAULT_OPENER,
     GRAMMAR_MODES,
+    RETRY_AFTER_CEILING,
     NoCrossOriginRedirect,
     OpenAICompatModel,
 )
@@ -26,6 +30,11 @@ SCHEMA = {
     "properties": {"category": {"type": "string"}},
     "required": ["category"],
 }
+
+# The same schema, closed the way OpenAI-family strict structured output demands: every
+# object `additionalProperties: false`, every declared property in `required`. jig's own
+# grammar subset accepts both shapes, which is why `strict` cannot be a constant.
+CLOSED_SCHEMA = dict(SCHEMA, additionalProperties=False)
 
 
 class FakeResponse(io.BytesIO):
@@ -68,8 +77,11 @@ def _reply(content):
     return json.dumps({"choices": [{"message": {"role": "assistant", "content": content}}]}).encode()
 
 
-def _http_error(code, body=b"nope"):
-    return urllib.error.HTTPError("http://x", code, "boom", {}, io.BytesIO(body))
+def _http_error(code, body=b"nope", **headers):
+    message = email.message.Message()
+    for name, value in headers.items():
+        message[name.replace("_", "-")] = value
+    return urllib.error.HTTPError("http://x", code, "boom", message, io.BytesIO(body))
 
 
 def model(http=None, **kwargs):
@@ -174,6 +186,31 @@ class TestRequestShape(unittest.TestCase):
         model(http, extra_body={"top_p": 0.9}).generate("hi")
         self.assertEqual(http.payload["top_p"], 0.9)
 
+    def test_extra_body_may_not_collide_with_the_field_the_grammar_mode_owns(self):
+        """It is merged last, so a collision would delete the constraint in silence."""
+        for mode, key in (("response_format", "response_format"),
+                          ("json_schema", "json_schema"),
+                          ("json_object", "response_format"),
+                          ("response_format", "messages")):
+            with self.subTest(mode=mode, key=key):
+                with self.assertRaises(ValueError) as caught:
+                    model(grammar_mode=mode, extra_body={key: {}})
+                self.assertIn(key, str(caught.exception))
+                self.assertIn("extra_body", str(caught.exception))
+
+    def test_the_collision_is_refused_before_any_request_is_made(self):
+        http = FakeHTTP()
+        with self.assertRaises(ValueError):
+            model(http, extra_body={"response_format": {}})
+        self.assertEqual(http.count, 0)
+
+    def test_a_mode_that_owns_no_constraint_field_still_accepts_it(self):
+        """`none` sends nothing of its own, so nothing of its own can be clobbered."""
+        http = FakeHTTP()
+        model(http, grammar_mode="none",
+              extra_body={"response_format": {"type": "json_object"}}).generate("hi")
+        self.assertEqual(http.payload["response_format"], {"type": "json_object"})
+
 
 class TestGrammarModes(unittest.TestCase):
     def test_response_format_is_the_default_and_carries_the_schema(self):
@@ -182,7 +219,51 @@ class TestGrammarModes(unittest.TestCase):
         response_format = http.payload["response_format"]
         self.assertEqual(response_format["type"], "json_schema")
         self.assertEqual(response_format["json_schema"]["schema"], SCHEMA)
-        self.assertTrue(response_format["json_schema"]["strict"])
+
+    def test_strict_is_claimed_for_a_schema_that_satisfies_strict_mode(self):
+        http = FakeHTTP()
+        model(http).generate("hi", grammar=schema_to_grammar(CLOSED_SCHEMA))
+        self.assertIs(http.payload["response_format"]["json_schema"]["strict"], True)
+
+    def test_strict_is_not_claimed_for_a_schema_that_does_not(self):
+        """SCHEMA has no `additionalProperties: false`, which strict mode requires.
+
+        Claiming it anyway is an HTTP 400 from the server — not a bad sample: 400 is not
+        retryable and `BackendError` is not `NodeFailed`, so neither ladder nor `on_fail`
+        can absorb it, and the first node kills the run. The schema still goes on the
+        wire; only the claim about it is dropped.
+        """
+        http = FakeHTTP()
+        model(http).generate("hi", grammar=schema_to_grammar(SCHEMA))
+        envelope = http.payload["response_format"]["json_schema"]
+        self.assertIs(envelope["strict"], False)
+        self.assertEqual(envelope["schema"], SCHEMA)
+
+    def test_a_property_missing_from_required_is_enough_to_drop_the_claim(self):
+        open_schema = {
+            "type": "object",
+            "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+            "required": ["a"],
+            "additionalProperties": False,
+        }
+        http = FakeHTTP()
+        model(http).generate("hi", grammar=schema_to_grammar(open_schema))
+        self.assertIs(http.payload["response_format"]["json_schema"]["strict"], False)
+
+    def test_a_nested_object_is_checked_too(self):
+        nested = {
+            "type": "object",
+            "properties": {"inner": {"type": "object", "properties": {}, "required": []}},
+            "required": ["inner"],
+            "additionalProperties": False,
+        }
+        http = FakeHTTP()
+        model(http).generate("hi", grammar=schema_to_grammar(nested))
+        self.assertIs(http.payload["response_format"]["json_schema"]["strict"], False)
+        nested["properties"]["inner"]["additionalProperties"] = False
+        http = FakeHTTP()
+        model(http).generate("hi", grammar=schema_to_grammar(nested))
+        self.assertIs(http.payload["response_format"]["json_schema"]["strict"], True)
 
     def test_json_schema_mode_puts_the_schema_at_the_top_level(self):
         http = FakeHTTP()
@@ -252,6 +333,25 @@ class TestFailures(unittest.TestCase):
             model(http).generate("hi")
         self.assertIn("not JSON", str(caught.exception))
 
+    def test_the_non_json_message_names_the_endpoint_and_quotes_the_body(self):
+        """A CDN's HTML error page and an empty string are both HTTP 200 here.
+
+        "Expecting value: line 1 column 1 (char 0)" cannot tell them apart, so the URL
+        and a clipped prefix of what arrived go into the message.
+        """
+        http = FakeHTTP(b"<html><title>502 Bad Gateway</title></html>")
+        with self.assertRaises(BackendError) as caught:
+            model(http).generate("hi")
+        message = str(caught.exception)
+        self.assertIn("http://localhost:8000/v1/chat/completions", message)
+        self.assertIn("502 Bad Gateway", message)
+
+    def test_an_empty_body_says_it_was_empty_rather_than_quoting_nothing(self):
+        http = FakeHTTP(b"")
+        with self.assertRaises(BackendError) as caught:
+            model(http).generate("hi")
+        self.assertIn("<empty>", str(caught.exception))
+
     def test_no_choices_is_reported(self):
         http = FakeHTTP(json.dumps({"choices": []}).encode())
         with self.assertRaises(BackendError):
@@ -266,6 +366,148 @@ class TestFailures(unittest.TestCase):
         from jig.errors import JigError
 
         self.assertTrue(issubclass(BackendError, JigError))
+
+
+class TestSocketLevelFailuresAreWrapped(unittest.TestCase):
+    """urllib wraps only what `HTTPConnection.request()` raises.
+
+    Everything from `getresponse()` and `response.read()` — a peer that hangs up, a body
+    shorter than its `Content-Length`, a read that outlives the timeout — used to escape
+    `_post` untouched: not a `JigError`, so `cli.main` could not report it, and not
+    retried, although these are the most transient failures a backend can have.
+    `tests/production/test_resilience.py` provokes them over a real socket; here they are
+    injected directly, which is the only way to pin the retry count deterministically.
+    """
+
+    def test_a_dropped_connection_becomes_a_backend_error(self):
+        fake = FakeHTTP(http.client.RemoteDisconnected("peer closed"))
+        with self.assertRaises(BackendError) as caught:
+            model(fake, max_retries=0).generate("hi")
+        self.assertIn("http://localhost:8000/v1/chat/completions", str(caught.exception))
+        self.assertIn("RemoteDisconnected", str(caught.exception))
+
+    def test_a_truncated_body_becomes_a_backend_error_naming_the_shortfall(self):
+        fake = FakeHTTP(http.client.IncompleteRead(b"12345", 95))
+        with self.assertRaises(BackendError) as caught:
+            model(fake, max_retries=0).generate("hi")
+        message = str(caught.exception)
+        self.assertIn("truncated", message)
+        self.assertIn("5 bytes", message)
+        self.assertIn("100", message)  # 5 read + 95 still expected
+
+    def test_a_read_timeout_names_the_timeout_and_the_setting_to_raise(self):
+        fake = FakeHTTP(TimeoutError("timed out"))
+        with self.assertRaises(BackendError) as caught:
+            model(fake, timeout=2.5, max_retries=0).generate("hi")
+        message = str(caught.exception)
+        self.assertIn("2.5", message)
+        self.assertIn("timeout", message)
+
+    def test_all_three_ride_the_same_ladder_as_a_503(self):
+        for failure in (http.client.RemoteDisconnected("peer closed"),
+                        http.client.IncompleteRead(b"1", 9),
+                        TimeoutError("timed out")):
+            with self.subTest(failure=type(failure).__name__):
+                fake = FakeHTTP(failure)
+                with self.assertRaises(BackendError):
+                    model(fake, max_retries=2).generate("hi")
+                self.assertEqual(fake.count, 3)
+
+    def test_a_socket_failure_that_clears_is_invisible_to_the_caller(self):
+        fake = FakeHTTP(http.client.RemoteDisconnected("peer closed"), _reply("recovered"))
+        self.assertEqual(model(fake).generate("hi"), "recovered")
+        self.assertEqual(fake.count, 2)
+
+
+class TestRetryAfterIsHonoured(unittest.TestCase):
+    """A `Retry-After` is an instruction, not a suggestion.
+
+    Sleeping jig's own 0.5s when the provider said 1s sends the retry out *sooner* than
+    it was asked for, and a provider that says `Retry-After: 60` still gets three
+    requests inside 1.5 seconds — which is how an account gets banned rather than rate
+    limited. The wait is now `max(own backoff, Retry-After)`, capped.
+    """
+
+    def _slept(self, error, **kwargs):
+        slept = []
+        with self.assertRaises(BackendError):
+            model(FakeHTTP(error), sleeper=slept.append, max_retries=2, **kwargs).generate("hi")
+        return slept
+
+    def test_delta_seconds_lift_the_backoff_to_what_was_asked(self):
+        self.assertEqual(self._slept(_http_error(429, Retry_After="4")), [4.0, 4.0])
+
+    def test_a_shorter_retry_after_never_shortens_our_own_backoff(self):
+        """The header is a floor, not a replacement: 0.5s/1.0s already exceeds it."""
+        self.assertEqual(self._slept(_http_error(429, Retry_After="0")), [0.5, 1.0])
+
+    def test_an_http_date_is_understood_as_well_as_a_number(self):
+        when = email.utils.formatdate(time.time() + 30, usegmt=True)
+        slept = self._slept(_http_error(503, Retry_After=when))
+        self.assertGreater(slept[0], 20.0)
+        self.assertLessEqual(slept[0], 30.0)
+
+    def test_an_absurd_retry_after_is_capped_rather_than_obeyed(self):
+        """One node must not disappear into an hour-long sleep inside a run."""
+        self.assertEqual(self._slept(_http_error(429, Retry_After="3600")),
+                         [RETRY_AFTER_CEILING, RETRY_AFTER_CEILING])
+
+    def test_a_date_already_in_the_past_does_not_produce_a_negative_wait(self):
+        when = email.utils.formatdate(time.time() - 600, usegmt=True)
+        self.assertEqual(self._slept(_http_error(429, Retry_After=when)), [0.5, 1.0])
+
+    def test_an_unparseable_header_falls_back_to_the_exponential_ladder(self):
+        self.assertEqual(self._slept(_http_error(429, Retry_After="soon")), [0.5, 1.0])
+
+    def test_no_header_at_all_is_the_ordinary_case(self):
+        self.assertEqual(self._slept(_http_error(500)), [0.5, 1.0])
+
+
+class TestNothingPrintsTheCredential(unittest.TestCase):
+    """A key in a log line is a key in an incident.
+
+    `OpenAICompatModel` was a plain `@dataclass`, so its generated `__repr__` printed
+    `api_key` verbatim — and a model is an ordinary object that lands in
+    `logging.debug("%r", model)`, in a failing assertion's diff and in a `pdb` frame
+    dump. The second half is the amplification path: an upstream error body that echoes
+    the caller's own `Authorization` header back, spliced into an exception that is then
+    logged.
+    """
+
+    KEY = "sk-test-NOTAREALKEY-0123456789"
+
+    def test_the_repr_does_not_contain_the_key(self):
+        self.assertNotIn(self.KEY, repr(model(api_key=self.KEY)))
+
+    def test_the_repr_still_says_which_endpoint_and_model_it_is(self):
+        printed = repr(model(api_key=self.KEY))
+        self.assertIn("http://localhost:8000", printed)
+        self.assertIn("qwen3-8b", printed)
+
+    def test_the_repr_fingerprints_the_key_so_the_wrong_one_is_recognisable(self):
+        printed = repr(model(api_key=self.KEY))
+        self.assertIn(self.KEY[-3:], printed)
+        self.assertNotIn(self.KEY[3:-3], printed)
+        self.assertNotIn("789", repr(model(api_key=None)))
+
+    def test_an_echoed_bearer_header_is_redacted_out_of_an_error_body(self):
+        body = ('{"error": "bad request", "sent": {"Authorization": "Bearer %s"}}'
+                % self.KEY).encode()
+        with self.assertRaises(BackendError) as caught:
+            model(FakeHTTP(_http_error(400, body)), api_key=self.KEY).generate("hi")
+        message = str(caught.exception)
+        self.assertNotIn(self.KEY, message)
+        self.assertIn("<redacted>", message)
+        self.assertIn("bad request", message)  # the diagnosis must survive the redaction
+
+    def test_a_bare_key_shaped_string_is_redacted_too(self):
+        """Not every echo comes with a `Bearer` in front of it, and the key in the body
+        is not necessarily the one this model is holding."""
+        body = b'{"error": "key sk-someone-elses-0123456789 is revoked"}'
+        with self.assertRaises(BackendError) as caught:
+            model(FakeHTTP(_http_error(400, body)), api_key=None).generate("hi")
+        self.assertNotIn("sk-someone-elses-0123456789", str(caught.exception))
+        self.assertIn("revoked", str(caught.exception))
 
 
 class TestApiKeyFromEnvironment(unittest.TestCase):

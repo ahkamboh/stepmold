@@ -20,8 +20,12 @@ Even with `none`, jig still validates every output before committing it (see
 `jig.verify`) — constrained decoding is an optimisation here, not the safety net.
 """
 
+import datetime
+import email.utils
+import http.client
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -42,6 +46,26 @@ GRAMMAR_MODES = ("response_format", "json_schema", "json_object", "none")
 API_KEY_VARIABLES = ("JIG_API_KEY", "OPENAI_API_KEY")
 RETRY_STATUSES = (408, 429, 500, 502, 503, 504)
 DEFAULT_PORTS = {"http": 80, "https": 443}
+
+# The payload fields each grammar mode writes itself. `extra_body` is merged last, so a
+# key in here coming from a caller would delete the constraint the mode just applied and
+# say nothing about it — "a constraint you think you have and don't", which is the exact
+# failure jig/grammar.py exists to prevent. Refused at construction instead.
+GRAMMAR_FIELDS = {
+    "response_format": ("messages", "response_format"),
+    "json_schema": ("messages", "json_schema"),
+    "json_object": ("messages", "response_format"),
+    "none": ("messages",),
+}
+
+# A provider that answers `Retry-After: 3600` is telling the truth, but a run must not
+# disappear into an hour-long sleep inside one node. Honour the instruction up to here.
+RETRY_AFTER_CEILING = 60.0
+
+# Credentials, as they appear in text somebody else wrote: a header a gateway echoed back
+# at us, or a key pasted into an upstream error message.
+BEARER = re.compile(r"(?i)(bearer\s+)[^\s\"',]+")
+KEY_SHAPED = re.compile(r"\b(?:c?sk|gsk|xai|xoxb|ghp)-[A-Za-z0-9_-]{8,}")
 
 
 class NoCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
@@ -104,7 +128,11 @@ class OpenAICompatModel:
 
     base_url: str
     model: str
-    api_key: Optional[str] = None
+    # repr=False so the generated __repr__ cannot print it. The explicit __repr__ below
+    # takes over anyway, but a model is exactly the object that lands in
+    # logging.debug("%r", model), in a failed assertion's diff and in a crash reporter
+    # walking locals, so the credential is hidden at the field as well as at the method.
+    api_key: Optional[str] = field(default=None, repr=False)
     grammar_mode: str = "response_format"
     user_agent: str = "jig/%s" % __import__("jig").__version__
     reasoning_reserve: int = 0
@@ -122,9 +150,23 @@ class OpenAICompatModel:
                 "unknown grammar_mode %r (known: %s)"
                 % (self.grammar_mode, ", ".join(GRAMMAR_MODES))
             )
+        _refuse_grammar_collisions(self.grammar_mode, self.extra_body)
         self.url = _completions_url(self.base_url)
         if self.api_key is None:
             self.api_key = _api_key_from_environment()
+
+    def __repr__(self):
+        """Identify the model without printing the credential it carries.
+
+        A dataclass repr prints every field, and a model is an ordinary object: it ends
+        up in logs, tracebacks and pdb frames. The fingerprint is enough to tell "the
+        wrong key is loaded" from "no key is loaded" and far too little to authenticate
+        with. `opener` and `sleeper` are left out for the same reason a repr exists at
+        all — they are noise at the point where somebody is reading one.
+        """
+        return "OpenAICompatModel(base_url=%r, model=%r, grammar_mode=%r, api_key=%s)" % (
+            self.base_url, self.model, self.grammar_mode, _fingerprint(self.api_key)
+        )
 
     # ------------------------------------------------------------------ Model protocol
 
@@ -156,7 +198,10 @@ class OpenAICompatModel:
                     "json_schema": {
                         "name": self.schema_name,
                         "schema": schema,
-                        "strict": True,
+                        # Claimed only when it is true of this schema — see
+                        # `_strict_ready`. Claiming it unconditionally gets the whole
+                        # request refused with a 400 that no ladder can absorb.
+                        "strict": _strict_ready(schema),
                     },
                 }
             elif self.grammar_mode == "json_schema":
@@ -187,20 +232,36 @@ class OpenAICompatModel:
             request = urllib.request.Request(
                 self.url, data=body, headers=headers, method="POST"
             )
+            asked_for = 0.0
             try:
                 with self.opener(request, timeout=self.timeout) as response:
-                    return _decode(response.read())
+                    # The read stays inside the try: a body shorter than its
+                    # Content-Length fails here, not at the opener.
+                    return _decode(response.read(), self.url, _content_type(response))
             except urllib.error.HTTPError as exc:
-                detail = _read_error(exc)
+                detail = _read_error(exc, self.api_key)
                 last = BackendError(
                     "%s returned HTTP %s: %s" % (self.url, exc.code, detail)
                 )
                 if exc.code not in RETRY_STATUSES:
                     raise last
+                asked_for = _retry_after(exc)
             except urllib.error.URLError as exc:
-                last = BackendError("could not reach %s: %s" % (self.url, exc.reason))
+                last = BackendError(
+                    "could not reach %s: %s" % (self.url, _redact(str(exc.reason)))
+                )
+            except (OSError, http.client.HTTPException) as exc:
+                # urllib wraps only what HTTPConnection.request() raises. Everything from
+                # getresponse() and response.read() — a peer that hangs up, a truncated
+                # body, a read that outlives the timeout — used to escape jig raw: not a
+                # JigError, never retried, and a bare traceback out of `jig run`. These
+                # are the most transient failures jig can meet, so they ride the same
+                # ladder as a 503.
+                last = _transport_error(self.url, self.timeout, exc)
             if attempt < self.max_retries:
-                self.sleeper(0.5 * (2 ** attempt))
+                # The provider's instruction wins when it is longer than our own backoff;
+                # our backoff wins when the provider said nothing.
+                self.sleeper(max(0.5 * (2 ** attempt), asked_for))
         raise last
 
 
@@ -224,6 +285,153 @@ def _api_key_from_environment():
     return None
 
 
+def _fingerprint(key):
+    """A key you can recognise but not use."""
+    if not key:
+        return "None"
+    if len(key) < 12:
+        # Too short for a prefix and a suffix to leave anything unguessable behind.
+        return "'<set>'"
+    return "'%s...%s'" % (key[:3], key[-3:])
+
+
+def _refuse_grammar_collisions(grammar_mode, extra_body):
+    """Refuse an `extra_body` key that the chosen grammar mode owns.
+
+    `extra_body` is merged last so an operator can reach a server knob jig has no field
+    for. Merged last also means it wins, and the fields the grammar mode writes are
+    exactly the ones that must not be quietly lost: the request still succeeds, the model
+    answers unconstrained, and nothing anywhere says the node lost its grammar. Refusing
+    at construction is the same bargain `grammar_mode` itself already makes — say no
+    before the first request rather than send a wrong one forever.
+    """
+    owned = GRAMMAR_FIELDS[grammar_mode]
+    clashing = sorted(key for key in (extra_body or {}) if key in owned)
+    if clashing:
+        raise ValueError(
+            "extra_body may not set %s: grammar_mode %r builds those fields itself, and "
+            "extra_body is merged last, so the constraint would be overwritten with no "
+            "error at all. Drop the key, or choose the grammar_mode that sends what you "
+            "want (known: %s)."
+            % (", ".join(repr(key) for key in clashing), grammar_mode,
+               ", ".join(GRAMMAR_MODES))
+        )
+
+
+def _strict_ready(schema):
+    """True when `schema` satisfies OpenAI-family strict structured output.
+
+    Strict mode is not a superset of JSON Schema: every object must set
+    `additionalProperties: false` and name every declared property in `required`.
+    `jig.grammar.check_schema` requires neither — optional properties are a deliberate
+    part of jig's subset — so a pack that validates, evals green against a FakeModel and
+    ships could still be refused with an HTTP 400 that no ladder absorbs (400 is not
+    retryable, and `BackendError` is not `NodeFailed`, so `on_fail` never fires either).
+
+    Claiming strictness only when it holds, rather than normalising the schema into it,
+    is the choice made here for two reasons: closing an object and marking every property
+    required changes the contract the pack declared (an optional field becomes one the
+    model must emit), and doing it safely would mean copying the pack's grammar dict on
+    every call to avoid editing it in place. Nothing is lost by not claiming it — the
+    schema still goes on the wire, servers that constrain decoding still use it, and
+    `jig.verify` checks the output against the pack's schema either way.
+    """
+    if not isinstance(schema, dict):
+        return True
+    declared = schema.get("type")
+    types = [declared] if isinstance(declared, str) else list(declared or [])
+    if "object" in types:
+        if schema.get("additionalProperties") is not False:
+            return False
+        properties = schema.get("properties") or {}
+        if set(properties) - set(schema.get("required") or []):
+            return False
+        if not all(_strict_ready(sub) for sub in properties.values()):
+            return False
+    if "array" in types and isinstance(schema.get("items"), dict):
+        return _strict_ready(schema["items"])
+    return True
+
+
+def _retry_after(exc):
+    """How long the provider asked us to wait, in seconds, or 0.0 if it did not.
+
+    A 429 backing off on jig's own schedule is a provider instruction being ignored: the
+    first retry goes out at 0.5s when the header said 1s, and a `Retry-After: 60` still
+    gets three requests inside 1.5 seconds — which is how an account gets banned rather
+    than rate limited.
+    """
+    headers = getattr(exc, "headers", None)
+    value = headers.get("Retry-After") if headers is not None else None
+    seconds = _delta_seconds(value.strip()) if value else None
+    if seconds is None:
+        return 0.0
+    return max(0.0, min(seconds, RETRY_AFTER_CEILING))
+
+
+def _delta_seconds(value):
+    """Both spellings RFC 7231 allows: `120`, and `Wed, 21 Oct 2015 07:28:00 GMT`."""
+    try:
+        return float(int(value))
+    except ValueError:
+        pass
+    try:
+        when = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:  # a date with no zone is UTC, per the spec
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    return (when - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+
+
+def _transport_error(url, timeout, exc):
+    """Name a socket-level failure the way an HTTP status is named.
+
+    "RemoteDisconnected" on its own tells an operator nothing about which endpoint died
+    or what to change; `_no_content_reason` sets the standard for the rest of this file.
+    """
+    if isinstance(exc, TimeoutError):
+        return BackendError(
+            "%s did not answer within the %ss timeout. Raise the backend's `timeout` if "
+            "the model is simply slow to start emitting tokens." % (url, timeout)
+        )
+    if isinstance(exc, http.client.IncompleteRead):
+        # `expected` counts the bytes still OUTSTANDING, not the whole body, so the
+        # Content-Length the server promised is the sum of the two.
+        arrived = len(exc.partial)
+        promised = "%d" % (arrived + exc.expected) if exc.expected is not None else "more"
+        return BackendError(
+            "%s sent a truncated response body: %d bytes arrived of the %s it promised "
+            "in Content-Length, then the connection closed."
+            % (url, arrived, promised)
+        )
+    return BackendError(
+        "the connection to %s failed before a complete response arrived (%s: %s)"
+        % (url, type(exc).__name__, _redact(str(exc)) or "no detail")
+    )
+
+
+def _content_type(response):
+    """The response's Content-Type, if this response object has headers at all."""
+    headers = getattr(response, "headers", None)
+    return headers.get("Content-Type") if headers is not None else None
+
+
+def _redact(text):
+    """Strip anything credential-shaped out of text somebody else wrote.
+
+    Upstream error bodies get spliced into exceptions, and exceptions get logged.
+    Gateways that echo the offending request back as a debug body — several do — put the
+    caller's own `Authorization` header in it, so without this jig is not the leaker but
+    it is the amplifier. One pass, before the text is quoted anywhere.
+    """
+    if not text:
+        return text
+    return KEY_SHAPED.sub("<redacted>", BEARER.sub(r"\1<redacted>", text))
+
+
 def _schema_of(grammar):
     """Unwrap `jig.grammar.schema_to_grammar`'s struct, or take a bare schema."""
     if grammar is None:
@@ -233,17 +441,39 @@ def _schema_of(grammar):
     return grammar
 
 
-def _decode(raw):
+def _decode(raw, url=None, content_type=None):
+    """Parse a completion body, and say enough about a body that is not one.
+
+    The old message was `"not JSON (Expecting value: line 1 column 1 (char 0))"`, which
+    names neither the endpoint nor a byte of what arrived — an operator cannot tell a
+    proxy's HTML 502 page from a model that returned an empty string. Both are HTTP 200
+    here, and only the body says which.
+    """
+    text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
     try:
-        return json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+        return json.loads(text)
     except ValueError as exc:
-        raise BackendError("backend returned something that is not JSON (%s)" % exc)
+        raise BackendError(
+            "%s returned a body that is not JSON (%s). Content-Type was %s; the body "
+            "began: %s"
+            % (url or "the backend", exc, content_type or "not stated",
+               _clip(_redact(text)))
+        )
+
+
+def _clip(text, limit=200):
+    stripped = (text or "").strip()
+    if not stripped:
+        return "<empty>"
+    return repr(stripped[:limit] + ("..." if len(stripped) > limit else ""))
 
 
 def _content(response):
     choices = response.get("choices") if isinstance(response, dict) else None
     if not choices:
-        raise BackendError("backend returned no choices: %s" % json.dumps(response)[:200])
+        raise BackendError(
+            "backend returned no choices: %s" % _clip(_redact(json.dumps(response)))
+        )
     choice = choices[0]
     message = choice.get("message") or {}
     content = message.get("content")
@@ -290,8 +520,17 @@ def _no_content_reason(response, choice, message):
     return "backend returned a choice with no text content (finish_reason=%r)" % finish
 
 
-def _read_error(exc):
+def _read_error(exc, api_key=None):
+    """The upstream's own words about the failure, with the credentials taken out.
+
+    An error body is written by somebody else and read by our logs, so it is filtered
+    before it is quoted: the key we sent (a gateway may echo the request back), plus
+    anything else bearer- or key-shaped that was already in there.
+    """
     try:
-        return exc.read().decode("utf-8")[:200]
+        body = exc.read().decode("utf-8", "replace")
     except Exception:
         return exc.reason if getattr(exc, "reason", None) else "<no body>"
+    if api_key:
+        body = body.replace(api_key, "<redacted>")
+    return _clip(_redact(body))

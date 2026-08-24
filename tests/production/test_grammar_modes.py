@@ -25,7 +25,11 @@ never opens an outbound connection.
 
 Tests whose name or comment says DEFECT document behaviour that is wrong. They assert
 what jig does today so the suite stays honest; fixing the defect is expected to fail
-them, and the comment says what the assertion should become.
+them, and the comment says what the assertion should become. Three of those defects are
+now fixed and their tests assert the fix instead: `extra_body` can no longer overwrite
+the grammar, `strict: true` is claimed only for a schema that satisfies it, and a socket
+that dies mid-response is a retryable `BackendError`. The one left is the latent
+aliasing defect in `ThePackIsNeverEditedByBuildingAPayload`.
 """
 
 import copy
@@ -855,42 +859,59 @@ class ThePackIsNeverEditedByBuildingAPayload(ProxyTest):
         self.assertIn("leaked", schema["properties"])  # DEFECT: should still be absent
 
 
-class ExtraBodyCanSilentlyRemoveTheConstraint(ProxyTest):
-    """DEFECT (silent constraint loss): `extra_body` is merged last and wins.
+class ExtraBodyCannotSilentlyRemoveTheConstraint(ProxyTest):
+    """`extra_body` used to be merged last and win, including over the grammar.
 
     `build_payload` ends with `payload.update(self.extra_body)`, so an operator passing
-    `extra_body` for an unrelated server knob can overwrite the very field the grammar
-    mode just set. The request still succeeds, the model returns whatever it likes, and
-    nothing reports that the node lost its grammar — exactly the failure `jig/grammar.py`
-    names: "a silently-ignored constraint is a constraint you think you have and don't".
+    `extra_body` for an unrelated server knob could overwrite the very field the grammar
+    mode had just set. The request still succeeded, the model returned whatever it liked,
+    and nothing reported that the node had lost its grammar — exactly the failure
+    `jig/grammar.py` names: "a silently-ignored constraint is a constraint you think you
+    have and don't".
 
-    SHOULD BE: a key in `extra_body` that collides with a field the grammar mode owns
-    (`response_format`, `json_schema`, `messages`) is refused at construction, the way an
-    unknown `grammar_mode` is.
+    The fix refuses the collision at construction, the way an unknown `grammar_mode` is
+    refused: a key that the chosen mode owns (`response_format`, `json_schema`,
+    `messages`) is a `ValueError` before the first request, not a quiet loss on every
+    request. Merging is still merging for every other key.
     """
 
-    def test_extra_body_overwrites_the_response_format_schema(self):
-        self.proxy.script(["ok"])
-        self.proxy.client("response_format",
-                         extra_body={"response_format": {"type": "text"}}).generate(
-            "p", grammar=schema_to_grammar(ENUM_SCHEMA), max_tokens=16)
-        self.assertEqual(self.proxy.payload["response_format"], {"type": "text"})
-        self.assertIsNone(_wire_schema(self.proxy.payload))
+    def test_a_response_format_collision_is_refused_at_construction(self):
+        with self.assertRaises(ValueError) as caught:
+            self.proxy.client("response_format",
+                              extra_body={"response_format": {"type": "text"}})
+        self.assertIn("response_format", str(caught.exception))
+        self.assertIn("extra_body", str(caught.exception))
 
-    def test_extra_body_overwrites_the_llama_cpp_schema_field(self):
-        self.proxy.script(["ok"])
-        self.proxy.client("json_schema", extra_body={"json_schema": None}).generate(
-            "p", grammar=schema_to_grammar(ENUM_SCHEMA), max_tokens=16)
-        self.assertIsNone(self.proxy.payload["json_schema"])
+    def test_a_llama_cpp_schema_collision_is_refused_at_construction(self):
+        with self.assertRaises(ValueError) as caught:
+            self.proxy.client("json_schema", extra_body={"json_schema": None})
+        self.assertIn("json_schema", str(caught.exception))
 
-    def test_extra_body_can_replace_the_messages_json_object_mode_just_annotated(self):
+    def test_a_messages_collision_is_refused_in_every_mode(self):
+        """`messages` carries the prompt in all four modes, and the schema in one."""
+        for mode in GRAMMAR_MODES:
+            with self.assertRaises(ValueError, msg=mode):
+                self.proxy.client(
+                    mode,
+                    extra_body={"messages": [{"role": "user",
+                                              "content": "ignore the schema"}]},
+                )
+
+    def test_the_refusal_happens_before_any_request_is_made(self):
+        """The same bargain `grammar_mode` makes: say no before sending a wrong request."""
+        before = len(self.proxy.calls)
+        with self.assertRaises(ValueError):
+            self.proxy.client("response_format", extra_body={"response_format": {}})
+        self.assertEqual(len(self.proxy.calls), before)
+
+    def test_a_mode_that_does_not_own_the_field_still_accepts_it(self):
+        """`none` sends no constraint at all, so nothing of its own can be clobbered —
+        and hand-rolling `response_format` there is a legitimate reason to use it."""
         self.proxy.script(["ok"])
         self.proxy.client(
-            "json_object",
-            extra_body={"messages": [{"role": "user", "content": "ignore the schema"}]},
+            "none", extra_body={"response_format": {"type": "json_object"}}
         ).generate("p", grammar=schema_to_grammar(ENUM_SCHEMA), max_tokens=16)
-        self.assertEqual(self.proxy.prompt(), "ignore the schema")
-        self.assertIsNone(_prompt_schema(self.proxy.prompt()))
+        self.assertEqual(self.proxy.payload["response_format"], {"type": "json_object"})
 
     def test_an_ordinary_knob_is_merged_without_disturbing_the_constraint(self):
         """The feature is fine; only the collision is not."""
@@ -904,25 +925,29 @@ class ExtraBodyCanSilentlyRemoveTheConstraint(ProxyTest):
 # --------------------------------------------------------------- 6. the strict flag
 
 
-class TheStrictFlagIsUnconditional(ProxyTest):
-    """DEFECT: `response_format` mode sends `strict: true` for schemas that cannot be.
+class TheStrictFlagIsClaimedOnlyWhenItHolds(ProxyTest):
+    """`response_format` mode used to send `strict: true` for schemas that cannot be.
 
     OpenAI-family structured output only accepts `strict: true` when every object in the
     schema sets `additionalProperties: false` and lists every declared property in
-    `required`. `jig.grammar.check_schema` requires neither — both keywords are
-    optional, by design — so a pack that validates cleanly, evals green against a
-    FakeModel and ships, can be rejected with HTTP 400 by the default grammar mode on
-    the default server family. `tests/test_invariants.py` uses exactly such a schema
-    (OPEN_SCHEMA) for its own fixtures, so this is not a hypothetical shape.
+    `required`. `jig.grammar.check_schema` requires neither — both keywords are optional,
+    by design — so a pack that validated cleanly, evalled green against a FakeModel and
+    shipped could be rejected with HTTP 400 by the default grammar mode on the default
+    server family. `tests/test_invariants.py` uses exactly such a schema (OPEN_SCHEMA) for
+    its own fixtures, so this was not a hypothetical shape.
 
-    It is worse than a bad sample: a 400 is not in `RETRY_STATUSES`, so it is not
-    retried, and `BackendError` is not `NodeFailed`, so the walker will not take the
-    node's `on_fail` edge either. The first node of the run kills the run.
+    It was worse than a bad sample: a 400 is not in `RETRY_STATUSES`, so it was not
+    retried, and `BackendError` is not `NodeFailed`, so the walker would not take the
+    node's `on_fail` edge either. The first node of the run killed the run.
 
-    SHOULD BE: either `strict` is sent only for a schema that satisfies those rules, or
-    the payload builder closes the schema itself (on a copy — see the aliasing defect
-    above), or `jig validate` refuses a schema that the chosen grammar mode cannot
-    express. Any of the three; today it is none of them.
+    The fix is `_strict_ready(schema)`: claim strictness only for a schema that satisfies
+    the rules. The alternative — normalising the schema into strict shape — was rejected
+    because closing an object and marking every property required *changes the contract
+    the pack declared*: an optional field becomes one the model must emit, and jig would
+    then be verifying against one schema while the server enforced another. Nothing is
+    lost by not claiming it. The schema still goes on the wire in the same place, servers
+    that constrain decoding still use it, and `jig.verify` checks every output against
+    the pack's own schema either way.
     """
 
     def test_jig_accepts_a_schema_that_strict_mode_forbids(self):
@@ -933,43 +958,57 @@ class TheStrictFlagIsUnconditional(ProxyTest):
              "<root>: 'note' must be in 'required'"],
         )
 
-    def test_strict_is_asserted_anyway(self):
+    def test_strict_is_not_asserted_for_it_but_the_schema_is_still_sent(self):
+        """Not claiming strictness is not the same as dropping the constraint."""
         self.proxy.ask("response_format", schema=OPEN_SCHEMA)
         envelope = self.proxy.payload["response_format"]["json_schema"]
-        self.assertIs(envelope["strict"], True)
+        self.assertIs(envelope["strict"], False)
         self.assertEqual(envelope["schema"], OPEN_SCHEMA)
-        self.assertNotIn("additionalProperties", envelope["schema"])
+        self.assertEqual(envelope["name"], "jig_node")
 
-    def test_a_strict_enforcing_server_rejects_the_request_outright(self):
+    def test_strict_is_still_asserted_for_a_schema_that_satisfies_it(self):
+        """ENUM_SCHEMA is closed and fully required, so the claim is true of it."""
+        self.proxy.ask("response_format", schema=ENUM_SCHEMA)
+        envelope = self.proxy.payload["response_format"]["json_schema"]
+        self.assertIs(envelope["strict"], True)
+
+    def test_a_nested_object_that_is_open_disqualifies_the_whole_schema(self):
+        """Strict is checked to the leaves; a server checks it that way too."""
+        nested = {
+            "type": "object",
+            "properties": {"inner": {
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+                "required": ["a"],
+            }},
+            "required": ["inner"],
+            "additionalProperties": False,
+        }
+        self.proxy.ask("response_format", schema=nested)
+        envelope = self.proxy.payload["response_format"]["json_schema"]
+        self.assertIs(envelope["strict"], False)
+        self.assertNotEqual(_strict_violations(nested), [])
+
+    def test_a_strict_enforcing_server_now_accepts_the_request(self):
+        """The 400 that killed the run: gone, because the claim is gone."""
         self.proxy.strict_server = True
         self.proxy.script(["ok"])
-        with self.assertRaises(BackendError) as caught:
-            self.proxy.client("response_format").generate(
-                "p", grammar=schema_to_grammar(OPEN_SCHEMA), max_tokens=16)
-        self.assertIn("400", str(caught.exception))
-        self.assertIn("additionalProperties", str(caught.exception))
+        text = self.proxy.client("response_format").generate(
+            "p", grammar=schema_to_grammar(OPEN_SCHEMA), max_tokens=16)
+        self.assertEqual(json.loads(text), {"category": "x"})
+        self.assertEqual(self.proxy.calls[-1]["fault"], "ok")
 
-    def test_the_rejection_is_not_retried(self):
-        """400 is a permanent answer, so one attempt — correct, and worth pinning."""
+    def test_the_node_completes_instead_of_dying_on_its_first_sample(self):
         self.proxy.strict_server = True
         self.proxy.script(["ok"] * 4)
         before = len(self.proxy.calls)
-        with self.assertRaises(BackendError):
-            self.proxy.client("response_format", max_retries=3).generate(
-                "p", grammar=schema_to_grammar(OPEN_SCHEMA), max_tokens=16)
+        committed = run_node(_node(grammar=OPEN_SCHEMA, retries=2), {"ticket": "help"},
+                             self.proxy.client("response_format"))
+        self.assertEqual(committed, {"category": "x"})
         self.assertEqual(len(self.proxy.calls) - before, 1)
 
-    def test_the_ladder_does_not_absorb_it_either(self):
-        """Three retries would be three more 400s; the node fails on the first."""
-        self.proxy.strict_server = True
-        self.proxy.script(["ok"] * 4)
-        before = len(self.proxy.calls)
-        with self.assertRaises(BackendError):
-            run_node(_node(grammar=OPEN_SCHEMA, retries=2), {"ticket": "help"},
-                     self.proxy.client("response_format"))
-        self.assertEqual(len(self.proxy.calls) - before, 1)
-
-    def test_on_fail_cannot_catch_it_so_the_whole_run_dies(self):
+    def test_a_whole_run_over_an_open_schema_reaches_its_happy_end(self):
+        """The shape of the original defect: the first node used to kill the run."""
         self.proxy.strict_server = True
         self.proxy.script(["ok"] * 4)
         pack = Pack(
@@ -981,8 +1020,24 @@ class TheStrictFlagIsUnconditional(ProxyTest):
             },
             edges=[Edge("classify", "done")],
         )
-        with self.assertRaises(BackendError):
-            run(pack, self.proxy.client("response_format"), {"ticket": "help"})
+        result = run(pack, self.proxy.client("response_format"), {"ticket": "help"})
+        self.assertEqual(result.path, ["classify", "done"])
+
+    def test_a_server_that_does_enforce_strict_still_refuses_a_false_claim(self):
+        """Guard the premise: the proxy's strict server is not a no-op.
+
+        Without this, every assertion above would pass just as well against a server that
+        never checked anything.
+        """
+        self.proxy.strict_server = True
+        self.proxy.script(["ok"])
+        model = self.proxy.client("response_format")
+        payload = model.build_payload("p", OPEN_SCHEMA, 16)
+        payload["response_format"]["json_schema"]["strict"] = True  # lie on purpose
+        with self.assertRaises(BackendError) as caught:
+            model._post(payload)
+        self.assertIn("400", str(caught.exception))
+        self.assertIn("additionalProperties", str(caught.exception))
 
     def test_the_other_three_modes_are_unaffected_by_the_same_schema(self):
         """Only `response_format` claims strictness, so only it can be refused for it."""
@@ -1003,72 +1058,82 @@ class TheStrictFlagIsUnconditional(ProxyTest):
             with open(os.path.join(root, name)) as handle:
                 schema = json.load(handle)
             self.assertEqual(_strict_violations(schema), [], name)
+            self.assertIs(
+                self.proxy.client("response_format").build_payload(
+                    "p", schema, 16)["response_format"]["json_schema"]["strict"],
+                True,
+                name,
+            )
 
 
 # ----------------------------------------------------- 7. the socket under the modes
 
 
-class ADeadSocketEscapesAsSomethingThatIsNotAJigError(ProxyTest):
-    """DEFECT: a connection that dies mid-response is neither retried nor wrapped.
+class ADeadSocketIsAWrappedRetryableBackendError(ProxyTest):
+    """A connection that dies mid-response used to be neither retried nor wrapped.
 
-    `_post` catches `urllib.error.HTTPError` and `urllib.error.URLError`. Neither covers
-    a socket that dies *after* the response line: `http.client` raises `IncompleteRead`
+    `_post` caught `urllib.error.HTTPError` and `urllib.error.URLError`. Neither covers a
+    socket that dies *after* the response line: `http.client` raises `IncompleteRead`
     when a body is shorter than its `Content-Length`, and `RemoteDisconnected` when the
     peer closes before writing anything. Both come out of `response.read()` /
-    `getresponse()` inside the `with self.opener(...)` block, and both walk straight past
-    the handler.
+    `getresponse()` inside the `with self.opener(...)` block, and both walked straight
+    past the handler — so they were not `JigError`s (the CLI reported them as an
+    unhandled traceback rather than a diagnosed failure) and they were not retried at
+    all, although a truncated body or a disconnect from an idle-timing-out proxy is the
+    textbook transient, the exact thing `max_retries` exists for.
 
-    Two consequences, and the second is the one that bites in production:
-
-    * they are not `BackendError`, so they are not `JigError`, so `jig`'s CLI reports
-      them as an unhandled traceback rather than a diagnosed failure;
-    * they are not retried at all, even though a truncated body or a mid-generation
-      disconnect from an idle-timing-out proxy is the textbook transient — the exact
-      thing `max_retries` exists for.
-
-    SHOULD BE: both wrapped in `BackendError` and treated as retryable, the way
-    `URLError` already is. Asserted here as they behave today, for all four modes,
-    because the grammar mode makes no difference: it is the same socket.
+    `_post` now catches `OSError` and `http.client.HTTPException` around both the opener
+    call and the read. Asserted for all four modes because the grammar mode makes no
+    difference: it is the same socket.
     """
 
-    def test_a_truncated_body_raises_a_raw_http_client_error_in_every_mode(self):
+    def test_a_truncated_body_is_a_backend_error_in_every_mode(self):
         for mode in GRAMMAR_MODES:
             self.proxy.script(["truncated"], default="truncated")
-            with self.assertRaises(http.client.IncompleteRead, msg=mode):
+            with self.assertRaises(BackendError, msg=mode) as caught:
                 self.proxy.client(mode).generate(
                     "p", grammar=schema_to_grammar(ENUM_SCHEMA), max_tokens=16)
+            self.assertIn("truncated", str(caught.exception), mode)
 
-    def test_a_dropped_connection_raises_a_raw_http_client_error_in_every_mode(self):
+    def test_a_dropped_connection_is_a_backend_error_in_every_mode(self):
         for mode in GRAMMAR_MODES:
             self.proxy.script(["reset"], default="reset")
-            with self.assertRaises(http.client.RemoteDisconnected, msg=mode):
+            with self.assertRaises(BackendError, msg=mode) as caught:
                 self.proxy.client(mode).generate(
                     "p", grammar=schema_to_grammar(ENUM_SCHEMA), max_tokens=16)
+            self.assertIn(self.proxy.base_url, str(caught.exception), mode)
 
-    def test_neither_is_a_jig_error_so_the_cli_cannot_diagnose_it(self):
-        for fault, expected in (("truncated", http.client.IncompleteRead),
-                                ("reset", http.client.RemoteDisconnected)):
+    def test_both_are_jig_errors_so_the_cli_can_diagnose_them(self):
+        for fault in ("truncated", "reset"):
             self.proxy.script([fault], default=fault)
             try:
                 self.proxy.client("response_format").generate("p", None, 16)
-            except expected as exc:
-                self.assertNotIsInstance(exc, JigError)  # DEFECT: should be BackendError
+            except BackendError as exc:
+                self.assertIsInstance(exc, JigError)
             else:
-                self.fail("expected %s for fault %r" % (expected.__name__, fault))
+                self.fail("expected a BackendError for fault %r" % fault)
 
-    def test_neither_is_retried_although_both_are_transient(self):
+    def test_both_are_retried_because_both_are_transient(self):
+        """Fail once, then take the "ok" that is right there — one node attempt, not a
+        dead run."""
         for fault in ("truncated", "reset"):
             self.proxy.script([fault, "ok", "ok", "ok"], default="ok")
             before = len(self.proxy.calls)
-            with self.assertRaises((http.client.IncompleteRead,
-                                    http.client.RemoteDisconnected)):
-                self.proxy.client("response_format", max_retries=3).generate(
-                    "p", grammar=schema_to_grammar(ENUM_SCHEMA), max_tokens=16)
-            # DEFECT: should be 2 — fail once, then take the "ok" that is right there.
-            self.assertEqual(len(self.proxy.calls) - before, 1, fault)
+            self.proxy.client("response_format", max_retries=3).generate(
+                "p", grammar=schema_to_grammar(ENUM_SCHEMA), max_tokens=16)
+            self.assertEqual(len(self.proxy.calls) - before, 2, fault)
+
+    def test_a_persistent_socket_death_still_gives_up_after_the_ladder(self):
+        """Retrying a permanently dead endpoint forever is the other way to be wrong."""
+        self.proxy.script([], default="reset")
+        before = len(self.proxy.calls)
+        with self.assertRaises(BackendError):
+            self.proxy.client("response_format", max_retries=2).generate(
+                "p", grammar=schema_to_grammar(ENUM_SCHEMA), max_tokens=16)
+        self.assertEqual(len(self.proxy.calls) - before, 3)
 
     def test_a_5xx_by_contrast_is_wrapped_and_retried_in_every_mode(self):
-        """The contrast that makes the two above look like an oversight, not a policy."""
+        """The contrast that made the two above look like an oversight, not a policy."""
         for mode in GRAMMAR_MODES:
             self.proxy.script(["503", "ok"], default="ok")
             before = len(self.proxy.calls)
@@ -1077,7 +1142,7 @@ class ADeadSocketEscapesAsSomethingThatIsNotAJigError(ProxyTest):
             self.assertEqual(len(self.proxy.calls) - before, 2, mode)
 
     def test_a_gateway_html_page_is_wrapped_in_every_mode(self):
-        """A CDN error page arrives as HTTP 200 — this one *is* handled. Keep it so."""
+        """A CDN error page arrives as HTTP 200 — this one was always handled. Keep it."""
         for mode in GRAMMAR_MODES:
             self.proxy.script(["notjson"], default="notjson")
             with self.assertRaises(BackendError) as caught:
