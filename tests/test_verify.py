@@ -2,7 +2,7 @@
 
 import unittest
 
-from jig.errors import NodeFailed
+from jig.errors import MissingVariable, NodeFailed
 from jig.graph import run
 from jig.model import FakeModel
 from jig.pack import Edge, Node, Pack
@@ -114,10 +114,23 @@ class TestRetryLadder(unittest.TestCase):
         self.assertEqual(run_node(node(), {"ticket": "t"}, model), {"category": "billing"})
         self.assertEqual(model.call_count, 2)
 
-    def test_the_first_resample_does_not_carry_the_error_text(self):
+    def test_the_first_resample_differs_from_the_request_that_was_rejected(self):
+        """A byte-identical re-sample is a wasted rung against a greedy backend."""
         model = FakeModel([BAD_ENUM, GOOD])
         run_node(node(), {"ticket": "t"}, model)
-        self.assertEqual(model.calls[1].prompt, model.calls[0].prompt)
+        self.assertNotEqual(model.calls[1].prompt, model.calls[0].prompt)
+        self.assertIn("rejected", model.calls[1].prompt)
+
+    def test_the_first_resample_still_does_not_quote_the_rejected_value(self):
+        model = FakeModel([BAD_ENUM, GOOD])
+        run_node(node(), {"ticket": "t"}, model)
+        self.assertNotIn("refund", model.calls[1].prompt)
+
+    def test_a_prompt_that_cannot_be_rendered_spends_no_generations(self):
+        model = FakeModel([GOOD])
+        with self.assertRaises(MissingVariable):
+            run_node(node(prompt="Classify: {nobody_wrote_this}"), {"ticket": "t"}, model)
+        self.assertEqual(model.call_count, 0)
 
     def test_the_second_resample_appends_the_rejection(self):
         model = FakeModel([BAD_ENUM, BAD_ENUM, GOOD])

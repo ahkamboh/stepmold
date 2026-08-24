@@ -6,13 +6,15 @@ from jig.errors import (
     AssertFailed,
     DanglingEdge,
     DeadEnd,
+    ExprError,
     MaxStepsExceeded,
     MissingVariable,
     NodeFailed,
 )
 from jig.model import FakeModel
 from jig.pack import Edge, Node, Pack
-from jig.graph import run
+from jig.state import Store
+from jig.graph import StateCollision, commit, run
 
 
 def build(nodes, edges, entry, max_steps=100):
@@ -345,3 +347,175 @@ class TestRunMetadata(unittest.TestCase):
         inputs = {"ticket": "t"}
         run(self._pack(), FakeModel(['{"a": 1}']), inputs)
         self.assertEqual(inputs, {"ticket": "t"})
+
+
+class TestUnrenderablePrompts(unittest.TestCase):
+    """A prompt that cannot be rendered is a node failure like any other."""
+
+    def _pack(self, on_fail=None):
+        return build(
+            nodes=[
+                generate("classify", "Classify: {nobody_wrote_this}", on_fail=on_fail),
+                Node(name="done", type="end"),
+                Node(name="give_up", type="end"),
+            ],
+            edges=[("classify", "done")],
+            entry="classify",
+        )
+
+    def test_an_unrenderable_prompt_takes_the_on_fail_edge(self):
+        model = FakeModel(['{"a": 1}'])
+        result = run(self._pack(on_fail="give_up"), model, {"ticket": "t"})
+        self.assertEqual(result.path, ["classify", "give_up"])
+
+    def test_no_generation_is_spent_on_a_prompt_that_never_rendered(self):
+        model = FakeModel(['{"a": 1}'])
+        run(self._pack(on_fail="give_up"), model, {"ticket": "t"})
+        self.assertEqual(model.call_count, 0)
+
+    def test_the_diversion_is_recorded_with_zero_attempts(self):
+        result = run(self._pack(on_fail="give_up"), FakeModel(['{"a": 1}']), {})
+        self.assertEqual(len(result.failures), 1)
+        self.assertEqual(result.failures[0].node, "classify")
+        self.assertEqual(result.failures[0].attempts, 0)
+        self.assertIn("nobody_wrote_this", result.failures[0].reason)
+
+    def test_without_on_fail_the_missing_variable_still_escapes(self):
+        with self.assertRaises(MissingVariable):
+            run(self._pack(), FakeModel(['{"a": 1}']), {})
+
+
+class TestUnevaluableAsserts(unittest.TestCase):
+    """graph and verify must route an unevaluable expression the same way."""
+
+    def _pack(self, expr, on_fail=None):
+        return build(
+            nodes=[
+                generate("classify"),
+                Node(name="check", type="assert", expr=expr, on_fail=on_fail),
+                Node(name="done", type="end"),
+                Node(name="give_up", type="end"),
+            ],
+            edges=[("classify", "check"), ("check", "done")],
+            entry="classify",
+        )
+
+    def test_an_unevaluable_assert_takes_the_on_fail_edge(self):
+        pack = self._pack('nobody_wrote_this == "x"', on_fail="give_up")
+        result = run(pack, FakeModel(['{"category": "billing"}']))
+        self.assertEqual(result.path, ["classify", "check", "give_up"])
+
+    def test_an_unevaluable_assert_without_on_fail_names_what_is_missing(self):
+        pack = self._pack('nobody_wrote_this == "x"')
+        with self.assertRaises(ExprError) as caught:
+            run(pack, FakeModel(['{"category": "billing"}']))
+        self.assertIn("nobody_wrote_this", str(caught.exception))
+
+    def test_a_verify_time_assert_routes_the_same_way(self):
+        """The same expression on a generate node already diverts — stay consistent."""
+        pack = build(
+            nodes=[
+                generate("classify", assert_expr='nobody_wrote_this == "x"',
+                         on_fail="give_up"),
+                Node(name="done", type="end"),
+                Node(name="give_up", type="end"),
+            ],
+            edges=[("classify", "done")],
+            entry="classify",
+        )
+        result = run(pack, FakeModel(['{"a": 1}'] * 3))
+        self.assertEqual(result.path, ["classify", "give_up"])
+
+
+class TestCheckpointOnDeadEnd(unittest.TestCase):
+    """A committed node must leave a record even when routing fails after it."""
+
+    def setUp(self):
+        self.store = Store(":memory:")
+        self.addCleanup(self.store.close)
+        self.pack = build(
+            nodes=[generate("classify"), Node(name="done", type="end")],
+            edges=[Edge("classify", "done", {"category": "refund"})],
+            entry="classify",
+        )
+
+    def test_the_committed_node_is_checkpointed_before_the_dead_end_escapes(self):
+        with self.assertRaises(DeadEnd):
+            run(self.pack, FakeModel(['{"category": "billing"}']), {"t": 1},
+                run_id="r", store=self.store)
+        history = self.store.history("r")
+        self.assertEqual([c.node for c in history], ["classify"])
+        self.assertEqual(history[0].state["category"], "billing")
+
+    def test_that_checkpoint_does_not_claim_the_run_finished(self):
+        with self.assertRaises(DeadEnd):
+            run(self.pack, FakeModel(['{"category": "billing"}']), {"t": 1},
+                run_id="r", store=self.store)
+        self.assertFalse(self.store.latest("r").finished)
+
+
+class TestCommitCollisions(unittest.TestCase):
+    """Merge-mode commit must not let one node quietly rewrite someone else's value."""
+
+    def _two_nodes(self, second_schema, on_fail=None):
+        return build(
+            nodes=[
+                generate("classify"),
+                generate("extract", schema=second_schema),
+                Node(name="done", type="end"),
+            ],
+            edges=[("classify", "extract"), ("extract", "done")],
+            entry="classify",
+        )
+
+    def test_a_node_may_not_overwrite_a_run_input(self):
+        pack = build(
+            nodes=[generate("classify"), Node(name="done", type="end")],
+            edges=[("classify", "done")],
+            entry="classify",
+        )
+        with self.assertRaises(StateCollision) as caught:
+            run(pack, FakeModel(['{"ticket": "rewritten"}']), {"ticket": "original"})
+        self.assertIn("ticket", str(caught.exception))
+        self.assertIn("classify", str(caught.exception))
+
+    def test_a_later_node_restating_a_field_is_recorded_rather_than_refused(self):
+        """Node over node is the author's own doing, and provenance names the winner."""
+        store = Store(":memory:")
+        self.addCleanup(store.close)
+        pack = self._two_nodes({"type": "object"})
+        result = run(pack, FakeModel(['{"category": "billing"}', '{"category": "tech"}']),
+                     run_id="r", store=store)
+        self.assertEqual(result.state["category"], "tech")
+        self.assertEqual(result.provenance["category"], "extract")
+        # The earlier value is not lost: it is still in the earlier node's checkpoint.
+        self.assertEqual(store.history("r")[0].state["category"], "billing")
+
+    def test_an_output_key_may_not_land_on_a_run_input_either(self):
+        pack = build(
+            nodes=[generate("classify", output="ticket"), Node(name="done", type="end")],
+            edges=[("classify", "done")],
+            entry="classify",
+        )
+        with self.assertRaises(StateCollision):
+            run(pack, FakeModel(['{"a": 1}']), {"ticket": "original"})
+
+    def test_a_node_may_overwrite_the_value_it_wrote_itself(self):
+        pack = build(
+            nodes=[generate("tick"), Node(name="done", type="end", output=["count"])],
+            edges=[Edge("tick", "done", {"finished": True}), Edge("tick", "tick", None)],
+            entry="tick",
+        )
+        model = FakeModel(
+            ['{"count": 1, "finished": false}', '{"count": 2, "finished": true}']
+        )
+        self.assertEqual(run(pack, model).output, {"count": 2})
+
+    def test_a_refused_commit_writes_nothing_at_all(self):
+        state = {"ticket": "original"}
+        provenance = {}
+        with self.assertRaises(StateCollision):
+            commit(generate("classify"), {"category": "billing", "ticket": "new"},
+                   state, provenance)
+        self.assertEqual(state, {"ticket": "original"})
+        self.assertEqual(provenance, {})
