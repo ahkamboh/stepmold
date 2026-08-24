@@ -681,10 +681,23 @@ class DeeplyNestedModelOutputIsRejected(TempDirTest):
         return '{"v": %s}' % ("[" * depth + "]" * depth)
 
     def test_verify_rejects_it(self):
+        """Rejected, not fatal — whichever layer catches it first.
+
+        Which layer that is depends on the interpreter, and both are correct. Before
+        CPython 3.12, json.loads exhausts its own stack while DECODING, so extract_json
+        rejects the input before the validator ever sees it; from 3.12 the decoder copes
+        and grammar.validate_against's depth budget is what refuses it. Asserting the
+        validator's wording specifically made the suite red on 3.9, 3.10 and 3.11 for a
+        version difference rather than a defect. The invariant is that this is a Rejected.
+        """
         node = Node(name="a", type="generate", prompt="p", grammar=OPEN_SCHEMA)
         with self.assertRaises(Rejected) as caught:
             verify(node, self._deep(), {})
-        self.assertIn("levels deep", str(caught.exception))
+        message = str(caught.exception)
+        self.assertTrue(
+            "levels deep" in message or "nested too deeply" in message,
+            "rejected, but not for being too deeply nested: %r" % message,
+        )
 
     def test_the_message_about_it_is_not_itself_enormous(self):
         """The path to a 3000-deep value is 3000 segments long if nothing clips it."""
