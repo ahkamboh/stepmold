@@ -17,9 +17,20 @@ Two rules, and the second one is the load-bearing one:
    the checkpoint. That is deliberate: an operator debugging a pack needs it, and bytes
    on disk cannot condition a model. `tests/test_invariants.py` enforces both halves.
 
-The ladder is cheap-first: plain re-sample, then re-sample with the rejection appended,
-then the node's `on_fail` edge (or `NodeFailed`). No frontier-model fallback, by design —
-PLAN.md keeps the cost story honest.
+The ladder is: generate, then re-sample with the rejection appended once for each retry
+the node allows, then the node's `on_fail` edge (or `NodeFailed`). No frontier-model
+fallback, by design — PLAN.md keeps the cost story honest.
+
+PLAN.md §3 writes the first rung as a *plain* re-sample "(temp bump)", and that rung is
+not implemented, because nothing at this layer can bump anything: the `Model` protocol is
+`generate(prompt, grammar, max_tokens)` — no sampling parameter — and jig's own
+`OpenAICompatModel` fixes `temperature` once at construction (default `0.0`). A plain
+re-sample would therefore re-issue the byte-identical request that was just rejected, and
+a greedy server would return the byte-identical rejection. So the ladder does not spend a
+rung on it. Every re-sample instead spends its tokens on the one thing this layer *can*
+change: telling the model what was wrong. Giving the ladder a real sampling knob means
+changing the protocol, `FakeModel` and the backend together; until then this docstring
+describes what the code does rather than what the plan wanted.
 """
 
 import json
@@ -54,18 +65,25 @@ def run_node(node, state, model):
     """Generate, verify, and return the object to commit — or raise `NodeFailed`.
 
     `retries` is the number of *re-samples* after the first attempt, so the default of 2
-    gives the three-rung ladder TASKS.md describes.
+    buys three generations.
+
+    A prompt that names state nobody wrote raises `MissingVariable` out of here
+    untouched, before any generation is spent: no re-sample can fix a template, so the
+    ladder is skipped rather than burned. The walker routes it to the node's `on_fail`
+    exactly as it routes `NodeFailed` — a node that cannot produce a verified output is
+    what that edge is for.
     """
     attempts = node.retries + 1
     scratchpad = None
     reason = "no attempts were made"
     feedback = None
-    for attempt in range(attempts):
-        # Rung 1 is a plain re-sample: cheap, and a different sample often just works.
-        # Only from rung 2 do we spend tokens telling the model what went wrong.
-        error = feedback if attempt >= 2 else None
+    for _ in range(attempts):
+        # `feedback` is None on the first attempt and the previous rejection after that.
+        # Every re-sample carries it: see the module docstring — without a sampling
+        # parameter in the protocol, a re-sample that changed nothing else would be the
+        # same request twice.
         candidate = generate_once(
-            node, state, model, error=error, scratchpad=scratchpad
+            node, state, model, error=feedback, scratchpad=scratchpad
         )
         scratchpad = candidate.scratchpad
         try:
