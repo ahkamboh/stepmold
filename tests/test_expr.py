@@ -101,3 +101,99 @@ class TestRefusals(unittest.TestCase):
 
     def test_an_empty_expression_is_refused(self):
         self.assertIn("empty", self._fails("   "))
+
+
+class TestShortCircuit(unittest.TestCase):
+    """`and` / `or` must stop at the operand that decides the result.
+
+    The guard idiom puts the cheap safety check on the left precisely so the operand on
+    the right never runs against a value that would raise. A pack author writing
+    `x is not null and len(x) > 2` is asking for exactly that, so evaluating both sides
+    up front turns the guard into the very error it was written to prevent.
+    """
+
+    def test_and_guards_its_right_hand_side(self):
+        self.assertIs(evaluate("name is not null and len(name) > 2", {"name": None}), False)
+
+    def test_and_stops_at_a_falsey_left_operand(self):
+        self.assertEqual(evaluate("rows and rows[0] == 1", {"rows": []}), [])
+
+    def test_or_stops_at_a_truthy_left_operand(self):
+        self.assertIs(evaluate("total == 0 or 100 / total > 2", {"total": 0}), True)
+
+    def test_or_still_reaches_the_right_operand_when_the_left_is_falsey(self):
+        self.assertIs(evaluate("total == 1 or total == 0", {"total": 0}), True)
+
+    def test_and_yields_the_last_operand_when_all_are_truthy(self):
+        self.assertEqual(evaluate("1 and 2 and 3", {}), 3)
+
+    def test_or_yields_the_last_operand_when_all_are_falsey(self):
+        self.assertEqual(evaluate("0 or [] or false", {}), False)
+
+    def test_a_guarded_chain_of_three_stops_at_the_first_decider(self):
+        # The middle operand is falsey, so the unguarded division on the right must
+        # never be reached.
+        self.assertEqual(evaluate("true and 0 and 1 / 0", {}), 0)
+
+
+class TestBudgets(unittest.TestCase):
+    """Runaway expressions must surface as `ExprError`, not as an interpreter error.
+
+    `verify._check_assert` catches `ExprError` and turns it into a `Rejected`, which the
+    retry ladder and `on_fail` edges can route. A `RecursionError` or `MemoryError` is
+    neither, so it escapes that handler and kills the whole run.
+    """
+
+    def test_deeply_nested_arithmetic_is_refused_rather_than_recursing(self):
+        with self.assertRaises(ExprError) as caught:
+            evaluate("1" + "+1" * 1000, {})
+        self.assertIn("nested", str(caught.exception))
+
+    def test_deeply_nested_unary_operators_are_refused(self):
+        with self.assertRaises(ExprError) as caught:
+            evaluate("-" * 500 + "1", {})
+        self.assertIn("nested", str(caught.exception))
+
+    def test_deeply_nested_literals_are_refused(self):
+        with self.assertRaises(ExprError) as caught:
+            evaluate("[" * 200 + "]" * 200, {})
+        self.assertIn("nested", str(caught.exception))
+
+    def test_ordinary_nesting_is_untouched(self):
+        self.assertEqual(evaluate("1 + (2 * (3 - (4 // 2)))", {}), 3)
+
+    def test_an_oversized_string_repetition_is_refused_before_it_allocates(self):
+        with self.assertRaises(ExprError) as caught:
+            evaluate("'a' * 40000 * 40000", {})
+        self.assertIn("too large", str(caught.exception))
+
+    def test_an_oversized_list_repetition_is_refused_before_it_allocates(self):
+        with self.assertRaises(ExprError) as caught:
+            evaluate("[0] * 40000 * 40000", {})
+        self.assertIn("too large", str(caught.exception))
+
+    def test_ordinary_repetition_still_works(self):
+        self.assertEqual(evaluate('"ab" * 2', {}), "abab")
+        self.assertEqual(evaluate("[0] * 3", {}), [0, 0, 0])
+        self.assertEqual(evaluate("3 * 4", {}), 12)
+
+
+class TestEveryFailureIsAnExprError(unittest.TestCase):
+    """Nothing in the walker may leak a raw builtin exception past `ExprError`."""
+
+    def _fails(self, expression, state=None):
+        with self.assertRaises(ExprError) as caught:
+            evaluate(expression, STATE if state is None else state)
+        return str(caught.exception)
+
+    def test_unary_minus_on_a_string(self):
+        self.assertIn("cannot evaluate", self._fails("-category"))
+
+    def test_unary_plus_on_a_string(self):
+        self.assertIn("cannot evaluate", self._fails("+category"))
+
+    def test_an_unhashable_dict_key(self):
+        self.assertIn("dict key", self._fails("{[1]: 2}"))
+
+    def test_dict_unpacking_is_refused_by_name(self):
+        self.assertIn("**", self._fails("{**classification}"))
