@@ -305,5 +305,265 @@ class APackCannotChooseTheInferenceEndpoint(unittest.TestCase):
             resolve_model(None, pack)
 
 
+# --------------------------------------------------------------------------- helpers
+
+def _write_pack(root, graph, schemas, prompts, manifest="name: p\nversion: 1\nentry: a\n"):
+    """Write a pack directory and return its path. Keeps the tests below readable."""
+    os.makedirs(os.path.join(root, "prompts"), exist_ok=True)
+    os.makedirs(os.path.join(root, "grammars"), exist_ok=True)
+    with open(os.path.join(root, "manifest.yaml"), "w") as handle:
+        handle.write(manifest)
+    with open(os.path.join(root, "graph.yaml"), "w") as handle:
+        handle.write(graph)
+    for name, schema in schemas.items():
+        with open(os.path.join(root, "grammars", "%s.json" % name), "w") as handle:
+            json.dump(schema, handle)
+    for name, body in prompts.items():
+        with open(os.path.join(root, "prompts", "%s" % name), "w") as handle:
+            handle.write(body)
+    return root
+
+
+STR_SCHEMA = {"type": "object", "properties": {"v": {"type": "string"}},
+              "required": ["v"], "additionalProperties": False}
+
+
+class TheScratchpadIsNeverCommitted(unittest.TestCase):
+    """codegen.py / README §2: the think stage's output is thrown away.
+
+    Two-stage generation only helps if the unconstrained half stays out of the record.
+    If it leaked into state it would flow into every later prompt — the same
+    self-conditioning problem the design exists to avoid, by a different door.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        graph = (
+            "nodes:\n"
+            "  a:\n"
+            "    type: generate\n"
+            "    output: r\n"
+            "    two_stage: true\n"
+            "  z:\n"
+            "    type: end\n"
+            "edges:\n"
+            "  - from: a\n"
+            "    to: z\n"
+        )
+        _write_pack(self.root, graph, {"a": STR_SCHEMA}, {"a.txt": "go\n"})
+        self.pack = load_pack(self.root)
+
+    def test_think_output_does_not_appear_in_state_output_or_provenance(self):
+        think_text = "internal musing %s" % POISON
+        model = FakeModel([think_text, '{"v": "clean"}'])
+
+        result = run(self.pack, model, {})
+
+        blob = json.dumps([result.state, result.output, result.provenance])
+        self.assertNotIn(POISON, blob, "the scratchpad leaked out of the think stage")
+
+    def test_think_output_does_not_reach_a_later_node_prompt(self):
+        think_text = "internal musing %s" % POISON
+        model = FakeModel([think_text, '{"v": "clean"}'])
+        run(self.pack, model, {})
+        # The emit call may condition on the scratchpad — that is the design. Nothing
+        # after it may.
+        for call in model.calls[2:]:
+            self.assertNotIn(POISON, call.prompt)
+
+    def test_the_two_stage_node_really_did_run_two_stages(self):
+        """Guard against the test passing because two-stage silently did not happen."""
+        model = FakeModel(["thinking", '{"v": "clean"}'])
+        run(self.pack, model, {})
+        self.assertEqual(len(model.calls), 2)
+
+
+class NothingIsCommittedWithoutVerification(unittest.TestCase):
+    """grammar.py §10 / README §3: jig never trusts output it has not checked."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        graph = (
+            "nodes:\n"
+            "  a:\n"
+            "    type: generate\n"
+            "    output: r\n"
+            "    retries: 1\n"
+            "  z:\n"
+            "    type: end\n"
+            "edges:\n"
+            "  - from: a\n"
+            "    to: z\n"
+        )
+        _write_pack(self.root, graph, {"a": STR_SCHEMA}, {"a.txt": "go\n"})
+        self.pack = load_pack(self.root)
+
+    def test_a_schema_violating_value_never_lands_in_state(self):
+        bad = json.dumps({"v": 12345, "smuggled": POISON})
+        model = FakeModel([bad, bad])
+        with self.assertRaises(Exception):
+            run(self.pack, model, {})
+
+    def test_every_committed_value_satisfies_its_node_schema(self):
+        from jig.grammar import validate_against
+        model = FakeModel(['{"v": "ok"}'])
+        result = run(self.pack, model, {})
+        validate_against(self.pack.nodes["a"].grammar, result.state["r"])
+
+    def test_an_extra_undeclared_field_is_rejected_not_silently_kept(self):
+        bad = json.dumps({"v": "ok", "smuggled": POISON})
+        model = FakeModel([bad, bad])
+        with self.assertRaises(Exception):
+            run(self.pack, model, {})
+
+
+class ThePackIsImmutableDuringARun(unittest.TestCase):
+    """pack.py §126: a run never edits its own pack.
+
+    Packs are the compiled artifact. A run that mutated one would make the second run
+    of the same pack differ from the first — and destroy reproducibility, which is the
+    property the whole compile-once design is sold on.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        graph = (
+            "nodes:\n"
+            "  a:\n"
+            "    type: generate\n"
+            "    output: r\n"
+            "  z:\n"
+            "    type: end\n"
+            "edges:\n"
+            "  - from: a\n"
+            "    to: z\n"
+        )
+        _write_pack(self.root, graph, {"a": STR_SCHEMA}, {"a.txt": "go {missing_ok}\n"
+                                                          .replace(" {missing_ok}", "")})
+        self.pack = load_pack(self.root)
+
+    def _fingerprint(self):
+        node = self.pack.nodes["a"]
+        return json.dumps({
+            "prompt": node.prompt,
+            "grammar": node.grammar,
+            "output": node.output,
+            "retries": node.retries,
+            "entry": self.pack.entry,
+        }, sort_keys=True)
+
+    def test_a_run_leaves_the_pack_byte_identical(self):
+        before = self._fingerprint()
+        run(self.pack, FakeModel(['{"v": "one"}']), {})
+        self.assertEqual(before, self._fingerprint())
+
+    def test_two_runs_of_the_same_pack_are_independent(self):
+        first = run(self.pack, FakeModel(['{"v": "one"}']), {})
+        second = run(self.pack, FakeModel(['{"v": "two"}']), {})
+        self.assertEqual(first.state["r"], {"v": "one"})
+        self.assertEqual(second.state["r"], {"v": "two"})
+
+
+class TheModelNeverChoosesTheNextNode(unittest.TestCase):
+    """graph.py §3 / README §25: the small model never plans.
+
+    Routing is the graph's job. The model is consulted exactly once per generate node
+    on the path and never asked "what next" — that is what keeps the horizon short
+    enough for a small model to stay reliable.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        schema = {"type": "object",
+                  "properties": {"kind": {"type": "string", "enum": ["x", "y"]}},
+                  "required": ["kind"], "additionalProperties": False}
+        graph = (
+            "nodes:\n"
+            "  a:\n"
+            "    type: generate\n"
+            "  bx:\n"
+            "    type: end\n"
+            "  by:\n"
+            "    type: end\n"
+            "edges:\n"
+            "  - from: a\n"
+            "    to: bx\n"
+            "    when:\n"
+            "      kind: x\n"
+            "  - from: a\n"
+            "    to: by\n"
+        )
+        _write_pack(self.root, graph, {"a": schema}, {"a.txt": "go\n"})
+        self.pack = load_pack(self.root)
+
+    def test_exactly_one_model_call_per_generate_node_on_the_path(self):
+        model = FakeModel(['{"kind": "x"}'])
+        result = run(self.pack, model, {})
+        generates = [n for n in result.path if self.pack.nodes[n].type == "generate"]
+        self.assertEqual(len(model.calls), len(generates))
+
+    def test_routing_follows_committed_state_not_a_second_opinion(self):
+        for kind, expected in (("x", "bx"), ("y", "by")):
+            result = run(self.pack, FakeModel(['{"kind": "%s"}' % kind]), {})
+            self.assertEqual(result.end_node, expected)
+
+    def test_no_prompt_ever_asks_the_model_where_to_go(self):
+        model = FakeModel(['{"kind": "x"}'])
+        run(self.pack, model, {})
+        for call in model.calls:
+            for node_name in ("bx", "by"):
+                self.assertNotIn(node_name, call.prompt)
+
+
+class EveryCommittedNodeIsCheckpointed(unittest.TestCase):
+    """state.py §4: state is written after every node that completes.
+
+    Resume is only as good as the checkpoint density. A node that commits without a
+    checkpoint is re-executed on resume — paying twice and, on a non-idempotent tool,
+    acting twice.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        graph = (
+            "nodes:\n"
+            "  a:\n"
+            "    type: generate\n"
+            "    output: r1\n"
+            "  b:\n"
+            "    type: generate\n"
+            "    output: r2\n"
+            "  z:\n"
+            "    type: end\n"
+            "edges:\n"
+            "  - from: a\n"
+            "    to: b\n"
+            "  - from: b\n"
+            "    to: z\n"
+        )
+        _write_pack(self.root, graph, {"a": STR_SCHEMA, "b": STR_SCHEMA},
+                    {"a.txt": "go\n", "b.txt": "go\n"})
+        self.pack = load_pack(self.root)
+        self.store = Store(os.path.join(self.root, "ck.sqlite"))
+        self.addCleanup(self.store.close)
+
+    def test_one_checkpoint_per_node_on_the_path(self):
+        result = run(self.pack, FakeModel(['{"v": "1"}', '{"v": "2"}']), {},
+                     run_id="r", store=self.store)
+        self.assertEqual(len(self.store.history("r")), len(result.path))
+
+    def test_the_checkpoint_records_the_state_as_committed(self):
+        run(self.pack, FakeModel(['{"v": "1"}', '{"v": "2"}']), {},
+            run_id="r", store=self.store)
+        first = self.store.history("r")[0]
+        self.assertEqual(first.node, "a")
+        self.assertEqual(first.state["r1"], {"v": "1"})
+
+
 if __name__ == "__main__":
     unittest.main()
