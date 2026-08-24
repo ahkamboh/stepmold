@@ -5,11 +5,17 @@ Two rules, and the second one is the load-bearing one:
 
 1. **Nothing is committed until it is verified.** Output must parse, satisfy the node's
    schema, and satisfy the node's optional `assert` expression.
-2. **A rejected generation never enters state.** Not into the run's state, not into a
-   later node's prompt, not even into the retry prompt's history. Verification runs
-   against a *trial* copy of state; only a candidate that survives is written back. That
-   is the structural fix for self-conditioning decay — a model that never sees its own
-   bad output cannot spiral on it.
+2. **A rejected generation is never shown to the model again.** Not in the run's state,
+   not in a later node's prompt, and not in this node's own retry prompt. Verification
+   runs against a *trial* copy of state; only a candidate that survives is written back.
+   The retry prompt may say *what was wrong* (`Rejected.feedback`, derived from the
+   pack's schema) but never *what the model said*. That is the structural fix for
+   self-conditioning decay — a model that never sees its own bad output cannot spiral
+   on it.
+
+   The full text, offending value and all, is retained in `RunResult.failures` and in
+   the checkpoint. That is deliberate: an operator debugging a pack needs it, and bytes
+   on disk cannot condition a model. `tests/test_invariants.py` enforces both halves.
 
 The ladder is cheap-first: plain re-sample, then re-sample with the rejection appended,
 then the node's `on_fail` edge (or `NodeFailed`). No frontier-model fallback, by design —
@@ -27,7 +33,21 @@ __all__ = ["Rejected", "extract_json", "run_node", "verify"]
 
 
 class Rejected(ValueError):
-    """One candidate output failed verification. Not fatal — the ladder continues."""
+    """One candidate output failed verification. Not fatal — the ladder continues.
+
+    Two halves, and keeping them apart is what makes rule 2 above true:
+
+    * ``str(exc)`` is the full detail, including the offending text. It goes to logs,
+      `RunResult.failures` and the checkpoint — diagnostics can never self-condition a
+      model, and an operator debugging a pack needs to see what came back.
+    * ``feedback`` is the only half the *model* is ever shown. It says what was wrong
+      without quoting what the model said.
+    """
+
+    def __init__(self, detail, feedback=None):
+        ValueError.__init__(self, detail)
+        self.detail = detail
+        self.feedback = detail if feedback is None else feedback
 
 
 def run_node(node, state, model):
@@ -39,10 +59,11 @@ def run_node(node, state, model):
     attempts = node.retries + 1
     scratchpad = None
     reason = "no attempts were made"
+    feedback = None
     for attempt in range(attempts):
         # Rung 1 is a plain re-sample: cheap, and a different sample often just works.
         # Only from rung 2 do we spend tokens telling the model what went wrong.
-        error = reason if attempt >= 2 else None
+        error = feedback if attempt >= 2 else None
         candidate = generate_once(
             node, state, model, error=error, scratchpad=scratchpad
         )
@@ -50,7 +71,10 @@ def run_node(node, state, model):
         try:
             return verify(node, candidate.text, state)
         except Rejected as exc:
+            # `reason` keeps the whole story for diagnostics; `feedback` is the only
+            # part that may be shown to the model on the next rung.
             reason = str(exc)
+            feedback = exc.feedback
     raise NodeFailed(node.name, reason, attempts=attempts)
 
 
@@ -65,7 +89,7 @@ def verify(node, text, state):
         try:
             validate_against(node.grammar, value)
         except ValidationError as exc:
-            raise Rejected("schema: %s" % exc)
+            raise Rejected("schema: %s" % exc, feedback="schema: %s" % exc.safe_text)
     if node.assert_expr:
         _check_assert(node, value, state)
     return value
@@ -108,7 +132,10 @@ def extract_json(text):
             return json.loads(attempt)
         except ValueError:
             continue
-    raise Rejected("output was not valid JSON: %s" % _clip(text))
+    raise Rejected(
+        "output was not valid JSON: %s" % _clip(text),
+        feedback="output was not valid JSON — return a single JSON object and nothing else",
+    )
 
 
 def _unfence(text):

@@ -34,6 +34,7 @@ __all__ = [
     "Node",
     "Pack",
     "PackError",
+    "UnsafePath",
     "load_pack",
 ]
 
@@ -52,6 +53,15 @@ _EDGE_KEYS = {"from", "to", "when", "description"}
 
 class PackError(Exception):
     """Anything wrong with a pack on disk."""
+
+
+class UnsafePath(PackError):
+    """A pack referenced a file outside its own directory.
+
+    A pack is untrusted input the moment it leaves the machine that compiled it
+    (docs/PLAN.md §6 plans a registry, §7.2 describes copying packs between hosts), so
+    every artifact reference must resolve inside the pack root.
+    """
 
 
 class MissingArtifactError(PackError):
@@ -251,7 +261,7 @@ def _build_node(path, node_name, node_type, spec):
         except SchemaError as exc:
             raise GrammarError("%s: %s" % (grammar_relative, exc))
         think_relative = "prompts/%s.think.txt" % node_name
-        if os.path.isfile(os.path.join(path, think_relative)):
+        if os.path.isfile(_resolve_inside(path, think_relative)):
             think_prompt = _read_text(path, think_relative)
 
     if node_type == "assert" and not spec.get("expr"):
@@ -285,8 +295,26 @@ def _positive_int(spec, key, node_name, default, floor=1):
     return value
 
 
+def _resolve_inside(path, relative):
+    """Resolve `relative` against the pack root, refusing anything that escapes it.
+
+    Rejects absolute paths (os.path.join silently discards the root for those), `..`
+    traversal, and symlinks pointing outside — realpath resolves links on both sides, so
+    a symlinked artifact is caught by the same containment check.
+    """
+    if not isinstance(relative, str) or not relative:
+        raise UnsafePath("artifact reference must be a non-empty string")
+    if os.path.isabs(relative) or os.path.splitdrive(relative)[0]:
+        raise UnsafePath("%s: absolute paths are not allowed in a pack" % relative)
+    root = os.path.realpath(path)
+    full = os.path.realpath(os.path.join(root, relative))
+    if full != root and not full.startswith(root + os.sep):
+        raise UnsafePath("%s: resolves outside the pack directory" % relative)
+    return full
+
+
 def _read_text(path, relative):
-    full = os.path.join(path, relative)
+    full = _resolve_inside(path, relative)
     if not os.path.isfile(full):
         raise MissingArtifactError("%s: required file is missing (%s)" % (relative, full))
     with open(full, "r") as handle:

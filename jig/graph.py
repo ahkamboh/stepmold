@@ -24,6 +24,7 @@ from .errors import (
     DeadEnd,
     MaxStepsExceeded,
     NodeFailed,
+    RunIdInUse,
 )
 from .expr import is_true
 from .verify import run_node
@@ -64,6 +65,17 @@ def run(pack, model, inputs=None, run_id=None, max_steps=None, store=None,
     picks a dead run back up without re-executing what already succeeded.
     """
     budget = max_steps if max_steps is not None else pack.max_steps
+
+    if resume_from is None and store is not None and run_id is not None:
+        # A fresh run must not inherit another run's checkpoint chain. Without this,
+        # a reused id silently splices two runs and `resume` replays the older one's
+        # output as if it belonged to this run.
+        previous = getattr(store, "latest", None)
+        if previous is not None and previous(run_id) is not None:
+            raise RunIdInUse(
+                "run id %r already has checkpoints in this store; "
+                "resume it, delete it, or choose another id" % run_id
+            )
 
     if resume_from is not None:
         run_id = run_id or resume_from.run_id

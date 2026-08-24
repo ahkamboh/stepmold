@@ -24,7 +24,7 @@ from . import __version__
 from .errors import JigError
 from .eval import evaluate
 from .grammar import ValidationError
-from .pack import PackError, load_pack
+from .pack import PackError, _resolve_inside, load_pack
 
 __all__ = ["main", "resolve_model"]
 
@@ -62,6 +62,8 @@ def build_parser():
     run.add_argument("pack", help="path to the pack directory")
     run.add_argument("--input", default="{}", help="run inputs as a JSON object")
     run.add_argument("--model", help="model spec (default: the pack manifest's)")
+    run.add_argument("--allow-pack-model", dest="allow_pack_model", action="store_true",
+                     help="accept a network endpoint chosen by the pack's manifest")
     run.add_argument("--run-id", dest="run_id", help="name this run")
     run.add_argument("--store", help="SQLite file to checkpoint into")
     run.add_argument("--resume", help="continue a previous run id (needs --store)")
@@ -116,11 +118,11 @@ def command_run(args):
     store = Store(args.store) if args.store else None
     try:
         if args.resume:
-            result = resume(pack, resolve_model(args.model, pack), args.resume, store)
+            result = resume(pack, resolve_model(args.model, pack, _allow(args)), args.resume, store)
         else:
             result = run_pack(
                 pack,
-                resolve_model(args.model, pack),
+                resolve_model(args.model, pack, _allow(args)),
                 _parse_input(args.input),
                 run_id=args.run_id,
                 store=store,
@@ -135,7 +137,7 @@ def command_run(args):
 
 def command_eval(args):
     pack = load_pack(args.pack)
-    report = evaluate(pack, resolve_model(args.model, pack))
+    report = evaluate(pack, resolve_model(args.model, pack, _allow(args)))
     print(json.dumps(_report_json(report), sort_keys=True) if args.json
           else report.summary())
     return 0 if report.passed_all else 1
@@ -144,7 +146,12 @@ def command_eval(args):
 # -------------------------------------------------------------------------- models
 
 
-def resolve_model(spec, pack):
+def _allow(args):
+    """Whether this invocation accepts a network endpoint chosen by the pack."""
+    return bool(getattr(args, "allow_pack_model", False))
+
+
+def resolve_model(spec, pack, allow_pack_model=False):
     """Turn a model spec into a `Model`.
 
     Two schemes:
@@ -159,6 +166,7 @@ def resolve_model(spec, pack):
                                           vLLM, SGLang). Constructing it opens no
                                           connection; the first generate does.
     """
+    from_pack = not spec
     spec = spec or pack.model
     if not spec:
         raise ValueError(
@@ -168,6 +176,16 @@ def resolve_model(spec, pack):
     if scheme == "fake":
         return _fake_model(rest, pack)
     if scheme == "openai":
+        # A pack must not be able to aim a credentialed client at a host it names: the
+        # request carries the rendered prompt and the ambient API key. `fake:` is exempt
+        # because it is local and contained (see _fake_model), which is what lets a pack
+        # ship its own offline model for CI.
+        if from_pack and not allow_pack_model:
+            raise ValueError(
+                "this pack's manifest selects a network endpoint (%r). Pass --model to "
+                "choose the endpoint yourself, or --allow-pack-model to accept the "
+                "pack's choice." % spec
+            )
         return _openai_model(rest)
     raise ValueError(
         "unknown model scheme %r in %r (known: %s)"
@@ -197,7 +215,10 @@ def _fake_model(path, pack):
 
     if not path:
         raise ValueError("fake: needs a path to a JSON script, e.g. fake:fakes/script.json")
-    full = path if os.path.isabs(path) else os.path.join(pack.path, path)
+    try:
+        full = _resolve_inside(pack.path, path)
+    except PackError as exc:
+        raise ValueError("fake: %s" % exc)
     if not os.path.isfile(full):
         raise ValueError("fake model script not found: %s" % full)
     with open(full, "r") as handle:

@@ -17,6 +17,7 @@ __all__ = [
     "MissingVariable",
     "NodeFailed",
     "RunError",
+    "RunIdInUse",
     "UnknownRun",
 ]
 
@@ -72,6 +73,14 @@ class AssertFailed(RunError):
         self.node = node
         self.expression = expression
         RunError.__init__(self, "assert node %r failed: %s" % (node, expression))
+
+
+class RunIdInUse(RunError):
+    """A fresh run was started under a run id that already has checkpoints.
+
+    Welding two runs into one chain lets `resume` hand back the earlier run's output —
+    one caller's data returned as another's, with a zero exit code. Refuse instead.
+    """
 
 
 class UnknownRun(RunError):

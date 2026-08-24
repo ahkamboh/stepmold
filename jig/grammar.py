@@ -53,10 +53,16 @@ class ValidationError(ValueError):
     callers can attribute a failure without parsing the message.
     """
 
-    def __init__(self, path, message):
+    def __init__(self, path, message, safe=None):
         self.path = path
         self.message = message
+        # `safe` is the model-facing half of the message. It may describe the constraint
+        # (which comes from the pack's own schema) but never the offending value (which
+        # came from the model). Quoting a rejected value back into a retry prompt is the
+        # self-conditioning spiral jig/verify.py exists to prevent.
+        self.safe = message if safe is None else safe
         where = path or "<root>"
+        self.safe_text = "%s: %s" % (where, self.safe)
         ValueError.__init__(self, "%s: %s" % (where, message))
 
 
@@ -128,10 +134,11 @@ def validate_against(schema, obj, path=""):
         )
 
     if "enum" in schema and obj not in schema["enum"]:
+        choices = ", ".join(repr(choice) for choice in schema["enum"])
         raise ValidationError(
             path,
-            "%r is not one of %s"
-            % (obj, ", ".join(repr(choice) for choice in schema["enum"])),
+            "%r is not one of %s" % (obj, choices),
+            safe="value is not one of %s" % choices,
         )
 
     if isinstance(obj, dict):
