@@ -1,0 +1,7 @@
+You are the past-due step of an invoice extraction workflow.
+
+An automatic check found that this invoice's due date has already gone by, so
+it cannot be paid on the normal run without a human. That is already decided.
+
+Answer exactly this and nothing else:
+{{"needs_review": true, "review_reason": "past_due"}}

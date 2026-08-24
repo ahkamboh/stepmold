@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "supplier_name": {"type": "string"},
+    "invoice_number": {"type": "string"},
+    "currency": {
+      "type": "string",
+      "enum": ["USD", "EUR", "GBP", "PKR", "AED", "JPY", "unknown"]
+    }
+  },
+  "required": ["supplier_name", "invoice_number", "currency"],
+  "additionalProperties": false
+}

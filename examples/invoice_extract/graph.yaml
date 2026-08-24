@@ -1,0 +1,227 @@
+# inputs_check -> header -> amounts -> due -> [ four checks ] -> review -> end
+#
+# The shape of this pack is the whole argument: a small model is asked to *copy*
+# and to *judge*, never to *calculate*. Everything that is arithmetic or policy
+# is an `assert` node, evaluated by the runtime against committed state, so no
+# amount of model sloppiness can get a broken invoice past it.
+#
+#                         inputs_check
+#                              |
+#                            header
+#                              |
+#                           amounts
+#                              |
+#                             due
+#                              |
+#   totals_check -> tax_check -> currency_check -> date_check -> review
+#        |             |              |                |          |   \
+#   flag_totals   flag_tax    flag_currency    flag_overdue       |    accepted
+#        \_____________\____________/________________/            |
+#                          flagged                          manual_review
+#
+# Four checks, four terminal reasons. Each failing check routes to its own
+# one-answer node, because the reason has to reach the output and in jig only a
+# node can write to state.
+#
+# `inputs_check` runs before any of it: a run needs `invoice_text` and a `today`
+# of the shape YYYY-MM-DD, and nothing else in the pack format says so.
+
+max_steps: 16
+
+nodes:
+
+  # -------------------------------------------------------------- input guard
+
+  inputs_check:
+    type: assert
+    # Deliberately the only check in this pack with no `on_fail`. An assert node
+    # that cannot evaluate its expression is routed exactly like one that
+    # evaluated false, so a run started without `today` would take date_check's
+    # failure edge and report a perfectly ordinary invoice as `past_due`. With
+    # no failure edge the expression error escapes instead, naming the input
+    # that is missing, before a single token is spent.
+    expr: len(invoice_text) > 0 and len(today) == 10 and today[4] == "-"
+
+  # ---------------------------------------------------------------- extraction
+
+  header:
+    type: generate
+    # Three fields copied off the page. No judgement, no arithmetic, so no
+    # think stage: two_stage here would buy nothing and cost a call.
+    max_tokens: 96
+
+  amounts:
+    type: generate
+    # Deliberately NOT asked to reconcile the numbers it reads — that is
+    # totals_check's job, and a model that "fixes" a bad invoice on the way in
+    # is the exact failure this pack exists to prevent.
+    max_tokens: 64
+
+  due:
+    type: generate
+    max_tokens: 32
+
+  # ------------------------------------------------------ deterministic checks
+  #
+  # These are `assert` nodes: pure expressions over state, no model call, no
+  # tokens, no retry ladder. They are also the reason the extraction prompts can
+  # stay dumb — a copied-wrong number is caught here rather than believed.
+
+  totals_check:
+    # The check a model must never be trusted to do in its head. Tolerance
+    # rather than equality because these are floats off a page.
+    type: assert
+    expr: abs(subtotal + tax_amount - total_amount) < 0.01
+    on_fail: flag_totals
+
+  tax_check:
+    # A tax line larger than 30% of the subtotal is not a tax line; it is an OCR
+    # slip or a different document. Cheap, and it catches a whole class of
+    # extraction error the schema cannot express.
+    type: assert
+    expr: tax_amount <= subtotal * 0.30
+    on_fail: flag_tax
+
+  currency_check:
+    # Policy, not extraction. The header grammar knows about six currencies
+    # because invoices arrive in six; accounts payable settles in three.
+    type: assert
+    expr: currency in ["USD", "EUR", "GBP"]
+    on_fail: flag_currency
+
+  date_check:
+    # ISO dates compare correctly as strings, so this needs no date library.
+    # The null guard is first and `or` short-circuits, so an invoice with no
+    # printed due date is not "overdue".
+    type: assert
+    expr: due_date == null or due_date >= today
+    on_fail: flag_overdue
+
+  # -------------------------------------------------------------- the judgement
+
+  review:
+    type: generate
+    # The one node in the pack with a real judgement in it: everything a rule
+    # could catch has already been caught, so what is left is "does this
+    # document look like something a human should see" — unreadable identifiers,
+    # an invoice that says it is a revision or a duplicate. That is a reading
+    # task with no single right cue, which is exactly the case where forcing the
+    # first token into a schema costs accuracy (docs/PLAN.md §2, Bug 2). So it
+    # reasons into a scratchpad first and emits second.
+    two_stage: true
+    think_max_tokens: 160
+    max_tokens: 96
+    # The model may flag or clear the invoice, but it may not do both or
+    # neither: a reason without a flag (or a flag without a reason) is an
+    # answer nobody downstream can act on.
+    assert: needs_review == (review_reason != "none")
+    on_fail: manual_review
+
+  # ----------------------------------------------------------- forced outcomes
+  #
+  # One node per failed check. Each has a single-value grammar, so its answer is
+  # decided by the pack rather than by the model — the node exists only because
+  # a fact the runtime already knows has to be written into state, and only a
+  # node can write to state.
+
+  flag_totals:
+    type: generate
+    max_tokens: 24
+
+  flag_tax:
+    type: generate
+    max_tokens: 24
+
+  flag_currency:
+    type: generate
+    max_tokens: 24
+
+  flag_overdue:
+    type: generate
+    max_tokens: 24
+
+  # ------------------------------------------------------------------- endings
+
+  accepted:
+    type: end
+    output:
+      - supplier_name
+      - invoice_number
+      - currency
+      - subtotal
+      - tax_amount
+      - total_amount
+      - due_date
+      - needs_review
+      - review_reason
+
+  flagged:
+    type: end
+    output:
+      - supplier_name
+      - invoice_number
+      - currency
+      - subtotal
+      - tax_amount
+      - total_amount
+      - due_date
+      - needs_review
+      - review_reason
+
+  manual_review:
+    # The review node contradicted itself, so nothing it said is trustworthy.
+    # A human gets the identity and the amount and nothing derived from the
+    # answer that was rejected.
+    type: end
+    output:
+      - supplier_name
+      - invoice_number
+      - currency
+      - total_amount
+      - due_date
+
+edges:
+
+  - from: inputs_check
+    to: header
+
+  - from: header
+    to: amounts
+
+  - from: amounts
+    to: due
+
+  - from: due
+    to: totals_check
+
+  - from: totals_check
+    to: tax_check
+
+  - from: tax_check
+    to: currency_check
+
+  - from: currency_check
+    to: date_check
+
+  - from: date_check
+    to: review
+
+  # The one conditional edge: the model's own answer picks the ending.
+  - from: review
+    to: flagged
+    when: {needs_review: true}
+
+  - from: review
+    to: accepted
+
+  - from: flag_totals
+    to: flagged
+
+  - from: flag_tax
+    to: flagged
+
+  - from: flag_currency
+    to: flagged
+
+  - from: flag_overdue
+    to: flagged

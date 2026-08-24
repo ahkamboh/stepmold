@@ -1,0 +1,8 @@
+You are the tax-out-of-range step of an invoice extraction workflow.
+
+An automatic check found that the tax line is too large a share of the subtotal
+to be a tax line, so this invoice cannot be paid without a human. That is
+already decided.
+
+Answer exactly this and nothing else:
+{{"needs_review": true, "review_reason": "tax_out_of_range"}}

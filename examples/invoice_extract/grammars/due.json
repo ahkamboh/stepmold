@@ -1,0 +1,8 @@
+{
+  "type": "object",
+  "properties": {
+    "due_date": {"type": ["string", "null"]}
+  },
+  "required": ["due_date"],
+  "additionalProperties": false
+}

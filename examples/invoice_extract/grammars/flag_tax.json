@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "properties": {
+    "needs_review": {
+      "type": "boolean",
+      "enum": [
+        true
+      ]
+    },
+    "review_reason": {
+      "type": "string",
+      "enum": [
+        "tax_out_of_range"
+      ]
+    }
+  },
+  "required": [
+    "needs_review",
+    "review_reason"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,23 @@
+name: invoice_extract
+version: 1
+entry: inputs_check
+model: fake:fakes/script.json
+description: >-
+  Supplier-invoice extraction: read an invoice's raw text and return the
+  supplier, the invoice number, the currency, the money, the due date, and
+  whether a human has to look at it before it is paid.
+
+  Every arithmetic and policy check is an `assert` node, not a model judgement —
+  totals that do not add up, tax outside the plausible band, a currency the
+  business does not accept, and a due date already in the past. The model only
+  copies fields off the page and makes the one judgement that is genuinely
+  fuzzy.
+
+  A run needs two inputs: `invoice_text` and `today` (YYYY-MM-DD). `today` is an
+  input rather than a clock read so a run is reproducible and the evalset can
+  pin the past-due boundary.
+
+  The model below is a scripted stand-in, so the evalset scores offline with no
+  GPU and no network. It replays the twelve evalset cases in order and does not
+  read the invoice, so a `jig run` of anything other than the first case will
+  answer the first case. Point --model at a real backend to run real invoices.

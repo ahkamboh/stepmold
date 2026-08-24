@@ -1,0 +1,68 @@
+{
+  "the header step": [
+    "{\"supplier_name\": \"ACME SUPPLIES INC.\", \"invoice_number\": \"INV-1001\", \"currency\": \"USD\"}",
+    "{\"supplier_name\": \"Nordwind GmbH\", \"invoice_number\": \"RE-2026-114\", \"currency\": \"EUR\"}",
+    "{\"supplier_name\": \"Thistle Print Ltd\", \"invoice_number\": \"TP-88\", \"currency\": \"GBP\"}",
+    "{\"supplier_name\": \"Blue Harbor Freight\", \"invoice_number\": \"BH-4521\", \"currency\": \"USD\"}",
+    "{\"supplier_name\": \"Kestrel Systems\", \"invoice_number\": \"KS-2026-0042\", \"currency\": \"USD\"}",
+    "{\"supplier_name\": \"Ridgeline Tools\", \"invoice_number\": \"RT-7781\", \"currency\": \"USD\"}",
+    "{\"supplier_name\": \"Karachi Steel Works (Pvt) Ltd\", \"invoice_number\": \"KSW-3390\", \"currency\": \"PKR\"}",
+    "{\"supplier_name\": \"Orchard Paper Co\", \"invoice_number\": \"OP-2211\", \"currency\": \"USD\"}",
+    "{\"supplier_name\": \"Vale Logistics\", \"invoice_number\": \"VL-9001\", \"currency\": \"USD\"}",
+    "{\"supplier_name\": \"Corner Cafe Catering\", \"invoice_number\": \"unknown\", \"currency\": \"USD\"}",
+    "{\"supplier_name\": \"Halden Metalworks\", \"invoice_number\": \"HM-6620\", \"currency\": \"USD\"}",
+    "{\"supplier_name\": \"Summit Consulting LLC\", \"invoice_number\": \"SC-1188\", \"currency\": \"USD\"}"
+  ],
+  "the amounts step": [
+    "{\"subtotal\": 1000.0, \"tax_amount\": 80.0, \"total_amount\": 1080.0}",
+    "{\"subtotal\": 249.5, \"tax_amount\": 47.41, \"total_amount\": 296.91}",
+    "{\"subtotal\": 120.0, \"tax_amount\": 24.0, \"total_amount\": 144.0}",
+    "{\"subtotal\": 500.0, \"tax_amount\": 0.0, \"total_amount\": 500.0}",
+    "{\"subtotal\": 12500.0, \"tax_amount\": 1000.0, \"total_amount\": 13500.0}",
+    "{\"subtotal\": 100.0, \"tax_amount\": 8.0, \"total_amount\": 118.0}",
+    "{\"subtotal\": 50000.0, \"tax_amount\": 9000.0, \"total_amount\": 59000.0}",
+    "{\"subtotal\": 300.0, \"tax_amount\": 24.0, \"total_amount\": 324.0}",
+    "{\"subtotal\": 200.0, \"tax_amount\": 16.0, \"total_amount\": 216.0}",
+    "{\"subtotal\": 80.0, \"tax_amount\": 6.4, \"total_amount\": 86.4}",
+    "{\"subtotal\": 900.0, \"tax_amount\": 72.0, \"total_amount\": 972.0}",
+    "{\"subtotal\": 400.0, \"tax_amount\": 160.0, \"total_amount\": 560.0}"
+  ],
+  "the due-date step": [
+    "{\"due_date\": \"2026-09-30\"}",
+    "{\"due_date\": \"2026-09-15\"}",
+    "{\"due_date\": null}",
+    "{\"due_date\": \"2026-10-01\"}",
+    "{\"due_date\": \"2026-09-01\"}",
+    "{\"due_date\": \"2026-09-14\"}",
+    "{\"due_date\": \"2026-09-20\"}",
+    "{\"due_date\": \"2026-05-01\"}",
+    "{\"due_date\": \"2026-08-24\"}",
+    "{\"due_date\": \"2026-09-05\"}",
+    "{\"due_date\": \"2026-09-12\"}",
+    "{\"due_date\": \"2026-09-18\"}"
+  ],
+  "the review reasoning step": [
+    "The supplier and the invoice number are both printed clearly and the document does not describe itself as anything unusual. Nothing here needs a person.",
+    "There is no line labelled subtotal, but the single service line is the amount before VAT. Supplier and invoice number are both legible and the invoice makes no odd claim about itself.",
+    "Due on receipt is a term, not a printed date, so there is no due date to be past. The supplier and the number are both there and the document is an ordinary invoice.",
+    "A zero tax line is normal on a zero-rated export and the totals are consistent with it. Both identifiers are printed, so there is nothing for a person to settle.",
+    "The amounts are large but a 250-seat renewal explains them, and the tax is a plausible share. Supplier and invoice number are both printed, so nothing is unresolved.",
+    "The due date is today, which is the last day it can be paid on time rather than a missed one. Everything else on the document is ordinary and both identifiers are present.",
+    "The supplier is named but there is no invoice reference anywhere on the page, so nothing here can be matched against a purchase order or checked for a duplicate payment later.",
+    "The document says on its face that it replaces an earlier invoice and warns against paying both. The arithmetic is fine, but paying this without checking what happened to HM-6604 risks paying twice."
+  ],
+  "the review step": [
+    "{\"needs_review\": false, \"review_reason\": \"none\"}",
+    "{\"needs_review\": false, \"review_reason\": \"none\"}",
+    "{\"needs_review\": false, \"review_reason\": \"none\"}",
+    "{\"needs_review\": false, \"review_reason\": \"none\"}",
+    "{\"needs_review\": false, \"review_reason\": \"none\"}",
+    "{\"needs_review\": false, \"review_reason\": \"none\"}",
+    "{\"needs_review\": true, \"review_reason\": \"missing_identifier\"}",
+    "{\"needs_review\": true, \"review_reason\": \"unusual_document\"}"
+  ],
+  "the totals-mismatch step": "{\"needs_review\": true, \"review_reason\": \"totals_mismatch\"}",
+  "the tax-out-of-range step": "{\"needs_review\": true, \"review_reason\": \"tax_out_of_range\"}",
+  "the unexpected-currency step": "{\"needs_review\": true, \"review_reason\": \"unexpected_currency\"}",
+  "the past-due step": "{\"needs_review\": true, \"review_reason\": \"past_due\"}"
+}

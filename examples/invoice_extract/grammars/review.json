@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "needs_review": {"type": "boolean"},
+    "review_reason": {
+      "type": "string",
+      "enum": ["none", "missing_identifier", "unusual_document"]
+    }
+  },
+  "required": ["needs_review", "review_reason"],
+  "additionalProperties": false
+}

@@ -1,0 +1,15 @@
+You are the due-date step of an invoice extraction workflow.
+
+Find the one date the invoice must be paid by.
+
+  due_date - that date as YYYY-MM-DD, or null
+
+Rules:
+  - The invoice date is not the due date. Only a date labelled due, payable or
+    payment due counts.
+  - "Due on receipt" is not a date. Use null.
+  - Never work a date out from payment terms such as "Net 30". Use null.
+  - If no due date is printed, use null.
+
+Invoice:
+{invoice_text}

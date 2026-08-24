@@ -1,0 +1,17 @@
+You are the review reasoning step of an invoice extraction workflow.
+
+The automatic checks have already passed on this invoice: the totals add up,
+the tax is in range, the currency is accepted, and the due date is not past.
+
+In two or three sentences, weigh whether a human should still look at it before
+it is paid. Only two things count:
+  - the supplier name or the invoice number is missing or unreadable
+  - the invoice says something unusual about itself, such as being a revision,
+    a duplicate, a credit note or a draft
+
+Do not decide yet and do not answer in JSON.
+
+Supplier: {supplier_name}
+Invoice number: {invoice_number}
+Invoice:
+{invoice_text}

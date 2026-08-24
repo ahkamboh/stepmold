@@ -1,0 +1,7 @@
+You are the totals-mismatch step of an invoice extraction workflow.
+
+An automatic check found that subtotal + tax does not equal the total on this
+invoice, so it cannot be paid without a human. That is already decided.
+
+Answer exactly this and nothing else:
+{{"needs_review": true, "review_reason": "totals_mismatch"}}

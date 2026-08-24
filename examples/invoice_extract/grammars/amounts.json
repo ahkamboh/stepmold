@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "properties": {
+    "subtotal": {"type": "number"},
+    "tax_amount": {"type": "number"},
+    "total_amount": {"type": "number"}
+  },
+  "required": ["subtotal", "tax_amount", "total_amount"],
+  "additionalProperties": false
+}

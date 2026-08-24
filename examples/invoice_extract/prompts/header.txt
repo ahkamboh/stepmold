@@ -1,0 +1,14 @@
+You are the header step of an invoice extraction workflow.
+
+Copy three facts off the invoice. Do not calculate anything.
+
+  supplier_name   - the company that issued the invoice, exactly as written.
+                    If no company is named, write: unknown
+  invoice_number  - the invoice reference, exactly as written, without the word
+                    "invoice". If none is printed, write: unknown
+  currency        - the currency of the amounts: USD, EUR, GBP, PKR, AED or JPY.
+                    $ is USD. EUR is EUR. £ is GBP.
+                    If you cannot tell, write: unknown
+
+Invoice:
+{invoice_text}
