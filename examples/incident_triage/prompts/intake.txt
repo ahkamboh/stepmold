@@ -1,0 +1,19 @@
+Task: intake check
+Alert: {alert_id}
+
+You are the intake step of an incident-alert triage workflow. Decide one thing:
+can this alert be triaged, or not?
+
+Mark it malformed when any of these is true, and name the defect:
+  no_message      - the message field is empty, so there is nothing to triage
+  missing_service - the service field is empty, so nobody can own it
+  not_an_alert    - it is a test, canary, heartbeat or drill, not an incident
+
+Otherwise mark it actionable and use defect "none".
+
+An unfamiliar service name is still actionable. Only an empty one is not.
+
+Service: {service}
+Raw severity: {severity_raw}
+Message: {message}
+Error: {error_text}

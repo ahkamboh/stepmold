@@ -1,0 +1,95 @@
+# intake -> cause -> severity -> route -> (paged | queued | tracked)
+#              \-> dropped (nothing triageable in the payload)
+#
+# Each node has one narrow job and one grammar. No node ever chooses what happens
+# next: the two `when` edges below are the whole routing policy, written as data.
+
+max_steps: 12
+
+nodes:
+  intake:
+    type: generate
+    description: Is this payload an incident we can triage at all?
+    max_tokens: 48
+    # A malformed verdict must name the defect and an actionable one must not, so
+    # the pair can never disagree. Checked before anything is committed.
+    assert: (alert_status == "actionable" and defect == "none") or (alert_status == "malformed" and defect != "none")
+    on_fail: unreadable
+
+  cause:
+    type: generate
+    description: One suspected cause category, from the fixed list.
+    max_tokens: 64
+
+  severity:
+    type: generate
+    description: Normalise the vendor severity string against the real blast radius.
+    # The one node with a judgement call in it. The raw severity is vendor text
+    # ("SEV1", "page", "urgent!!!", or missing entirely) and it routinely disagrees
+    # with the impact in the message — a "P1" that hit one merchant is a p2, an
+    # "info" that took every region down is a p0. Reconciling the two is reasoning,
+    # so it gets an unconstrained think pass before the constrained emit
+    # (docs/PLAN.md, Bug 2). The scratchpad is thrown away.
+    two_stage: true
+    think_max_tokens: 160
+    max_tokens: 96
+
+  route:
+    type: generate
+    description: Owning team, page-now decision, one-line summary.
+    max_tokens: 128
+    # Deterministic invariant: someone is woken up exactly when the severity says
+    # p0, never on the model's enthusiasm.
+    assert: page_now == (severity == "p0")
+    on_fail: needs_human
+
+  paged:
+    type: end
+    output: [alert_status, cause_category, confidence, severity, blast_radius, owner_team, page_now, summary]
+
+  queued:
+    type: end
+    output: [alert_status, cause_category, confidence, severity, blast_radius, owner_team, page_now, summary]
+
+  tracked:
+    type: end
+    output: [alert_status, cause_category, confidence, severity, blast_radius, owner_team, page_now, summary]
+
+  dropped:
+    type: end
+    output: [alert_id, service, alert_status, defect]
+
+  # Reached only when a node burns its retry ladder. `unreadable` fires before
+  # anything is committed, so it can only hand back the payload it was given.
+  unreadable:
+    type: end
+    output: [alert_id, service]
+
+  needs_human:
+    type: end
+    output: [alert_id, service, severity, blast_radius, cause_category]
+
+edges:
+  - from: intake
+    to: dropped
+    when: {alert_status: malformed}
+
+  - from: intake
+    to: cause
+
+  - from: cause
+    to: severity
+
+  - from: severity
+    to: route
+
+  - from: route
+    to: paged
+    when: {severity: p0}
+
+  - from: route
+    to: queued
+    when: {severity: p3}
+
+  - from: route
+    to: tracked

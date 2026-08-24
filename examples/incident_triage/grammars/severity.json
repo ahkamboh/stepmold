@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "severity": {
+      "type": "string",
+      "enum": ["p0", "p1", "p2", "p3"]
+    },
+    "blast_radius": {
+      "type": "string",
+      "enum": ["all_customers", "many_customers", "single_customer", "internal_only"]
+    },
+    "reason": {"type": "string"}
+  },
+  "required": ["severity", "blast_radius", "reason"],
+  "additionalProperties": false
+}

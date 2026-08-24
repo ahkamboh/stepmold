@@ -104,6 +104,23 @@ cli_demo: 1/2 cases passed
   failures by node: classify=1
 ```
 
+### A second pack
+
+`examples/incident_triage` triages a production incident alert: it normalises the vendor
+severity string to p0-p3, names the owning team, decides whether to page anyone, writes a
+one-line summary, and drops a payload too malformed to triage before spending a single
+generation on it. p0 pages, p3 queues, and two node-level invariants have their own
+failure edges. Its scripted model is keyed on the alert id rather than positional, so
+`jig run` answers whichever alert you hand it:
+
+```console
+$ python3 -m jig validate examples/incident_triage
+incident_triage v1: 10 nodes, 7 edges, 13 evalset cases, entry 'intake'
+
+$ python3 -m jig eval examples/incident_triage
+incident_triage: 13/13 cases passed
+```
+
 To run against a real model, point `--model` at any OpenAI-compatible server —
 llama.cpp-server, vLLM or SGLang:
 

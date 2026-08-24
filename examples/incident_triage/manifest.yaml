@@ -1,0 +1,14 @@
+name: incident_triage
+version: 1
+entry: intake
+model: fake:fakes/script.json
+description: >-
+  Four-node production-incident triage: intake check, cause category, normalised
+  severity, then route and summarise. p0 pages, p3 queues, everything else is
+  tracked; a payload that cannot be triaged is dropped before any work is spent
+  on it.
+
+  The model below is a scripted stand-in, so the evalset scores offline with no
+  GPU and no network. Unlike a positional script it is keyed on the alert id, so
+  `jig run` answers whichever of the thirteen alerts you hand it, not just the
+  first. Point --model at a real backend to triage real alerts.

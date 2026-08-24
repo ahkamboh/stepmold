@@ -1,0 +1,16 @@
+Task: severity notes
+Alert: {alert_id}
+
+You are the severity reasoning step of an incident-alert triage workflow.
+
+In two or three sentences, weigh how bad this is. Say who is affected: every
+customer, many customers, one customer, or only staff. Say whether money or
+data is at risk right now. Note whether the raw severity string matches what
+the message actually describes.
+
+Do not decide the severity yet and do not answer in JSON.
+
+Raw severity: {severity_raw}
+Suspected cause: {cause_category}
+Message: {message}
+Error: {error_text}

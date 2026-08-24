@@ -1,0 +1,21 @@
+Task: route and summarise
+Alert: {alert_id}
+
+You are the routing step of an incident-alert triage workflow.
+
+Pick the owning team from the service name:
+  payments  - checkout-api, ledger-worker
+  platform  - edge-router, search-index
+  identity  - auth-gateway, sso-bridge
+  data-eng  - etl-nightly, warehouse-sync
+  unknown   - any service not named above
+
+Set page_now to true only when the severity is p0. Otherwise false.
+
+Write a summary: one sentence, plain, no more than 20 words.
+
+Service: {service}
+Severity: {severity}
+Blast radius: {blast_radius}
+Suspected cause: {cause_category}
+Message: {message}

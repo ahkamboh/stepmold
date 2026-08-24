@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "owner_team": {
+      "type": "string",
+      "enum": ["payments", "platform", "identity", "data-eng", "unknown"]
+    },
+    "page_now": {"type": "boolean"},
+    "summary": {"type": "string"}
+  },
+  "required": ["owner_team", "page_now", "summary"],
+  "additionalProperties": false
+}
