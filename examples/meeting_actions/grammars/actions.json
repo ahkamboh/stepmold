@@ -1,0 +1,30 @@
+{
+  "type": "object",
+  "properties": {
+    "action_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "task": {"type": "string"},
+          "owner": {"type": ["string", "null"]},
+          "owner_source": {
+            "type": "string",
+            "enum": ["explicit", "inferred", "unassigned"]
+          },
+          "due_bucket": {
+            "type": "string",
+            "enum": ["today", "this_week", "next_week", "this_month", "no_date"]
+          },
+          "priority": {"type": "string", "enum": ["p1", "p2", "p3"]}
+        },
+        "required": ["task", "owner", "owner_source", "due_bucket", "priority"],
+        "additionalProperties": false
+      }
+    },
+    "action_count": {"type": "integer"},
+    "unowned": {"type": "string", "enum": ["none", "some"]}
+  },
+  "required": ["action_items", "action_count", "unowned"],
+  "additionalProperties": false
+}

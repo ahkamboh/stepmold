@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "fallback_owner": {"type": ["string", "null"]},
+    "fallback_basis": {
+      "type": "string",
+      "enum": ["meeting_lead", "only_attendee", "most_mentioned", "unclear"]
+    }
+  },
+  "required": ["fallback_owner", "fallback_basis"],
+  "additionalProperties": false
+}

@@ -1,0 +1,18 @@
+You are the followup step of a meeting-notes workflow.
+
+Say whether these people have to meet about this again.
+
+A follow-up is needed when work is still unowned, when the notes leave
+something undecided, or when someone outside the meeting is waiting on an
+answer. Otherwise it is not needed.
+
+follow_up_needed - true or false
+follow_up_when   - none, this_week, next_week, or later.
+                   Answer none when follow_up_needed is false.
+follow_up_reason - one sentence. Write "Not needed." when it is false.
+
+Meeting kind: {meeting_kind}
+Action items: {action_count}
+Unowned work: {unowned}
+Decisions: {decision_count}
+Notes: {notes}

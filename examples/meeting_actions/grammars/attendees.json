@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "attendees": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "lead": {"type": ["string", "null"]},
+    "meeting_kind": {
+      "type": "string",
+      "enum": ["standup", "planning", "review", "client_call", "incident",
+               "one_on_one", "other"]
+    }
+  },
+  "required": ["attendees", "lead", "meeting_kind"],
+  "additionalProperties": false
+}

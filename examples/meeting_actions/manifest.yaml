@@ -1,0 +1,13 @@
+name: meeting_actions
+version: 1
+entry: attendees
+model: fake:fakes/script.json
+description: >-
+  Five-node meeting-notes workflow: read who was in the room, pull the action
+  items out of the notes, give the unowned ones a holder, list the decisions,
+  and say whether the group has to meet again.
+
+  The model below is a scripted stand-in, so the evalset scores offline with no
+  GPU and no network. It is keyed by node and replays each node's answers in
+  evalset order, so a `jig run` of anything other than the first case will
+  answer the first case. Point --model at a real backend to run real notes.

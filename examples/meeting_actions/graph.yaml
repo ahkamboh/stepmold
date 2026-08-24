@@ -1,0 +1,107 @@
+# attendees -> actions -> (assign)? -> decisions -> followup -> tracked
+#                    \__ on_fail ____________________________ needs_review
+#
+# One narrow job per node. Nothing here plans: the graph already decided the
+# order, so the model only ever fills one slot at a time.
+
+max_steps: 12
+
+nodes:
+  attendees:
+    type: generate
+    # Who was in the room, and what kind of meeting it was. Cheap, factual, and
+    # first because every later node wants the roster.
+    max_tokens: 96
+
+  actions:
+    type: generate
+    # The one node with real judgement in it. Notes ramble: a commitment hides in
+    # a subordinate clause ("...though Priya said she'd chase the vendor"), and
+    # right next to it sits a wish nobody agreed to. Deciding that *and* filling
+    # five typed slots per item on the first token is two jobs at once, so this
+    # node thinks in plain sentences first and only then emits under its grammar
+    # (docs/PLAN.md, Bug 2). The notes are thrown away; only the list survives.
+    two_stage: true
+    think_max_tokens: 256
+    max_tokens: 512
+    # Deterministic invariants, checked before anything is committed:
+    #   - the count has to match the list it counts (a truncated array is the
+    #     classic way a small model's list output goes wrong, and it is silent),
+    #   - and "some work is unowned" cannot be true of an empty list.
+    assert: action_count == len(action_items) and (unowned == "none" or action_count > 0)
+    on_fail: needs_review
+
+  assign:
+    type: generate
+    # Only reached when something is unowned. Unowned work quietly evaporates, so
+    # somebody holds it until it is claimed. One slot, one name.
+    max_tokens: 96
+    # A basis of "unclear" is the only case where there is no name to give, and a
+    # name is the only case where the basis is not "unclear".
+    assert: (fallback_basis == "unclear") == (fallback_owner == null)
+    on_fail: needs_review
+
+  decisions:
+    type: generate
+    # Settled things, as opposed to things somebody has to go and do. Separate
+    # node because "was this decided or assigned?" is a different question from
+    # "who does it", and a node that answers two questions answers both worse.
+    max_tokens: 256
+    assert: decision_count == len(decisions)
+    on_fail: needs_review
+
+  followup:
+    type: generate
+    # Single-stage on purpose. By this point the hard reading is done and the
+    # state is already structured, so this is a small rule over counts, not a
+    # judgement over prose — a think pass here would buy tokens and nothing else.
+    max_tokens: 128
+    assert: follow_up_needed == (follow_up_when != "none")
+    on_fail: needs_review
+
+  tracked:
+    type: end
+    # jig's YAML subset takes a flow sequence only on one line, so this is a
+    # block sequence rather than a wrapped [a, b, c].
+    output:
+      - meeting_kind
+      - attendees
+      - lead
+      - action_items
+      - action_count
+      - unowned
+      - fallback_owner
+      - fallback_basis
+      - decisions
+      - decision_count
+      - follow_up_needed
+      - follow_up_when
+      - follow_up_reason
+
+  needs_review:
+    type: end
+    # A human gets the notes back plus whatever was verified before the node that
+    # failed. Deliberately not the half-built action list: nothing unverified.
+    output: [meeting_kind, attendees, lead]
+
+edges:
+  - from: attendees
+    to: actions
+
+  # The conditional. Nothing is unowned in most meetings, and there is no point
+  # asking a model who holds an empty set.
+  - from: actions
+    to: assign
+    when: {unowned: some}
+
+  - from: actions
+    to: decisions
+
+  - from: assign
+    to: decisions
+
+  - from: decisions
+    to: followup
+
+  - from: followup
+    to: tracked

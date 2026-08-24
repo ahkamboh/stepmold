@@ -1,0 +1,19 @@
+You are the attendees step of a meeting-notes workflow.
+
+Answer three things about the notes.
+
+attendees    - every person named in the notes, as a list of first names.
+               Use [] if the notes name nobody. People only: not teams,
+               not companies, not job titles.
+lead         - the person the notes say ran the meeting, or null.
+               Do not guess. If the notes do not say, answer null.
+meeting_kind - one of:
+                 standup     a short status round
+                 planning    deciding what to work on next
+                 review      looking back at work already done
+                 client_call a call with someone outside the company
+                 incident    something broke
+                 one_on_one  two people only
+                 other       anything else
+
+Notes: {notes}

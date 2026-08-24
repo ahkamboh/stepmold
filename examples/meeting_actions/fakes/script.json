@@ -1,0 +1,78 @@
+{
+  "attendees step": [
+    "{\"attendees\": [\"Ravi\", \"Sara\", \"Tom\"], \"lead\": null, \"meeting_kind\": \"standup\"}",
+    "{\"attendees\": [\"Maya\"], \"lead\": \"Maya\", \"meeting_kind\": \"planning\"}",
+    "{\"attendees\": [], \"lead\": null, \"meeting_kind\": \"other\"}",
+    "{\"attendees\": [\"Dana\"], \"lead\": null, \"meeting_kind\": \"incident\"}",
+    "{\"attendees\": [\"Priya\", \"Alex\"], \"lead\": null, \"meeting_kind\": \"client_call\"}",
+    "{\"attendees\": [], \"lead\": null, \"meeting_kind\": \"review\"}",
+    "{\"attendees\": [\"Jonas\"], \"lead\": null, \"meeting_kind\": \"one_on_one\"}",
+    "{\"attendees\": [\"Ben\", \"Sara\", \"Tom\"], \"lead\": null, \"meeting_kind\": \"other\"}",
+    "{\"attendees\": [], \"lead\": null, \"meeting_kind\": \"review\"}",
+    "{\"attendees\": [\"Dana\", \"Ravi\", \"Maya\"], \"lead\": null, \"meeting_kind\": \"other\"}",
+    "{\"attendees\": [\"Kim\"], \"lead\": null, \"meeting_kind\": \"planning\"}",
+    "{\"attendees\": [\"Alex\"], \"lead\": null, \"meeting_kind\": \"other\"}"
+  ],
+  "actions reasoning step": [
+    "Ravi said he is 'picking up the CSV importer today' and Sara 'will ping infra this morning'. Shipping the export fix is already done, so it is not an action.",
+    "Two things have no name on them: 'someone needs to write the migration doc' and the pricing page copy that 'nobody picked up'. Maya 'will book time with legal next week' is hers.",
+    "Nobody agreed to do anything. The notes say outright that there were 'no new commitments'.",
+    "'The platform team owns that' names a team, not a person. 'Dana is writing the postmortem by Thursday' names a person and a date.",
+    "Northwind 'want SSO' is their wish, not our commitment. Priya 'said she'd chase the vendor before Friday' and Alex 'has' the written scope are ours.",
+    "'Both need fixing before the next release' is a commitment the room made, but 'no one volunteered', so neither item has a name on it.",
+    "Jonas is 'taking over the billing alerts'. The dashboard cleanup is 'still open' and 'we didn't say who', so it has no owner.",
+    "Three commitments: Ben 'he'll fix it today', Sara 'she'll do a pass this week', Ben 'said he'd start' the questionnaire. The hiring pipeline had 'nothing decided', and Tom only 'wants' the standup moved.",
+    "'Nothing to do until the load test numbers come back' says outright that nobody took an action. The Postgres choice is a decision, not a task.",
+    "Four commitments, each with a different horizon: today, this week, next week, and 'at some point this month'. Ravi 'said he'd try' still counts as taking it.",
+    "'The mobile team will take' names a team. 'Design owes us the empty states' names a function, and the notes say 'Kim is design lead', so Kim carries it.",
+    "'We said we'd come back next week with one' is a commitment the room made without naming anybody. 'Alex to pull last year's spend' names Alex."
+  ],
+  "actions step": [
+    "{\"action_items\": [{\"task\": \"Pick up the CSV importer\", \"owner\": \"Ravi\", \"owner_source\": \"explicit\", \"due_bucket\": \"today\", \"priority\": \"p2\"}, {\"task\": \"Ping infra about the staging cert\", \"owner\": \"Sara\", \"owner_source\": \"explicit\", \"due_bucket\": \"today\", \"priority\": \"p1\"}], \"action_count\": 2, \"unowned\": \"none\"}",
+    "{\"action_items\": [{\"task\": \"Write the migration doc\", \"owner\": null, \"owner_source\": \"unassigned\", \"due_bucket\": \"no_date\", \"priority\": \"p2\"}, {\"task\": \"Rewrite the pricing page copy\", \"owner\": null, \"owner_source\": \"unassigned\", \"due_bucket\": \"no_date\", \"priority\": \"p3\"}, {\"task\": \"Book time with legal\", \"owner\": \"Maya\", \"owner_source\": \"explicit\", \"due_bucket\": \"next_week\", \"priority\": \"p2\"}], \"action_count\": 3, \"unowned\": \"some\"}",
+    "{\"action_items\": [], \"action_count\": 0, \"unowned\": \"none\"}",
+    "{\"action_items\": [{\"task\": \"Add a secondary to the oncall rota\", \"owner\": \"platform team\", \"owner_source\": \"inferred\", \"due_bucket\": \"this_week\", \"priority\": \"p1\"}, {\"task\": \"Write the outage postmortem\", \"owner\": \"Dana\", \"owner_source\": \"explicit\", \"due_bucket\": \"this_week\", \"priority\": \"p1\"}], \"action_count\": 2, \"unowned\": \"none\"}",
+    "{\"action_items\": [{\"task\": \"Chase the SSO vendor\", \"owner\": \"Priya\", \"owner_source\": \"explicit\", \"due_bucket\": \"this_week\", \"priority\": \"p1\"}, {\"task\": \"Send Northwind the written scope\", \"owner\": \"Alex\", \"owner_source\": \"explicit\", \"due_bucket\": \"next_week\", \"priority\": \"p1\"}], \"action_count\": 2, \"unowned\": \"none\"}",
+    "{\"action_items\": [{\"task\": \"Fix the release checklist process\", \"owner\": null, \"owner_source\": \"unassigned\", \"due_bucket\": \"this_month\", \"priority\": \"p2\"}, {\"task\": \"Update the runbook\", \"owner\": null, \"owner_source\": \"unassigned\", \"due_bucket\": \"this_month\", \"priority\": \"p2\"}], \"action_count\": 2, \"unowned\": \"some\"}",
+    "{\"action_items\": [{\"task\": \"Take over the billing alerts\", \"owner\": \"Jonas\", \"owner_source\": \"explicit\", \"due_bucket\": \"this_week\", \"priority\": \"p2\"}, {\"task\": \"Do the dashboard cleanup\", \"owner\": null, \"owner_source\": \"unassigned\", \"due_bucket\": \"no_date\", \"priority\": \"p3\"}], \"action_count\": 2, \"unowned\": \"some\"}",
+    "{\"action_items\": [{\"task\": \"Fix the failing analytics job\", \"owner\": \"Ben\", \"owner_source\": \"explicit\", \"due_bucket\": \"today\", \"priority\": \"p1\"}, {\"task\": \"Do a pass over the docs site\", \"owner\": \"Sara\", \"owner_source\": \"explicit\", \"due_bucket\": \"this_week\", \"priority\": \"p3\"}, {\"task\": \"Start the Northwind security questionnaire\", \"owner\": \"Ben\", \"owner_source\": \"explicit\", \"due_bucket\": \"next_week\", \"priority\": \"p1\"}], \"action_count\": 3, \"unowned\": \"none\"}",
+    "{\"action_items\": [], \"action_count\": 0, \"unowned\": \"none\"}",
+    "{\"action_items\": [{\"task\": \"Run the backup restore test\", \"owner\": \"Dana\", \"owner_source\": \"explicit\", \"due_bucket\": \"today\", \"priority\": \"p1\"}, {\"task\": \"Rotate the API keys\", \"owner\": \"Ravi\", \"owner_source\": \"explicit\", \"due_bucket\": \"this_week\", \"priority\": \"p1\"}, {\"task\": \"Take the vendor review\", \"owner\": \"Maya\", \"owner_source\": \"explicit\", \"due_bucket\": \"next_week\", \"priority\": \"p2\"}, {\"task\": \"Tidy the terraform\", \"owner\": \"Ravi\", \"owner_source\": \"explicit\", \"due_bucket\": \"this_month\", \"priority\": \"p3\"}], \"action_count\": 4, \"unowned\": \"none\"}",
+    "{\"action_items\": [{\"task\": \"Take the offline mode spike\", \"owner\": \"mobile team\", \"owner_source\": \"inferred\", \"due_bucket\": \"no_date\", \"priority\": \"p3\"}, {\"task\": \"Deliver the empty states\", \"owner\": \"Kim\", \"owner_source\": \"inferred\", \"due_bucket\": \"no_date\", \"priority\": \"p2\"}], \"action_count\": 2, \"unowned\": \"none\"}",
+    "{\"action_items\": [{\"task\": \"Give Finance a budget number\", \"owner\": null, \"owner_source\": \"unassigned\", \"due_bucket\": \"next_week\", \"priority\": \"p1\"}, {\"task\": \"Pull last year's spend\", \"owner\": \"Alex\", \"owner_source\": \"explicit\", \"due_bucket\": \"this_week\", \"priority\": \"p2\"}], \"action_count\": 2, \"unowned\": \"some\"}"
+  ],
+  "assign step": [
+    "{\"fallback_owner\": \"Maya\", \"fallback_basis\": \"meeting_lead\"}",
+    "{\"fallback_owner\": null, \"fallback_basis\": \"unclear\"}",
+    "{\"fallback_owner\": \"Jonas\", \"fallback_basis\": \"only_attendee\"}",
+    "{\"fallback_owner\": \"Alex\", \"fallback_basis\": \"only_attendee\"}"
+  ],
+  "decisions step": [
+    "{\"decisions\": [{\"decision\": \"Hold the 2.1 release until the staging cert is sorted\", \"firmness\": \"final\"}], \"decision_count\": 1}",
+    "{\"decisions\": [{\"decision\": \"The onboarding rewrite lands this quarter\", \"firmness\": \"final\"}], \"decision_count\": 1}",
+    "{\"decisions\": [], \"decision_count\": 0}",
+    "{\"decisions\": [{\"decision\": \"Do not roll back 2.0\", \"firmness\": \"final\"}], \"decision_count\": 1}",
+    "{\"decisions\": [{\"decision\": \"Commit to SSO for Northwind this quarter\", \"firmness\": \"tentative\"}], \"decision_count\": 1}",
+    "{\"decisions\": [], \"decision_count\": 0}",
+    "{\"decisions\": [{\"decision\": \"Jonas moves to the payments squad in September\", \"firmness\": \"final\"}], \"decision_count\": 1}",
+    "{\"decisions\": [{\"decision\": \"Leave the standup at its current time\", \"firmness\": \"final\"}], \"decision_count\": 1}",
+    "{\"decisions\": [{\"decision\": \"Use Postgres for the events table\", \"firmness\": \"tentative\"}], \"decision_count\": 1}",
+    "{\"decisions\": [], \"decision_count\": 0}",
+    "{\"decisions\": [{\"decision\": \"Drop the tablet layout entirely\", \"firmness\": \"final\"}], \"decision_count\": 1}",
+    "{\"decisions\": [], \"decision_count\": 0}"
+  ],
+  "followup step": [
+    "{\"follow_up_needed\": false, \"follow_up_when\": \"none\", \"follow_up_reason\": \"Not needed.\"}",
+    "{\"follow_up_needed\": true, \"follow_up_when\": \"next_week\", \"follow_up_reason\": \"Two items still need real owners.\"}",
+    "{\"follow_up_needed\": false, \"follow_up_when\": \"none\", \"follow_up_reason\": \"Not needed.\"}",
+    "{\"follow_up_needed\": true, \"follow_up_when\": \"this_week\", \"follow_up_reason\": \"The postmortem still needs a read-out.\"}",
+    "{\"follow_up_needed\": true, \"follow_up_when\": \"next_week\", \"follow_up_reason\": \"Northwind is waiting on the scope and the budget answer.\"}",
+    "{\"follow_up_needed\": true, \"follow_up_when\": \"next_week\", \"follow_up_reason\": \"Nobody owns either retro item.\"}",
+    "{\"follow_up_needed\": false, \"follow_up_when\": \"none\", \"follow_up_reason\": \"Not needed.\"}",
+    "{\"follow_up_needed\": false, \"follow_up_when\": \"none\", \"follow_up_reason\": \"Not needed.\"}",
+    "{\"follow_up_needed\": true, \"follow_up_when\": \"later\", \"follow_up_reason\": \"The choice gets revisited once the load test numbers land.\"}",
+    "{\"follow_up_needed\": false, \"follow_up_when\": \"none\", \"follow_up_reason\": \"Not needed.\"}",
+    "{\"follow_up_needed\": false, \"follow_up_when\": \"none\", \"follow_up_reason\": \"Not needed.\"}",
+    "{\"follow_up_needed\": true, \"follow_up_when\": \"next_week\", \"follow_up_reason\": \"Finance is waiting on a number before the board meeting.\"}"
+  ]
+}

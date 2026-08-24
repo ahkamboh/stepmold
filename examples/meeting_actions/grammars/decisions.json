@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "properties": {
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "decision": {"type": "string"},
+          "firmness": {"type": "string", "enum": ["final", "tentative"]}
+        },
+        "required": ["decision", "firmness"],
+        "additionalProperties": false
+      }
+    },
+    "decision_count": {"type": "integer"}
+  },
+  "required": ["decisions", "decision_count"],
+  "additionalProperties": false
+}
