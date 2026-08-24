@@ -185,7 +185,10 @@ def digest(value):
 def _safe(value):
     """A field value as it may appear in a log: redacted, clipped, JSON-representable."""
     if isinstance(value, str):
-        return redact(clip(value))
+        # Redact first, THEN clip. The other order truncates a credential that
+        # straddles the clip boundary until KEY_SHAPED no longer matches it, and the
+        # surviving prefix is printed verbatim. Reproduced at offsets 185-196.
+        return clip(redact(value))
     if isinstance(value, (bool, int, float)) or value is None:
         return value
     if isinstance(value, (list, tuple)):
@@ -248,13 +251,26 @@ class JsonFormatter(logging.Formatter):
 
 
 def _event_of(record):
-    return getattr(record, EVENT_ATTR, None) or record.getMessage()
+    """The event name, or a plain record's message — redacted either way.
+
+    Only `jig_fields` used to be filtered, so a record logged through the ordinary
+    stdlib API on a `jig.*` logger reached the output unfiltered. Redaction is supposed
+    to be a property of the sink, not a discipline every call site remembers, so the
+    message goes through the same filter as the fields.
+    """
+    name = getattr(record, EVENT_ATTR, None)
+    if name is not None:
+        return redact(str(name))
+    return clip(redact(record.getMessage()))
 
 
 def _timestamp(record, date=False):
     shape = "%Y-%m-%dT%H:%M:%S" if date else "%H:%M:%S"
     stamp = time.strftime(shape, time.gmtime(record.created))
     return "%s.%03d%s" % (stamp, record.msecs, "Z" if date else "")
+
+
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def _as_text(value):
@@ -268,6 +284,10 @@ def _as_text(value):
     safe = _safe(value)
     if safe is None:
         return "-"
+    if isinstance(safe, str) and _CONTROL.search(safe):
+        # An unescaped ESC from upstream text would run as a terminal command in the
+        # operator's console. json.dumps turns it into \u001b, which is readable and inert.
+        return json.dumps(safe, ensure_ascii=False)
     if isinstance(safe, bool):
         return "true" if safe else "false"
     if isinstance(safe, (int, float)):

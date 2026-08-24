@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import logging
 import unittest
 import urllib.error
 
@@ -873,6 +874,55 @@ class TestRejectedKeepsItsTwoHalves(unittest.TestCase):
                        feedback="output was not valid JSON")
         self.assertIn(POISON, exc.detail)
         self.assertNotIn(POISON, exc.feedback)
+
+
+class TheSinkFiltersEverythingItEmits(unittest.TestCase):
+    """Redaction must be a property of the sink, not a discipline at every call site.
+
+    Each of these was a real defect found by an independent audit of the logging pass.
+    They are grouped here because they share one cause: a filter that covered some of
+    what reaches the formatter rather than all of it.
+    """
+
+    def test_a_credential_straddling_the_clip_boundary_is_still_redacted(self):
+        """`redact(clip(x))` truncated a key until the pattern stopped matching it.
+
+        The surviving prefix was then printed verbatim. Order matters: redact first.
+        """
+        from jig.log import _safe
+
+        key = "csk-CANARYDONOTLOGME123456789"
+        for separator in (" ", "=", ": ", '"', "Bearer "):
+            for offset in range(150, 200):
+                line = ("x" * offset) + separator + key
+                self.assertNotIn(
+                    "csk-CANARY", str(_safe(line)),
+                    "credential leaked at offset %d after %r" % (offset, separator),
+                )
+
+    def test_a_plain_record_message_is_redacted_too(self):
+        """A record logged through the ordinary stdlib API reaches the same formatter."""
+        from jig.log import TextFormatter, JsonFormatter
+
+        record = logging.LogRecord(
+            "jig.probe", logging.WARNING, "", 1, "key is %s",
+            ("csk-CANARYDONOTLOG12345",), None,
+        )
+        for formatter in (TextFormatter(), JsonFormatter()):
+            rendered = formatter.format(record)
+            self.assertNotIn("csk-CANARY", rendered)
+            self.assertIn("redacted", rendered)
+
+    def test_control_characters_cannot_reach_the_terminal(self):
+        """A raw ESC in upstream text would execute as a terminal command."""
+        from jig.log import TextFormatter
+
+        record = logging.LogRecord("jig.probe", logging.WARNING, "", 1, "x", (), None)
+        setattr(record, "jig_event", "probe")
+        setattr(record, "jig_fields", {"b": "\x1b[2J\x1b[31mRED"})
+        rendered = TextFormatter().format(record)
+        self.assertNotIn("\x1b", rendered)
+        self.assertIn("RED", rendered)
 
 
 if __name__ == "__main__":

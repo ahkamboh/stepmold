@@ -5,13 +5,18 @@ import sys
 from importlib.machinery import PathFinder
 from importlib.util import module_from_spec
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# realpath, not abspath: abspath does not resolve symlinks, so on macOS the same
+# directory reachable as both /tmp/x and /private/tmp/x compares unequal. When the repo
+# root then appears on sys.path under the other spelling, _other_paths() fails to filter
+# this shim out, PathFinder finds it again, and importing pytest recurses until the
+# stack dies. Normalising both sides makes the two spellings the same path.
+_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 
 def _other_paths():
     out = []
     for entry in sys.path:
-        resolved = os.path.abspath(entry or os.getcwd())
+        resolved = os.path.realpath(entry or os.getcwd())
         if resolved != _ROOT:
             out.append(entry)
     return out
