@@ -55,12 +55,21 @@ class NodeFailed(RunError):
 
     `node` is the node name, `attempts` the number of generations spent, and `reason`
     the last verification failure.
+
+    `feedback` is the *safe half* of that reason — `verify.Rejected.feedback`, which says
+    what was wrong without quoting what the model said. It exists because this exception
+    is now read by two audiences with different rights: an operator debugging a pack, who
+    gets `reason` in `RunResult.failures`, in the checkpoint and in a DEBUG log line; and
+    a default-level log line, which an operator may ship to a collector and which must
+    therefore carry no model output at all. Optional, and None when nobody supplied one —
+    the walker says "detail at DEBUG" rather than guessing which half it is holding.
     """
 
-    def __init__(self, node, reason, attempts=0):
+    def __init__(self, node, reason, attempts=0, feedback=None):
         self.node = node
         self.reason = reason
         self.attempts = attempts
+        self.feedback = feedback
         RunError.__init__(
             self, "node %r failed after %d attempt(s): %s" % (node, attempts, reason)
         )

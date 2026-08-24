@@ -20,7 +20,7 @@ import json
 import os
 import sys
 
-from . import __version__
+from . import __version__, log
 from .errors import JigError
 from .eval import evaluate
 from .grammar import ValidationError
@@ -29,12 +29,14 @@ from .pack import PackError, _resolve_inside, load_pack
 __all__ = ["main", "resolve_model"]
 
 MODEL_SCHEMES = ("fake", "openai")
+LOG_FORMATS = ("text", "json")
 
 
 def main(argv=None):
     """Run the CLI. Returns an exit code rather than calling sys.exit, so it is testable."""
     parser = build_parser()
     args = parser.parse_args(argv)
+    _start_logging(args)
     try:
         return args.handler(args)
     except PackError as exc:
@@ -53,12 +55,14 @@ def build_parser():
     )
     parser.add_argument("--version", action="version", version="jig %s" % __version__)
     commands = parser.add_subparsers(dest="command")
+    observability = _observability_options()
 
-    validate = commands.add_parser("validate", help="check that a pack is well-formed")
+    validate = commands.add_parser("validate", parents=[observability],
+                                   help="check that a pack is well-formed")
     validate.add_argument("pack", help="path to the pack directory")
     validate.set_defaults(handler=command_validate)
 
-    run = commands.add_parser("run", help="execute a pack once")
+    run = commands.add_parser("run", parents=[observability], help="execute a pack once")
     run.add_argument("pack", help="path to the pack directory")
     run.add_argument("--input", default="{}", help="run inputs as a JSON object")
     run.add_argument("--model", help="model spec (default: the pack manifest's)")
@@ -72,7 +76,8 @@ def build_parser():
     run.set_defaults(handler=command_run)
 
     evaluate_command = commands.add_parser(
-        "eval", help="score a pack against its evalset (exit 1 if any case fails)"
+        "eval", parents=[observability],
+        help="score a pack against its evalset (exit 1 if any case fails)"
     )
     evaluate_command.add_argument("pack", help="path to the pack directory")
     evaluate_command.add_argument("--model", help="model spec (default: the manifest's)")
@@ -82,6 +87,42 @@ def build_parser():
 
     parser.set_defaults(handler=lambda args: _usage(parser))
     return parser
+
+
+def _observability_options():
+    """`--log-level` / `--log-format`, shared by every subcommand.
+
+    A parent parser rather than three copies, and rather than options on the top-level
+    parser: argparse only accepts a top-level option *before* the subcommand, and nobody
+    types `jig --log-level info run pack`.
+
+    The default is `off`, and that is the contract: with no flag, jig configures no
+    handler, sets no level, and prints exactly what it printed before this existed.
+    Logging is an operator's explicit request, not a thing that happens to them.
+    """
+    shared = argparse.ArgumentParser(add_help=False)
+    shared.add_argument(
+        "--log-level", dest="log_level", default="off", choices=log.LEVELS,
+        help="emit run events on stderr at this level (default: off)",
+    )
+    shared.add_argument(
+        "--log-format", dest="log_format", default="text", choices=LOG_FORMATS,
+        help="'text' for a terminal, 'json' for one JSON object per line",
+    )
+    return shared
+
+
+def _start_logging(args):
+    """Turn logging on if this invocation asked for it. Only an application may.
+
+    stderr, always. `jig run` prints its result as JSON on stdout and callers pipe it
+    onward; a log line there would corrupt the output instead of describing it.
+    """
+    level = getattr(args, "log_level", "off")
+    if not level or level == "off":
+        return
+    log.configure(level=level, fmt=getattr(args, "log_format", "text"),
+                  stream=sys.stderr)
 
 
 # ------------------------------------------------------------------------ commands

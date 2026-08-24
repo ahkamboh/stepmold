@@ -43,6 +43,12 @@ those notes was ever judged, and re-thinking would be a call spent to learn noth
 
 `EmptyCompletion` also turns that content-less 200 into a rejection rather than an abort,
 so the ladder answers it and the node's `on_fail` edge still means what the pack says.
+
+Rule 2 has one more downstream now that jig logs (`jig.log`). A log file cannot condition
+a model, so `Rejected.detail` is allowed there — but a log an operator ships to a
+collector is still somewhere a customer's ticket should not turn up by accident, so the
+detail is DEBUG-only and every other level carries `feedback`, the half already derived
+from the pack's own schema. `NodeFailed` carries both for the same reason.
 """
 
 import json
@@ -51,6 +57,9 @@ from .codegen import Sampling, generate_once
 from .errors import BackendError, ExprError, NodeFailed
 from .expr import is_true
 from .grammar import ValidationError, validate_against
+from .log import DEBUG, INFO, WARNING, clip, event, get_logger
+
+_log = get_logger("verify")
 
 __all__ = [
     "EmptyCompletion",
@@ -153,10 +162,26 @@ def run_node(node, state, model, attempts=None):
         # `feedback` is None on the first attempt and the previous rejection after that;
         # `sampling_for` makes every rung after the first an independent draw wherever
         # the backend can manage one.
+        sampling = sampling_for(rung)
+        # `rung and ...` short-circuits on the first attempt, so the happy path through
+        # this loop — the overwhelming majority of generations — asks the logging layer
+        # nothing at all. The first attempt is not silent: `codegen` logs `node.emit`
+        # with the prompt size, and `graph` logs `node.ok` when it lands. There is no
+        # event here that only restates one of those.
+        if rung and _log.isEnabledFor(INFO):
+            # The rung an operator is paying for. INFO rather than DEBUG because a pack
+            # that quietly burns two extra generations on node 40 of every run is the
+            # single most expensive thing that can go unnoticed here, and `reason` is
+            # the model-safe half by construction — it is the same text the next prompt
+            # is allowed to carry.
+            event(_log, INFO, "node.retry", node=node.name, attempt=rung + 1, of=rungs,
+                  temperature=sampling.temperature if sampling else None,
+                  seed=sampling.seed if sampling else None, reason=feedback,
+                  rethink=bool(node.two_stage and scratchpad is None))
         try:
             candidate = generate_once(
                 node, state, model, error=feedback, scratchpad=scratchpad,
-                sampling=sampling_for(rung),
+                sampling=sampling,
             )
         except BackendError as exc:
             if not getattr(exc, "empty_content", False):
@@ -168,6 +193,15 @@ def run_node(node, state, model, attempts=None):
             # answer arrived empty.
             spent += 1
             reason, feedback = str(exc), EMPTY_COMPLETION_FEEDBACK
+            # The backend's diagnostic names the endpoint and the finish reason and
+            # quotes no generation, so it is safe at WARNING as it stands. `clip` runs
+            # over text of unbounded length, which is exactly the kind of work that must
+            # not happen when nobody is listening — hence the guard rather than trusting
+            # `event` to throw the result away.
+            if _log.isEnabledFor(WARNING):
+                event(_log, WARNING, "node.rejected", node=node.name, attempt=spent,
+                      cause="empty_completion", reason=EMPTY_COMPLETION_FEEDBACK,
+                      detail=clip(reason))
             # Nothing about a two-stage node's notes was judged here, so the next rung
             # keeps them: `codegen.generate_once` hands back the notes of the attempt
             # that never got an answer.
@@ -184,11 +218,25 @@ def run_node(node, state, model, attempts=None):
             reason = str(exc)
             feedback = exc.feedback
             scratchpad = None
+            # The split that rule 2 of this module's docstring is about, spelled out at
+            # the one place both halves are in scope. `feedback` says what was wrong and
+            # is derived from the pack's own schema, so it goes out at WARNING where an
+            # operator shipping logs to a collector will see it. `detail` may quote the
+            # generation verbatim, so it is DEBUG-only: someone who asked for DEBUG asked
+            # to read what came back, and a log file cannot condition a model — but a
+            # default-level line that carried it would put rejected model output into
+            # every collector jig is ever pointed at.
+            if _log.isEnabledFor(WARNING):
+                event(_log, WARNING, "node.rejected", node=node.name, attempt=spent,
+                      cause="verify", reason=feedback, of=rungs)
+            if _log.isEnabledFor(DEBUG):
+                event(_log, DEBUG, "node.rejected.detail", node=node.name,
+                      attempt=spent, detail=clip(reason))
             continue
         _tally(attempts, node.name, spent)
         return value
     _tally(attempts, node.name, spent)
-    raise NodeFailed(node.name, reason, attempts=spent)
+    raise NodeFailed(node.name, reason, attempts=spent, feedback=feedback)
 
 
 def _tally(attempts, name, spent):

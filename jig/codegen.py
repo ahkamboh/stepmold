@@ -30,7 +30,10 @@ from typing import Optional
 
 from .errors import BackendError
 from .grammar import schema_to_grammar
+from .log import DEBUG, event, get_logger
 from .render import render
+
+_log = get_logger("codegen")
 
 __all__ = [
     "Attempt",
@@ -116,16 +119,32 @@ def think(node, state, model, sampling=None):
     # placeholder. There are no notes yet, so it renders empty rather than exploding.
     scope = dict(state)
     scope.setdefault(SCRATCHPAD, "")
-    return _generate(
-        model, render(template, scope), None, node.think_max_tokens, sampling
-    )
+    prompt = render(template, scope)
+    # The size of a prompt, never the prompt. A rendered prompt holds whatever the caller
+    # put into state — a whole support ticket, a customer's name — and the point of
+    # logging it would be to see it. Bytes tell an operator what they actually came for:
+    # whether a prompt is the size they think it is, and where a token bill went.
+    if _log.isEnabledFor(DEBUG):
+        # Guarded at the call site, not just inside `event`. This fires once per
+        # generation and the long-horizon suite makes hundreds of thousands of them, so
+        # even building the keyword dict for an event nobody is listening to is a cost
+        # worth not paying. The check itself is one bound-method call returning False.
+        event(_log, DEBUG, "node.think", node=node.name, prompt_bytes=len(prompt),
+              max_tokens=node.think_max_tokens)
+    return _generate(model, prompt, None, node.think_max_tokens, sampling)
 
 
 def emit(node, state, model, scratchpad=None, error=None, sampling=None):
     """The constrained stage: the only output that can ever be committed."""
+    prompt = build_prompt(node, state, scratchpad=scratchpad, error=error)
+    if _log.isEnabledFor(DEBUG):
+        event(_log, DEBUG, "node.emit", node=node.name, prompt_bytes=len(prompt),
+              grammar=bool(node.grammar), max_tokens=node.max_tokens,
+              scratchpad_bytes=len(scratchpad) if scratchpad is not None else None,
+              corrected=bool(error))
     return _generate(
         model,
-        build_prompt(node, state, scratchpad=scratchpad, error=error),
+        prompt,
         schema_to_grammar(node.grammar) if node.grammar else None,
         node.max_tokens,
         sampling,

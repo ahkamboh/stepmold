@@ -25,7 +25,6 @@ import email.utils
 import http.client
 import json
 import os
-import re
 import time
 import urllib.error
 import urllib.parse
@@ -34,6 +33,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
 from ..errors import BackendError
+from ..log import (BEARER, DEBUG, ERROR, INFO, KEY_SHAPED, WARNING, event,
+                   get_logger, redact)
 
 __all__ = [
     "DEFAULT_OPENER",
@@ -41,6 +42,8 @@ __all__ = [
     "NoCrossOriginRedirect",
     "OpenAICompatModel",
 ]
+
+_log = get_logger("backend")
 
 GRAMMAR_MODES = ("response_format", "json_schema", "json_object", "none")
 API_KEY_VARIABLES = ("JIG_API_KEY", "OPENAI_API_KEY")
@@ -63,9 +66,11 @@ GRAMMAR_FIELDS = {
 RETRY_AFTER_CEILING = 60.0
 
 # Credentials, as they appear in text somebody else wrote: a header a gateway echoed back
-# at us, or a key pasted into an upstream error message.
-BEARER = re.compile(r"(?i)(bearer\s+)[^\s\"',]+")
-KEY_SHAPED = re.compile(r"\b(?:c?sk|gsk|xai|xoxb|ghp)-[A-Za-z0-9_-]{8,}")
+# at us, or a key pasted into an upstream error message. The patterns and the filter moved
+# to `jig.log` when logging arrived — the same text now goes to two places, and one filter
+# in front of both is the only version of this that stays true. Re-exported here because
+# this module is where the redaction rule was written and where readers look for it.
+_redact = redact
 
 
 class NoCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
@@ -233,23 +238,41 @@ class OpenAICompatModel:
                 self.url, data=body, headers=headers, method="POST"
             )
             asked_for = 0.0
+            # One clock read per HTTP attempt, next to a call that is about to block on a
+            # GPU for a fifth of a second. The cost of always taking it is not worth the
+            # branch it would take to avoid it.
+            started = time.monotonic()
+            event(_log, DEBUG, "backend.request", model=self.model, endpoint=self.url,
+                  attempt=attempt + 1, of=self.max_retries + 1,
+                  grammar_mode=self.grammar_mode,
+                  max_tokens=payload.get("max_tokens"), body_bytes=len(body))
             try:
                 with self.opener(request, timeout=self.timeout) as response:
                     # The read stays inside the try: a body shorter than its
                     # Content-Length fails here, not at the opener.
-                    return _decode(response.read(), self.url, _content_type(response))
+                    decoded = _decode(response.read(), self.url, _content_type(response))
+                    status = getattr(response, "status", None) or 200
             except urllib.error.HTTPError as exc:
                 detail = _read_error(exc, self.api_key)
                 last = BackendError(
                     "%s returned HTTP %s: %s" % (self.url, exc.code, detail)
                 )
-                if exc.code not in RETRY_STATUSES:
+                retryable = exc.code in RETRY_STATUSES
+                # `detail` has already been through `_read_error`, which strips the key
+                # we sent and anything else key-shaped out of somebody else's error body.
+                event(_log, WARNING, "backend.http_error", model=self.model,
+                      endpoint=self.url, status=exc.code, attempt=attempt + 1,
+                      retryable=retryable, duration_ms=_ms(started), detail=detail)
+                if not retryable:
                     raise last
                 asked_for = _retry_after(exc)
             except urllib.error.URLError as exc:
                 last = BackendError(
                     "could not reach %s: %s" % (self.url, _redact(str(exc.reason)))
                 )
+                event(_log, WARNING, "backend.transport_error", model=self.model,
+                      endpoint=self.url, attempt=attempt + 1, error="URLError",
+                      duration_ms=_ms(started), detail=_redact(str(exc.reason)))
             except (OSError, http.client.HTTPException) as exc:
                 # urllib wraps only what HTTPConnection.request() raises. Everything from
                 # getresponse() and response.read() — a peer that hangs up, a truncated
@@ -258,10 +281,32 @@ class OpenAICompatModel:
                 # are the most transient failures jig can meet, so they ride the same
                 # ladder as a 503.
                 last = _transport_error(self.url, self.timeout, exc)
+                event(_log, WARNING, "backend.transport_error", model=self.model,
+                      endpoint=self.url, attempt=attempt + 1,
+                      error=type(exc).__name__, duration_ms=_ms(started),
+                      detail=_redact(str(exc)))
+            else:
+                # An `else` rather than a `return` inside the `try`, so the accounting
+                # below runs on a request that actually completed without widening what
+                # the except clauses above are watching.
+                if _log.isEnabledFor(INFO):
+                    # `_usage` walks the response, so it is built only when something is
+                    # listening. This is the line that answers "what did that cost".
+                    event(_log, INFO, "backend.response", model=self.model,
+                          endpoint=self.url, status=status, attempt=attempt + 1,
+                          retries=attempt, duration_ms=_ms(started), **_usage(decoded))
+                return decoded
             if attempt < self.max_retries:
                 # The provider's instruction wins when it is longer than our own backoff;
                 # our backoff wins when the provider said nothing.
-                self.sleeper(max(0.5 * (2 ** attempt), asked_for))
+                delay = max(0.5 * (2 ** attempt), asked_for)
+                # The slept seconds, not the schedule: a run that spent nine seconds
+                # inside one node spent them here, and only the actual number says so.
+                event(_log, INFO, "backend.backoff", endpoint=self.url,
+                      attempt=attempt + 1, retry_after=asked_for, slept_s=round(delay, 3))
+                self.sleeper(delay)
+        event(_log, ERROR, "backend.failed", model=self.model, endpoint=self.url,
+              attempts=self.max_retries + 1, detail=str(last))
         raise last
 
 
@@ -419,19 +464,6 @@ def _content_type(response):
     return headers.get("Content-Type") if headers is not None else None
 
 
-def _redact(text):
-    """Strip anything credential-shaped out of text somebody else wrote.
-
-    Upstream error bodies get spliced into exceptions, and exceptions get logged.
-    Gateways that echo the offending request back as a debug body — several do — put the
-    caller's own `Authorization` header in it, so without this jig is not the leaker but
-    it is the amplifier. One pass, before the text is quoted anywhere.
-    """
-    if not text:
-        return text
-    return KEY_SHAPED.sub("<redacted>", BEARER.sub(r"\1<redacted>", text))
-
-
 def _schema_of(grammar):
     """Unwrap `jig.grammar.schema_to_grammar`'s struct, or take a bare schema."""
     if grammar is None:
@@ -534,3 +566,29 @@ def _read_error(exc, api_key=None):
     if api_key:
         body = body.replace(api_key, "<redacted>")
     return _clip(_redact(body))
+
+
+def _ms(started):
+    """Milliseconds since `started`, at a resolution a log line can hold."""
+    return round((time.monotonic() - started) * 1000.0, 1)
+
+
+def _usage(response):
+    """What this call cost, from the provider's own accounting.
+
+    Every field is optional on the wire — llama.cpp-server omits the reasoning breakdown
+    that Cerebras fills in — so a missing number is reported as None rather than guessed
+    at or dropped. A stable set of field names is what makes a day of these lines
+    summable; a field that vanishes when it is zero is not.
+    """
+    usage = response.get("usage") or {} if isinstance(response, dict) else {}
+    detail = usage.get("completion_tokens_details") or {}
+    choices = response.get("choices") if isinstance(response, dict) else None
+    first = choices[0] if choices else {}
+    return {
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "reasoning_tokens": detail.get("reasoning_tokens"),
+        "total_tokens": usage.get("total_tokens"),
+        "finish_reason": first.get("finish_reason") if isinstance(first, dict) else None,
+    }

@@ -79,6 +79,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .errors import RunError, RunIdInUse, UnknownRun
+from .log import DEBUG, INFO, WARNING, event, get_logger
+
+_log = get_logger("state")
 
 __all__ = [
     "Checkpoint",
@@ -312,6 +315,16 @@ class Store:
         # Only once the transaction committed: a cache entry for a row that was rolled
         # back would describe a chain the file does not have.
         self._recent[run_id] = (step, _parse(snapshot))
+        # DEBUG rather than INFO on purpose. This fires exactly once per node that
+        # completes, so at INFO it would double the volume of a run's log to repeat what
+        # `graph`'s own `node.ok` already said — while the fact an operator actually
+        # wants at INFO, "is this run checkpointed at all", is answered once by
+        # `run.claimed` below. Delta-vs-full and the byte count are here because they are
+        # the two numbers behind a store that is growing faster than it should.
+        if _log.isEnabledFor(DEBUG):
+            event(_log, DEBUG, "checkpoint.saved", run_id=run_id, step=step, node=node,
+                  next_node=next_node, kind=kind, state_bytes=len(snapshot[0]),
+                  finished=next_node is None)
 
     def latest(self, run_id):
         """The most recent checkpoint for `run_id`, or None."""
@@ -439,10 +452,13 @@ class Store:
                 (token, deadline, run_id, time.time()),
             )
             if cursor.rowcount == 0:
+                event(_log, WARNING, "lease.refused", run_id=run_id, store=self.path)
                 raise ResumeInProgress(
                     "run %r is already being resumed by another worker — a second "
                     "resume would execute every remaining node a second time" % run_id
                 )
+        event(_log, INFO, "lease.taken", run_id=run_id, store=self.path,
+              seconds=float(seconds))
         try:
             yield token
         finally:
@@ -452,6 +468,7 @@ class Store:
                     " WHERE run_id = ? AND lease_owner = ?",
                     (run_id, token),
                 )
+            event(_log, INFO, "lease.released", run_id=run_id, store=self.path)
 
     # ------------------------------------------------------------ internals
 
@@ -505,11 +522,15 @@ class Store:
             (run_id, self._owner, _now()),
         )
         if cursor.rowcount == 1:
+            event(_log, INFO, "run.claimed", run_id=run_id, store=self.path,
+                  owner=self._owner)
             return
         holder = self._connection.execute(
             "SELECT owner FROM runs WHERE run_id = ?", (run_id,)
         ).fetchone()
         if holder is not None and holder["owner"] != self._owner:
+            event(_log, WARNING, "run.claim_refused", run_id=run_id, store=self.path,
+                  owner=self._owner, held_by=holder["owner"])
             raise RunIdInUse(
                 "run id %r is already claimed in this store by another run; "
                 "resume it, delete it, or choose another id" % run_id
@@ -734,10 +755,15 @@ def resume(pack, model, run_id, store, **kwargs):
 
     checkpoint = store.latest(run_id)
     if checkpoint is None:
+        event(_log, WARNING, "resume.unknown", run_id=run_id, pack=pack.name)
         raise UnknownRun("no checkpoint found for run %r" % run_id)
     _check_same_pack(pack, checkpoint)
     if checkpoint.finished:
+        event(_log, INFO, "resume.replayed", run_id=run_id, pack=pack.name,
+              step=checkpoint.step, end_node=checkpoint.node)
         return replay(checkpoint)
+    event(_log, INFO, "resume.start", run_id=run_id, pack=pack.name,
+          from_step=checkpoint.step, next_node=checkpoint.next_node)
 
     lease = getattr(store, "lease", None)
     if lease is None:

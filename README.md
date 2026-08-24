@@ -113,6 +113,72 @@ $ python3 -m jig run examples/support_triage \
     --input '{"ticket": "..."}'
 ```
 
+## Observability
+
+A run used to print its result and nothing else. Every fact you need at 3am — which node
+failed, how many retries it burned, what the model returned, how long it took — already
+existed inside the runtime; none of it was written down.
+
+Two flags turn it on. Without them jig configures no logging at all and prints exactly
+what it printed before, because a library that logs at its host uninvited is a bug.
+
+```console
+$ python3 -m jig run examples/support_triage --input '{"ticket": "..."}' --log-level info
+13:42:49.979 INFO  jig.graph run.start run_id=ea4d17c0 pack=support_triage version=1 entry=classify resumed=false max_steps=12 inputs=ticket
+13:42:49.979 WARNING jig.verify node.rejected node=classify attempt=1 cause=verify reason="output was not valid JSON — return a single JSON object and nothing else" of=3
+13:42:49.979 INFO  jig.verify node.retry node=classify attempt=2 of=3 temperature=0.5 seed=1 reason="output was not valid JSON — return a single JSON object and nothing else" rethink=false
+13:42:49.980 INFO  jig.graph node.ok run_id=ea4d17c0 node=classify type=generate attempts=2 output=merge duration_ms=0.3
+13:42:49.980 INFO  jig.graph node.ok run_id=ea4d17c0 node=extract type=generate attempts=1 output=merge duration_ms=0.0
+13:42:49.980 INFO  jig.graph run.end run_id=ea4d17c0 pack=support_triage end_node=done steps=5 generations=5 failures=0 output_keys=7 output_bytes=154 duration_ms=1.0
+```
+
+Everything goes to **stderr**, so the JSON result on stdout stays pipeable. `--log-format
+json` writes one object per line with stable field names, for anything that ships logs:
+
+```console
+$ python3 -m jig run examples/support_triage --input '{"ticket": "..."}' \
+    --log-level info --log-format json
+{"ts": "2026-08-24T13:42:50.048Z", "level": "INFO", "logger": "jig.graph", "event": "node.ok", "run_id": "ab54abc3", "node": "classify", "type": "generate", "attempts": 2, "output": "merge", "duration_ms": 0.2}
+{"ts": "2026-08-24T13:42:50.048Z", "level": "INFO", "logger": "jig.graph", "event": "run.end", "run_id": "ab54abc3", "pack": "support_triage", "end_node": "done", "steps": 5, "generations": 5, "failures": 0, "output_keys": 7, "output_bytes": 154, "duration_ms": 0.8}
+```
+
+Against a real endpoint the backend answers the other question — what a run cost:
+
+```console
+13:43:00.055 WARNING jig.backend backend.http_error model=qwen3-8b endpoint=http://.../v1/chat/completions status=429 attempt=1 retryable=true duration_ms=1.0
+13:43:00.055 INFO  jig.backend backend.backoff endpoint=http://.../v1/chat/completions attempt=1 retry_after=1.0 slept_s=1.0
+13:43:01.065 INFO  jig.backend backend.response model=qwen3-8b endpoint=http://.../v1/chat/completions status=200 attempt=2 retries=1 duration_ms=5.1 prompt_tokens=10 completion_tokens=10 reasoning_tokens=0 total_tokens=- finish_reason=stop
+```
+
+### What comes out at which level
+
+| Level | Events |
+| --- | --- |
+| `error` | `run.error`, `backend.failed` — the run stopped, and which node it stopped on |
+| `warning` | `node.rejected`, `node.failed`, `backend.http_error`, `lease.refused` |
+| `info` | `run.start`, `run.end`, `node.ok`, `node.retry`, `edge.on_fail`, `backend.response`, `backend.backoff`, `run.claimed`, `lease.taken`, `resume.start` |
+| `debug` | prompt and state **sizes**, `edge.taken`, `checkpoint.saved`, and the full text of a rejection |
+
+### What never comes out
+
+Logging is a new way for text to leave the runtime, so two rules are enforced at the sink
+rather than trusted at each call site, and both are tested in `tests/test_log.py`:
+
+* **No credential, at any level.** Every string a formatter emits goes through the same
+  key-shaped filter the backend has always run over upstream error bodies. A planted
+  canary key is asserted absent from captured output at `debug`.
+* **No rejected model output below `debug`.** `verify.Rejected` keeps two halves: the
+  `feedback` says what was wrong and is derived from your own schema; the `detail` may
+  quote the generation verbatim. The default path carries only the first. Prompts and
+  state never appear at all — sizes, and a digest.
+
+Anything user-controlled is clipped, so a one-megabyte ticket cannot become a
+one-megabyte log line.
+
+Embedding jig rather than running the CLI? `jig.log` hangs everything off the `jig`
+logger with a `NullHandler`, so `logging.getLogger("jig").setLevel(...)` in your own
+application is all it takes; `jig.log.configure` is there if you want jig's formatters.
+
 ## Benchmarks
 
 **Measured 2026-08-24** against Cerebras (`https://api.cerebras.ai/v1`, $0.35/1M in,
@@ -192,6 +258,7 @@ The runtime is complete and tested; the compiler is not written yet.
 | Checkpointing and resume (SQLite) | done |
 | Evalset runner with per-node attribution | done |
 | CLI: `run`, `eval`, `validate` | done |
+| Structured logging (`--log-level`, `--log-format=text\|json`) | done |
 | Example pack, runs offline against a scripted model | done |
 | OpenAI-compatible backend | written, **unverified against a live server** |
 | `jig build` — the compiler | not started |
