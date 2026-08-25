@@ -1,0 +1,109 @@
+# classify -> lookup (tool) -> assess -> approve -> refund (tool) -> done
+#                 |                         |            
+#                 +-> needs_human <---------+
+#
+# Two things here are worth reading slowly.
+#
+# 1. The order of the last three nodes. `approve` is the judgement call and
+#    `refund` is the irreversible one, and the judgement is spent BEFORE the
+#    action, never after it. There is no edge that reaches `refund` except the
+#    one `approve` takes when it is sure; every other way out of `approve`
+#    lands somewhere a human can still say no.
+#
+# 2. `on_unsure:` on `approve`. That edge is the confidence gate's exit: when a
+#    node draws several independent samples and they do not agree, the run is
+#    routed here instead of committing an answer nobody stands behind.
+#
+#    The gate's *entrance* — `samples:` and `agree:` — cannot be written in this
+#    file yet. `jig.pack._NODE_KEYS` does not carry them, so a graph.yaml that
+#    names them is refused at load:
+#
+#      jig: pack error: graph.yaml: node 'approve' has unknown key(s): agree, samples
+#
+#    `jig.verify.gate_for` reads them off the node with getattr and the walker
+#    already routes `Unsure`, so the runtime half is real and tested — see
+#    gate_demo.py in this directory, which attaches the keys from Python and
+#    shows a refund NOT being issued because two draws disagreed. README.md
+#    ("The gate comes before the action") has the run.
+
+max_steps: 12
+
+nodes:
+  classify:
+    type: generate
+    # What kind of message is this at all? A question or a complaint is not a
+    # refund request, and nothing below it should run for one.
+    max_tokens: 32
+
+  lookup:
+    type: tool
+    # `fetch_order` reads `order_id` and merges the order into state. Declared
+    # idempotent by the host, so it is never written into the checkpoint and a
+    # resumed run simply reads again — which is the correct trade for a read.
+    tool: fetch_order
+    # An order id that is not in the store raises out of the tool. A tool node
+    # has no retry ladder on purpose (`retries:` is refused on one), so the
+    # only answer to a failed call is this edge.
+    on_fail: needs_human
+
+  assess:
+    type: generate
+    # The claim, weighed against what the store actually said. This node sees
+    # the order total, its status, and how long ago it was delivered, so the
+    # judgement below is made on facts rather than on the customer's summary.
+    max_tokens: 128
+
+  approve:
+    type: generate
+    max_tokens: 128
+    # The deterministic half of the gate, checked before anything is committed:
+    # a refund that `assess` found unjustified cannot be approved, whatever the
+    # model says. `assert` catches a contradiction; `on_unsure` catches a
+    # coin flip. They are different failures and they have different edges.
+    assert: justified or not approved
+    on_fail: needs_human
+    on_unsure: needs_human
+
+  refund:
+    type: tool
+    # The only node in any example pack that changes something outside the run.
+    # `issue_refund` is NOT idempotent, so the walker records the call and its
+    # result in the checkpoint before committing, and a resumed run replays the
+    # record instead of moving the money twice.
+    tool: issue_refund
+    on_fail: needs_human
+
+  done:
+    type: end
+    # `refund_id` and `refund_amount` are absent from this projection whenever
+    # the run reached `done` without passing through `refund` — an end node
+    # projects the keys state has (`graph._project`), not the keys it names.
+    output: [kind, order_status, justified, approved, refund_id, refund_amount]
+
+  needs_human:
+    type: end
+    output: [kind, order_id]
+
+edges:
+  - from: classify
+    to: lookup
+    when: {kind: refund}
+
+  - from: classify
+    to: needs_human
+
+  - from: lookup
+    to: assess
+
+  - from: assess
+    to: approve
+
+  - from: approve
+    to: refund
+    when: {approved: true}
+
+  - from: approve
+    to: done
+
+  - from: refund
+    to: done

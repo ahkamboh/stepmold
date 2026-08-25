@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "justified": {"type": "boolean"},
+    "grounds": {"type": "string"}
+  },
+  "required": ["justified", "grounds"],
+  "additionalProperties": false
+}

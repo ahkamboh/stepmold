@@ -1,0 +1,24 @@
+name: refund_desk
+version: 1
+entry: classify
+model: fake:fakes/script.json
+inputs: [message, order_id]
+description: >-
+  The pack that acts. Six nodes: classify, look the order up with a tool, assess
+  the claim, decide, and — only when the decision holds up — issue the refund
+  with a second tool.
+
+  Two tools, and they are not the same kind of thing. `fetch_order` reads, is
+  declared idempotent, and costs nothing to repeat. `issue_refund` moves money,
+  is not idempotent, and is written into the checkpoint before it is committed so
+  a run that dies mid-refund resumes without issuing a second one.
+
+  The tools live in tools.py next to this manifest and must be handed to the
+  runtime by the operator: `--tools examples/refund_desk/tools.py`. A pack names
+  an action; it never contains one. Without that flag this pack does not run —
+  see README.md, which prints the exact refusal.
+
+  The model below is a scripted stand-in, so the evalset scores offline with no
+  GPU and no network. Unlike the other example packs its script is keyed on the
+  order id rather than on case order, so `jig run` of any single case answers
+  that case. Point --model at a real backend to run real messages.

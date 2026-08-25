@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": ["refund", "question", "complaint"]
+    }
+  },
+  "required": ["kind"],
+  "additionalProperties": false
+}

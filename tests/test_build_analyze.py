@@ -498,6 +498,20 @@ def load_cases(pack):
 KNOWN_SHY = {("incident_triage", "defect"), ("lead_qualify", "industry")}
 
 
+def compiles_to_generate_nodes(pack):
+    """Whether `jig build` could have produced this pack — i.e. it has no tool nodes.
+
+    `build/assemble.py` emits `type: generate` and `type: end` and nothing else, so a
+    pack with a `type: tool` node is outside what stage 1 is measured against. It is also
+    outside what this sweep can check: `analyze` induces a field from every `expect` key,
+    and a tool node's fields are declared by the *host's* registry (`Tool.writes`), not by
+    a grammar file in the pack — so `shipped_view` cannot see them and would report a
+    field no grammar declares. `examples/refund_desk` is the pack this excludes.
+    """
+    with open(os.path.join(pack, "graph.yaml")) as handle:
+        return "type: tool" not in handle.read()
+
+
 class TestAgainstTheShippedPacks(unittest.TestCase):
     """Induce a schema from each pack's evalset; hold it against that pack's grammars."""
 
@@ -505,6 +519,7 @@ class TestAgainstTheShippedPacks(unittest.TestCase):
         self.packs = sorted(
             path for path in glob.glob(os.path.join(EXAMPLES, "*"))
             if os.path.isfile(os.path.join(path, "evalset.jsonl"))
+            and compiles_to_generate_nodes(path)
         )
         self.assertEqual(len(self.packs), 6)
 
