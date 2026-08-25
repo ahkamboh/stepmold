@@ -482,26 +482,29 @@ class TestCompletionsWithNoContent(unittest.TestCase):
                     generate()
                 self.assertEqual(len(started.calls), 1)
 
-    def test_a_contentless_answer_aborts_the_run_past_its_on_fail_edge(self):
-        """FINDING (documented, not endorsed): `on_fail` is not taken here.
+    def test_a_contentless_answer_spends_a_rung_and_takes_on_fail(self):
+        """A 200 with no text is a bad sample, so the node re-samples and then diverts.
 
-        `graph.run` catches `NodeFailed` and `MissingVariable`; `BackendError` is neither,
-        so it escapes past the failure edge the node declared. For a backend that is
-        *down* that is defensible, and graph.py argues it deliberately. This is not that
-        case: the endpoint answered 200, the model simply produced no text on this sample,
-        and a re-sample is exactly the remedy the node's ladder exists for. As it stands,
-        one flaky completion kills a long checkpointed workflow that declared a rescue
-        path — and `reasoning` is the fault jig hit on its very first contact with a real
-        endpoint, so it is not hypothetical.
+        This test used to assert the opposite, under the heading "FINDING (documented, not
+        endorsed)": one call, no rung spent, and `BackendError` escaping past the failure
+        edge the node declared. The finding was real. `verify.EmptyCompletion` documented
+        the intended behaviour and said `jig.backends.openai_compat` marked its errors with
+        `empty_content` — and it did not, so the only shipped backend aborted on the first
+        content-less answer while every document promised a retry.
 
-        What SHOULD happen: a content-less 200 becomes a `Rejected`, the node re-samples,
-        and a node that keeps getting nothing takes `on_fail` like any other spent ladder.
+        `reasoning` is the fault jig hit on its first contact with a real endpoint, and it
+        would have killed a long checkpointed workflow that had declared a rescue path.
+        The backend now marks both shapes, so the ladder spends its rungs and `on_fail` is
+        taken like any other exhausted ladder.
         """
-        started = use("reasoning")
-        with self.assertRaises(BackendError):
-            run(one_node_pack(), model(), {"ticket": "t"})
-        # One call: the node's three-rung ladder never got to spend a single rung.
-        self.assertEqual(len(started.calls), 1)
+        for fault in ("reasoning", "empty"):
+            with self.subTest(fault=fault):
+                started = use(fault)
+                result = run(one_node_pack(retries=1), model(), {"ticket": "t"})
+                self.assertEqual("rescue", result.end_node)
+                # Two rungs drawn, both empty, then the declared failure edge.
+                self.assertEqual(len(started.calls), 2)
+                self.assertEqual([f.node for f in result.failures], ["classify"])
 
 
 # -------------------------------------------------------- 200s the verifier has to judge

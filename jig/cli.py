@@ -47,6 +47,30 @@ def main(argv=None):
         return _fail("%s: %s" % (type(exc).__name__, exc))
     except (ValidationError, ValueError) as exc:
         return _fail(str(exc))
+    except TypeError as exc:
+        # A tool is free to return a datetime, a Decimal or an ORM row; JSON is not. The
+        # value travels as far as the store or stdout before json refuses it, and the
+        # refusal is a TypeError — the one error shape this handler did not name, so it
+        # arrived as a raw traceback full of jig frames. Found by audit.
+        #
+        # Only that TypeError. json states its own case in a recognisable way, and a
+        # TypeError from anywhere else is a bug that deserves its traceback rather than a
+        # confident, wrong explanation about tool return values.
+        if "JSON serializable" not in str(exc):
+            raise
+        return _fail("a value in state cannot be written as JSON: %s. A tool must return "
+                     "JSON-shaped values — str, int, float, bool, None, list or dict." % exc)
+
+
+def _as_json(payload):
+    """Serialise for stdout the way the store already serialises for disk.
+
+    Python writes NaN and Infinity by default; RFC 8259 has no such tokens, so jq, Go and
+    most non-Python readers reject them. `jig run --store` refused those values already
+    while the same run printed them to stdout and exited 0 — one invocation disagreeing
+    with itself about whether a value was writable. Found by audit.
+    """
+    return json.dumps(payload, sort_keys=True, allow_nan=False)
 
 
 def _build_error():
@@ -265,7 +289,7 @@ def command_run(args):
             "state (state has: %s). Fix the node's 'output', or pass --state to print "
             "the whole state." % (result.end_node, ", ".join(sorted(result.state)))
         )
-    print(json.dumps(payload, sort_keys=True))
+    print(_as_json(payload))
     return 0
 
 
@@ -280,7 +304,7 @@ def command_eval(args):
         # The JSON report carries the tier split unconditionally. It is a machine
         # surface, an added key breaks nothing that reads the old ones, and an automation
         # rate that only appears behind a flag is one a deployment review can miss.
-        print(json.dumps(_report_json(report), sort_keys=True))
+        print(_as_json(_report_json(report)))
     else:
         # The text report is unchanged, always. Existing scripts grep it and the README's
         # transcripts are executed as tests; `--tiers` adds a block, it rewrites nothing.

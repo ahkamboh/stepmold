@@ -517,7 +517,7 @@ def _clip(text, limit=200):
 def _content(response):
     choices = response.get("choices") if isinstance(response, dict) else None
     if not choices:
-        raise BackendError(
+        raise _empty(
             "backend returned no choices: %s" % _clip(_redact(json.dumps(response)))
         )
     choice = choices[0]
@@ -526,8 +526,24 @@ def _content(response):
     if content is None:
         content = choice.get("text")
     if not isinstance(content, str):
-        raise BackendError(_no_content_reason(response, choice, message))
+        raise _empty(_no_content_reason(response, choice, message))
     return content
+
+
+def _empty(detail):
+    """A 200 that carried no text: a bad draw, not an endpoint that is down.
+
+    `verify.run_node` reads `empty_content` and turns such an error into a rejection that
+    spends one rung of the ladder, so a node with an `on_fail` edge diverts instead of
+    aborting the run. `verify.EmptyCompletion` documents that contract and names this
+    module as marking its errors — which this module did not actually do, so the shipped
+    backend aborted on the first content-less answer while the docs promised a retry.
+    Found by audit. The diagnostic is kept verbatim: it is what an operator needs, and
+    `_no_content_reason` is the part that says a reasoning model ate its own budget.
+    """
+    error = BackendError(detail)
+    error.empty_content = True
+    return error
 
 
 def _no_content_reason(response, choice, message):

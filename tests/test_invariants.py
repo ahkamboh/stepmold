@@ -795,3 +795,159 @@ class CompileRefusesAnOccupiedDestinationBeforeSpendingAnything(unittest.TestCas
             pass
         self.assertEqual("a hand-tuned pack lives here\n",
                          (self.root / "out" / "keep.txt").read_text())
+
+
+class ShippedBackendMarksAContentLessTwoHundredAsABadDraw(unittest.TestCase):
+    """A 200 with no text must spend a rung, not abort the run.
+
+    `verify.EmptyCompletion` documents the contract and names `jig.backends.openai_compat`
+    as marking its errors with `empty_content` — which that module did not do. So the only
+    shipped backend raised a plain `BackendError` on the first content-less answer,
+    `graph.run` did not catch it, and a node with an `on_fail` edge aborted instead of
+    diverting: one call, no rung spent, no divert. The machinery was right and only the
+    wiring was missing. Found by audit; the repo's own faultproxy had been reproducing it
+    under the name "the real defect we hit on first contact".
+    """
+
+    def _no_content_response(self, **extra):
+        response = {"choices": [{"message": {"content": None},
+                                 "finish_reason": "length"}]}
+        response.update(extra)
+        return response
+
+    def test_a_choice_with_no_text_is_marked(self):
+        from jig.backends.openai_compat import _content
+        from jig.errors import BackendError
+        with self.assertRaises(BackendError) as caught:
+            _content(self._no_content_response())
+        self.assertTrue(getattr(caught.exception, "empty_content", False),
+                        "the backend did not mark this as a bad draw, so run_node "
+                        "will abort the run instead of spending a rung")
+
+    def test_a_response_with_no_choices_at_all_is_marked(self):
+        from jig.backends.openai_compat import _content
+        from jig.errors import BackendError
+        with self.assertRaises(BackendError) as caught:
+            _content({"choices": []})
+        self.assertTrue(getattr(caught.exception, "empty_content", False))
+
+    def test_the_reasoning_model_diagnostic_survives_the_marking(self):
+        from jig.backends.openai_compat import _content
+        from jig.errors import BackendError
+        response = self._no_content_response(
+            usage={"completion_tokens_details": {"reasoning_tokens": 31}})
+        with self.assertRaises(BackendError) as caught:
+            _content(response)
+        self.assertIn("reasoning", str(caught.exception))
+        self.assertTrue(getattr(caught.exception, "empty_content", False))
+
+    def test_it_spends_a_rung_and_takes_on_fail(self):
+        from jig.backends.openai_compat import _content
+        from jig.errors import BackendError
+        from jig.graph import run
+        from jig.pack import Edge, Node, Pack
+
+        calls = []
+
+        class AlwaysEmpty(object):
+            """Answers 200, every time, with nothing in it — exactly what the shipped
+            backend turns into an `empty_content` error."""
+
+            def generate(self, prompt, **kwargs):
+                calls.append(prompt)
+                _content({"choices": [{"message": {"content": None},
+                                       "finish_reason": "length"}]})
+
+        model = AlwaysEmpty()
+
+        pack = Pack(
+            name="t", version=1, entry="a",
+            nodes={
+                "a": Node(name="a", type="generate", prompt="say k", retries=1,
+                          on_fail="rescue", max_tokens=16,
+                          grammar={"type": "object",
+                                   "properties": {"k": {"enum": ["a"]}},
+                                   "required": ["k"]}),
+                "done": Node(name="done", type="end", output=["k"]),
+                "rescue": Node(name="rescue", type="end", output=[]),
+            },
+            edges=[Edge(source="a", target="done")],
+            evalset=[], manifest={}, path=None, model=None,
+        )
+        result = run(pack, model, {}, max_steps=8)
+        self.assertEqual("rescue", result.end_node)
+        self.assertEqual(2, len(calls), "the ladder should have drawn twice")
+
+
+class TheCliNeverShowsARawTracebackForAValueJsonCannotHold(unittest.TestCase):
+    """A tool may return a date; JSON may not. The user must be told, not shown a stack.
+
+    `Tool._checked` validates the KEYS a tool returns and not the value types, which is a
+    deliberate choice — a tool's values are the host's business. But the value then travels
+    to the store or to stdout, where `json` refuses it with a `TypeError`, and `cli.main`
+    named PackError, JigError, ValidationError and ValueError while omitting TypeError. So
+    a `datetime.date` in a tool's return produced a multi-frame traceback through jig
+    internals. A NaN took the ValueError branch and printed cleanly, which made the split
+    arbitrary as well as ugly. Found by audit.
+    """
+
+    def _run(self, tool):
+        import subprocess, sys, pathlib, tempfile, textwrap, os
+        root = pathlib.Path(__file__).resolve().parent.parent
+        work = pathlib.Path(tempfile.mkdtemp(prefix="jig-cli-json-"))
+        pack = work / "p"
+        (pack / "prompts").mkdir(parents=True)
+        (pack / "grammars").mkdir()
+        (pack / "fakes").mkdir()
+        (pack / "fakes" / "script.json").write_text('["{}"]')
+        (pack / "graph.yaml").write_text(textwrap.dedent("""\
+            nodes:
+              t:
+                type: tool
+                tool: %s
+              done:
+                type: end
+                output: [y]
+            edges:
+              - from: t
+                to: done
+            """ % tool))
+        (pack / "manifest.yaml").write_text(
+            "name: p\nversion: 1\nentry: t\ninputs: [x]\n")
+        (work / "tools.py").write_text(textwrap.dedent("""\
+            import datetime
+            from jig.tools import ToolRegistry
+            registry = ToolRegistry()
+
+            @registry.register("datetool", reads=["x"], writes=["y"])
+            def datetool(x):
+                return {"y": datetime.date(2026, 8, 25)}
+
+            @registry.register("nantool", reads=["x"], writes=["y"])
+            def nantool(x):
+                return {"y": float("nan")}
+            """))
+        proc = subprocess.run(
+            [sys.executable, "-m", "jig", "run", str(pack),
+             "--tools", str(work / "tools.py"),
+             "--model", "fake:fakes/script.json", "--input", '{"x": 1}'],
+            capture_output=True, text=True, cwd=str(root),
+            env=dict(os.environ, PYTHONPATH=str(root)))
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+        return proc
+
+    def test_a_date_is_a_jig_error_not_a_traceback(self):
+        proc = self._run("datetool")
+        self.assertNotIn("Traceback", proc.stdout + proc.stderr)
+        self.assertIn("jig:", proc.stderr)
+        self.assertEqual(1, proc.returncode)
+
+    def test_the_message_says_what_to_return_instead(self):
+        proc = self._run("datetool")
+        self.assertIn("JSON-shaped", proc.stderr)
+
+    def test_a_nan_never_reaches_stdout_as_json(self):
+        proc = self._run("nantool")
+        self.assertNotIn("NaN", proc.stdout)
+        self.assertEqual(1, proc.returncode)
