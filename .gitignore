@@ -9,7 +9,8 @@ venv/
 
 # packaging
 dist/
-build/
+# root-only: jig/build/ is the compiler package, not a packaging artifact
+/build/
 *.egg-info/
 
 # the private strategy doc lives outside the repo
