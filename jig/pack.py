@@ -11,6 +11,11 @@ a client's repo, and shipped as text (docs/ARCHITECTURE.md §7.2):
       grammars/<node>.json one JSON Schema per generate node
       evalset.jsonl        the contract: {"input": {...}, "expect": {...}} per line
 
+A `tool` node has no files of its own: it names a function the *host* registered
+(`jig/tools.py`), so there is nothing in the pack to read for it. Pass the registry —
+`load_pack(path, tools=registry)` — and the name it calls and the state that tool reads
+are checked here too; leave it out and the pack still loads, unchecked on that one point.
+
 Everything a run needs is validated here, at load time, so the walker never has to ask
 "does this node exist?" mid-run. Errors name the offending file and node.
 """
@@ -35,11 +40,13 @@ __all__ = [
     "Pack",
     "PackError",
     "RESERVED_STATE_NAMES",
+    "ToolWiringError",
     "UnsafePath",
+    "check_tools",
     "load_pack",
 ]
 
-NODE_TYPES = ("generate", "assert", "end")
+NODE_TYPES = ("generate", "assert", "tool", "end")
 
 # Names jig binds in a run's scope for its own purposes. `codegen.think` renders the
 # think template with a `scratchpad` of its own, so anything else that lands under that
@@ -59,7 +66,27 @@ DEFAULT_RETRIES = 2
 
 _NODE_KEYS = {
     "type", "output", "two_stage", "max_tokens", "think_max_tokens", "retries",
-    "on_fail", "expr", "assert", "prompt", "grammar", "description",
+    "on_fail", "on_unsure", "expr", "assert", "prompt", "grammar", "tool",
+    "description",
+}
+
+# Keys that belong to a generate or an assert node and mean nothing on a tool node. Each
+# is refused by name, with the reason, rather than ignored: a key that reads as if it
+# does something and does nothing is how a pack ends up meaning something other than it
+# says — and on a tool node the thing it silently does not do guards a side effect.
+_TOOL_FORBIDDEN_KEYS = {
+    "prompt": "a tool node calls a function, not a model, so there is no prompt "
+              "to render",
+    "grammar": "a tool node's contract is the tool's own `writes`, declared by the host "
+               "in its registry, not a grammar file in the pack",
+    "two_stage": "a tool node never generates, so there is no think stage to run",
+    "retries": "a re-run tool is a side effect done twice; route the failure with "
+               "`on_fail` instead of re-attempting it",
+    "max_tokens": "a tool node never generates",
+    "think_max_tokens": "a tool node never generates",
+    "assert": "`assert:` gates a *generation* before it is committed; a tool node has no "
+              "retry ladder for a rejection to spend",
+    "expr": "`expr` is the assert node's branch condition",
 }
 _EDGE_KEYS = {"from", "to", "when", "description"}
 
@@ -97,6 +124,15 @@ class EvalsetError(PackError):
     """`evalset.jsonl` has a line that is not a usable case."""
 
 
+class ToolWiringError(GraphError):
+    """A tool node is wired to state that nothing in this graph produces.
+
+    The alternative is a run that dies at step four because the tool wanted a field
+    nobody wrote — by which point the run has already done part of a job it cannot
+    finish, and part of a job with side effects in it is the worst place to stop.
+    """
+
+
 @dataclass(frozen=True)
 class Node:
     """One step of the workflow."""
@@ -112,8 +148,13 @@ class Node:
     think_max_tokens: int = DEFAULT_THINK_MAX_TOKENS
     retries: int = DEFAULT_RETRIES
     on_fail: Optional[str] = None
+    on_unsure: Optional[str] = None
     expr: Optional[str] = None
     assert_expr: Optional[str] = None
+    # The registered name a `type: tool` node calls. A pack names an action; it never
+    # contains one (see jig/tools.py) — so this is a key into the host's registry and
+    # nothing else: no import, no dotted path, no default.
+    tool: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -169,8 +210,18 @@ class Pack:
         return [edge for edge in self.edges if edge.source == node_name]
 
 
-def load_pack(path):
-    """Read the pack at `path`, validate it, and return a `Pack`."""
+def load_pack(path, tools=None):
+    """Read the pack at `path`, validate it, and return a `Pack`.
+
+    `tools` is the host's `jig.tools.ToolRegistry`, and passing it turns on the one
+    check this loader cannot do alone: that every `type: tool` node names something the
+    host actually registered, and that what each tool declares it `reads` is a field
+    this graph will have by the time the node runs. See `check_tools`.
+
+    It is optional on purpose. `jig validate` on a machine where the tools live in
+    somebody else's process must still be able to say the pack is well formed — a check
+    that cannot run is not the same as a check that failed.
+    """
     path = os.path.normpath(path)
     if not os.path.isdir(path):
         # Clipped: this argument is whatever was on the command line, and pasting a
@@ -189,6 +240,8 @@ def load_pack(path):
         raise ManifestError("manifest.yaml: 'model' must be a string, got %s"
                             % type(model).__name__)
 
+    _declared_input_names(manifest)
+
     max_steps = graph.get("max_steps", DEFAULT_MAX_STEPS)
     if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1:
         raise GraphError("graph.yaml: 'max_steps' must be a positive integer")
@@ -206,7 +259,7 @@ def load_pack(path):
     evalset = _load_evalset(path)
     _check_case_endings(evalset, nodes)
 
-    return Pack(
+    pack = Pack(
         path=path,
         name=name,
         version=version,
@@ -218,6 +271,9 @@ def load_pack(path):
         max_steps=max_steps,
         manifest=manifest,
     )
+    if tools is not None:
+        check_tools(pack, tools)
+    return pack
 
 
 # ------------------------------------------------------------------------ manifest
@@ -285,7 +341,12 @@ def _load_nodes(path, graph):
 
 
 def _build_node(path, node_name, node_type, spec):
+    tool_name = _tool_key(node_name, node_type, spec)
+
     prompt = think_prompt = grammar = None
+    # Only a generate node reads artifacts off disk. A tool node deliberately does not
+    # fall into this branch: it has no prompt and no grammar, so requiring
+    # `prompts/<node>.txt` of it would refuse a pack that is perfectly well formed.
     if node_type == "generate":
         prompt = _read_text(path, spec.get("prompt") or "prompts/%s.txt" % node_name)
         grammar_relative = spec.get("grammar") or "grammars/%s.json" % node_name
@@ -322,9 +383,59 @@ def _build_node(path, node_name, node_type, spec):
         ),
         retries=_positive_int(spec, "retries", node_name, DEFAULT_RETRIES, floor=0),
         on_fail=spec.get("on_fail"),
+        on_unsure=spec.get("on_unsure"),
         expr=spec.get("expr"),
         assert_expr=spec.get("assert"),
+        tool=tool_name,
     )
+
+
+def _tool_key(node_name, node_type, spec):
+    """Validate the `tool:` key both ways round, and return the name a tool node calls.
+
+    Both halves are load-time refusals rather than run-time surprises. A tool node
+    without a name has nothing to call, and a `tool:` on a generate node is a key the
+    walker never reads — it would sit in the pack looking like an action that is never
+    taken, which is the most expensive kind of silence a pack can hold.
+    """
+    if node_type != "tool":
+        if "tool" in spec:
+            raise GraphError(
+                "graph.yaml: node %r is type %r but carries 'tool: %s'. Only a tool node "
+                "names a tool — set 'type: tool', or drop the key."
+                % (node_name, node_type, _clip(spec.get("tool")))
+            )
+        return None
+
+    forbidden = sorted(set(spec) & set(_TOOL_FORBIDDEN_KEYS))
+    if forbidden:
+        raise GraphError(
+            "graph.yaml: tool node %r carries %s. Those keys belong to a generate or "
+            "an assert node and nothing would read them here — remove them, or make "
+            "this a node type that uses them. %s"
+            % (node_name, ", ".join("%r" % key for key in forbidden),
+               " ".join("%r: %s." % (key, _TOOL_FORBIDDEN_KEYS[key])
+                        for key in forbidden))
+        )
+
+    name = spec.get("tool")
+    if not isinstance(name, str) or not name.strip():
+        raise GraphError(
+            "graph.yaml: tool node %r needs a 'tool:' naming the registered tool it "
+            "calls (got %r). A pack names an action; the host registers it."
+            % (node_name, name)
+        )
+
+    output = spec.get("output")
+    if output is not None and (not isinstance(output, str) or not output):
+        # Same shape as a generate node's `output:`, for the same reason: it is the one
+        # state key the result is committed under. A list here would read like an end
+        # node's projection and commit under no key at all.
+        raise GraphError(
+            "graph.yaml: tool node %r: 'output' must be a single state key to commit "
+            "the tool's result under (a string), got %r" % (node_name, output)
+        )
+    return name.strip()
 
 
 def _positive_int(spec, key, node_name, default, floor=1):
@@ -424,11 +535,14 @@ def _load_edges(graph, nodes):
 
 def _check_reachable_targets(nodes, edges):
     for node in nodes.values():
-        if node.on_fail is not None and node.on_fail not in nodes:
-            raise GraphError(
-                "graph.yaml: node %r has on_fail %r, which is not a defined node"
-                % (node.name, node.on_fail)
-            )
+        # `on_fail` and `on_unsure` are both edges the walk can take without an entry in
+        # `edges:`, so both are checked here or nowhere.
+        for key, target in (("on_fail", node.on_fail), ("on_unsure", node.on_unsure)):
+            if target is not None and target not in nodes:
+                raise GraphError(
+                    "graph.yaml: node %r has %s %r, which is not a defined node"
+                    % (node.name, key, target)
+                )
         if node.type == "end":
             continue
         if not any(edge.source == node.name for edge in edges):
@@ -436,6 +550,246 @@ def _check_reachable_targets(nodes, edges):
                 "graph.yaml: node %r has no outgoing edge and is not an end node"
                 % node.name
             )
+
+
+# --------------------------------------------------------------------------- tools
+
+
+def check_tools(pack, tools):
+    """Check every `type: tool` node in `pack` against the host's registry.
+
+    Two questions, both of which have a right answer before the run starts:
+
+    * **Is the tool there?** A name the host never registered is refused here rather
+      than at the step that would have called it. `jig/tools.py` builds the allowlist
+      that way on purpose — a pack can only call what the host already handed it — and
+      an allowlist that is checked halfway through a job is not one.
+    * **Can the tool's `reads` be satisfied?** A tool is invoked with exactly the state
+      it declared it needs (`Tool.invoke`), so a field that no earlier node writes and
+      that no caller supplies is a wiring mistake with a name. Finding it at load turns
+      "the run died at step 4 because the tool wanted `order_id`" into "this pack is
+      wired wrong, here is the field".
+
+    What counts as "the graph will have it by then", at any earlier node:
+
+    | Source | The state keys it contributes |
+    | --- | --- |
+    | a node with `output:` | the one key it commits under |
+    | a generate node without one | its grammar's property names (merge mode) |
+    | a tool node without one | the registered tool's `writes` |
+    | the run's own inputs | keys an evalset case supplies, or the manifest's `inputs:` |
+
+    "Earlier" is any node the walk can reach this one from — down any branch, round any
+    loop, along any rescue path. That is deliberately generous: this check exists to
+    catch the field *nobody* writes, and reporting a field that merely *might* not be
+    written on some branch would make it the kind of check people switch off. The one
+    node it will not credit is one whose `on_fail` leads here, because a node that
+    failed committed nothing at all (`_links`).
+
+    For the same reason it stays quiet where it cannot be sure. A pack that declares no
+    inputs anywhere (no evalset, no manifest `inputs:`) says nothing about what the
+    caller passes, and an earlier node whose grammar declares no properties can write
+    anything at all; in either case an unknown field is unproven, not wrong.
+
+    Raises `jig.tools.ToolNotRegistered` for a name the registry does not hold, and
+    `ToolWiringError` for a field nothing produces.
+    """
+    tool_nodes = [node for node in pack.nodes.values() if node.type == "tool"]
+    if not tool_nodes:
+        return
+    if not (hasattr(tools, "get") and hasattr(tools, "has")):
+        # A plain dict would answer `get(name, node_name)` with the node name and sail
+        # straight past the registration check, so refuse the shape rather than trust it.
+        raise TypeError(
+            "tools must be a jig.tools.ToolRegistry (got %s)" % type(tools).__name__
+        )
+
+    # Every name first: an unregistered tool is the more basic mistake, and reporting it
+    # before a wiring complaint keeps the two from being confused for each other.
+    registered = {node.name: tools.get(node.tool, node.name) for node in tool_nodes}
+
+    declared_inputs = _declared_inputs(pack)
+    committed, lost = _links(pack)
+    live = _walk(pack.entry, _merged(committed, lost))
+    preceding, rescued_from = _reverse(committed), _reverse(lost)
+
+    for node in tool_nodes:
+        if node.name not in live:
+            # Unreachable from the entry node, so it never runs and has no "earlier"
+            # to speak of. That is a graph problem, not a tool problem.
+            continue
+        tool = registered[node.name]
+        if not tool.reads:
+            continue
+        earlier = _earlier(node.name, preceding, rescued_from) & live
+        available, complete = _available_before(pack, earlier, registered)
+        if not complete or declared_inputs is None:
+            continue
+        missing = [field for field in tool.reads
+                   if field not in available and field not in declared_inputs]
+        if missing:
+            raise ToolWiringError(
+                "graph.yaml: tool node %r calls tool %r, which reads %s — and nothing "
+                "writes %s before this node runs. Earlier nodes write: %s. The run "
+                "inputs this pack declares are: %s. Give an earlier node an 'output:' "
+                "that names the field, add it to the pack's inputs (an evalset case, or "
+                "manifest 'inputs:'), or call a tool that reads what this graph has."
+                % (node.name, tool.name, ", ".join(repr(f) for f in sorted(missing)),
+                   "it" if len(missing) == 1 else "them",
+                   ", ".join(sorted(available)) or "nothing",
+                   ", ".join(sorted(declared_inputs)) or "none")
+            )
+
+
+def _declared_inputs(pack):
+    """Every state key the caller is known to supply, or None if the pack never says.
+
+    Two sources, both of them the pack's own text: the manifest's optional `inputs:`
+    list, and the keys of each evalset case's `input` object. None — "this pack declares
+    nothing" — is not the same as an empty set, and only the empty set is evidence.
+    """
+    names = _declared_input_names(pack.manifest)
+    if names is None and not pack.evalset:
+        return None
+    declared = set(names or ())
+    for case in pack.evalset:
+        declared.update(case.input)
+    return declared
+
+
+def _declared_input_names(manifest):
+    """The manifest's optional `inputs:` list, validated.
+
+    Unknown manifest keys are kept rather than refused (docs/pack-format.md), but this
+    one is read, so a value of the wrong shape would quietly declare nothing — and the
+    whole point of declaring inputs is to be believed.
+    """
+    names = manifest.get("inputs")
+    if names is None:
+        return None
+    if not isinstance(names, list) or not all(
+        isinstance(name, str) and name for name in names
+    ):
+        raise ManifestError(
+            "manifest.yaml: 'inputs', when present, must be a list of the state key "
+            "names a caller supplies to a run, got %s" % _clip(names)
+        )
+    return list(names)
+
+
+def _links(pack):
+    """The graph's transitions, split by whether the node they leave got to commit.
+
+    Two maps, both node name -> the nodes it can move to:
+
+    * **committed** — ordinary `edges:`, and `on_unsure`. A node reached this way ran to
+      completion, so whatever it writes is in state.
+    * **lost** — `on_fail`. A node whose ladder ran out committed *nothing*: the
+      rejected output is dropped and never touches state (`graph.run`). Its fields are
+      not available to what it diverts to, though its own predecessors' fields are.
+
+    `on_unsure` sits with the first group deliberately. Being unsure about a value is not
+    the same as not having produced one, and assuming a loss here would invent wiring
+    errors in packs that route a low-confidence result onward for review.
+    """
+    committed = dict((name, set()) for name in pack.nodes)
+    lost = dict((name, set()) for name in pack.nodes)
+    for edge in pack.edges:
+        committed[edge.source].add(edge.target)
+    for node in pack.nodes.values():
+        if node.on_unsure in pack.nodes:
+            committed[node.name].add(node.on_unsure)
+        if node.on_fail in pack.nodes:
+            lost[node.name].add(node.on_fail)
+    return committed, lost
+
+
+def _merged(committed, lost):
+    return dict((name, committed[name] | lost[name]) for name in committed)
+
+
+def _reverse(following):
+    reversed_map = dict((name, set()) for name in following)
+    for name, targets in following.items():
+        for target in targets:
+            reversed_map[target].add(name)
+    return reversed_map
+
+
+def _earlier(node_name, preceding, rescued_from):
+    """Every node whose writes are in state by the time `node_name` runs.
+
+    Walked backwards from the node's predecessors, not from the node itself — so a node
+    inside a loop counts as its own ancestor (its earlier pass really did write those
+    fields) while a node outside one does not (its own writes come too late).
+
+    A node reached backwards through its `on_fail` is walked *past* rather than counted:
+    the run took that edge precisely because the node produced nothing.
+    """
+    counted, seen = set(), set()
+    queue = [(node_name, False)]
+    while queue:
+        name, writes_landed = queue.pop()
+        if (name, writes_landed) in seen:
+            continue
+        seen.add((name, writes_landed))
+        if writes_landed:
+            counted.add(name)
+        queue.extend((previous, True) for previous in preceding.get(name, ()))
+        queue.extend((previous, False) for previous in rescued_from.get(name, ()))
+    return counted
+
+
+def _walk(start, links):
+    """Everything reachable from `start` through `links`, `start` itself included."""
+    seen, queue = set(), [start]
+    while queue:
+        name = queue.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        queue.extend(links.get(name, ()))
+    return seen
+
+
+def _available_before(pack, earlier, registered):
+    """(state keys those nodes write, whether that set is the whole story)."""
+    available = set()
+    complete = True
+    for name in earlier:
+        keys, known = _node_writes(pack.nodes[name], registered)
+        available.update(keys)
+        complete = complete and known
+    return available, complete
+
+
+def _node_writes(node, registered):
+    """What one node commits into state, and whether that can be known from the pack.
+
+    A generate node with no `output:` merges its generated object into state, so its
+    state keys are its grammar's property names — unless the grammar declares no
+    properties, in which case the node may write anything and this returns "unknown"
+    rather than "nothing". Same for a tool node whose tool declares no `writes`.
+    """
+    if node.type not in ("generate", "tool"):
+        # assert and end nodes cannot write state at all (docs/graph.md, "Node types").
+        return set(), True
+    if isinstance(node.output, str) and node.output:
+        return {node.output}, True
+    if node.output:
+        # An `output:` of a shape `commit` cannot use as a state key. The CLI refuses
+        # that pack outright (`cli._check_output_shapes`); here it simply means this
+        # node's writes are not something to draw a conclusion from.
+        return set(), False
+    if node.type == "generate":
+        properties = (node.grammar or {}).get("properties")
+        if isinstance(properties, dict) and properties:
+            return set(properties), True
+        return set(), False
+    tool = registered.get(node.name)
+    if tool is not None and tool.writes:
+        return set(tool.writes), True
+    return set(), False
 
 
 # ------------------------------------------------------------------------ evalset
