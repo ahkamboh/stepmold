@@ -3,7 +3,7 @@
 `graph.yaml` is the compiled plan: a map of nodes and a list of edges. `jig.graph.run`
 walks it one node at a time, and nothing in it ever asks a model where to go. Everything
 below was checked against `jig/graph.py`, `jig/pack.py`, `jig/verify.py`, `jig/codegen.py`,
-`jig/state.py`, `jig/yamlish.py` and `jig/cli.py`.
+`jig/state.py`, `jig/tools.py`, `jig/yamlish.py` and `jig/cli.py`.
 
 **How to reproduce anything on this page.**
 
@@ -20,14 +20,15 @@ noise.
 
 ## Read this first
 
-Three things in this file look more capable than they are. They account for most of the
+Four things in this file look more capable than they are. They account for most of the
 time people lose on their first pack.
 
 | Looks like | Actually is | Section |
 | --- | --- | --- |
 | `when:` is an expression language | equality only, against a dotted state path. No `!=`, no `>`, no `not`, no expression of any kind. `when: {amount: "> 500"}` compares the literal string `"> 500"`, and `when: {answer: no}` compares `False` | [`when:`](#when--equality-and-nothing-else) |
 | `assert` means one thing | two things. `type: assert` is a **routing node**; `assert:` on a `generate` node is a **verification gate** inside the retry ladder. Different keys, different mechanics | [Node types](#node-types) |
-| `on_fail` is the catch-all | it catches exactly two failures. A node **without** `on_fail` aborts the whole run, and a backend error, a `DeadEnd`, a `StateCollision` and the step budget are never routed at all | [`on_fail`](#on_fail--what-it-catches-and-what-it-does-not) |
+| `on_fail` is the catch-all | it catches exactly two failures from a `generate` node and two more from a `tool` node. A node **without** `on_fail` aborts the whole run, and a backend error, a `DeadEnd`, a `StateCollision`, a missing registry and the step budget are never routed at all | [`on_fail`](#on_fail--what-it-catches-and-what-it-does-not) |
+| a pack can ask for the confidence gate | it cannot. The gate is real, and `verify.run_node` runs it — but `samples:` and `agree:` are not node keys (`pack._NODE_KEYS`), so a `graph.yaml` carrying them fails to load and no pack read off disk can ever be `Unsure`. `on_unsure:`, the destination, **is** a key, and today nothing can send a run down it | [Unsure](#unsure--disagreement-is-not-rejection) |
 
 And one thing that is missing rather than misleading: **there is no node type that
 computes a value.** Nothing in a graph can write `total = qty * price` into state. See
@@ -98,15 +99,18 @@ scripted stand-in (`jig/model.py`), which is what lets every example here run of
 
 1. **Count the step.** Entering any node — including the `end` node — costs one step.
 2. **Execute the node.** `generate` renders its prompt, generates, and verifies;
-   `assert` evaluates its expression; `end` projects and returns.
-3. **Commit**, for a `generate` node that produced a verified value. Nothing rejected
-   ever reaches state (`verify.run_node`).
+   `tool` calls one of the actions the host registered; `assert` evaluates its
+   expression; `end` projects and returns.
+3. **Commit**, for a `generate` node that produced a verified value or a `tool` node
+   that returned one. Nothing rejected ever reaches state (`verify.run_node`), and a
+   tool's return value lands by exactly the same rules as a generation (`graph.commit`).
 4. **Choose the next edge**, *after* the commit — so an edge sees the value the node just
    wrote (`graph._next`).
 5. Repeat until an `end` node returns a `RunResult`.
 
-Only `end` stops a run normally. There is no implicit termination: a `generate` or
-`assert` node with no matching outgoing edge raises `DeadEnd` (`graph._next`).
+Only `end` stops a run normally. There is no implicit termination: a `generate`,
+`tool` or `assert` node with no matching outgoing edge raises `DeadEnd`
+(`graph._next`).
 
 **The step budget.** `max_steps` in `graph.yaml` caps how many nodes a run may enter;
 the default is 100 (`pack.DEFAULT_MAX_STEPS`), it must be a positive integer, and
@@ -128,6 +132,11 @@ completes — but "completes" has one hole in it, and it is not the one you woul
 | `generate` committed, an edge matched | yes | the node the edge goes to |
 | `generate` committed, **no** edge matched (`DeadEnd`) | yes | the node itself — resume re-runs it |
 | `generate` took `on_fail` (spent ladder, or a prompt that would not render) | yes | the `on_fail` target |
+| `generate` was `Unsure` and took `on_unsure` — or `on_fail`, when it declares no `on_unsure` | yes | the target it was diverted to |
+| `tool` called, **before** the result is committed | yes, when the tool is not `idempotent` | **the node itself**, and the row carries the call — see [Exactly once](#exactly-once--a-tool-call-must-not-happen-twice) |
+| `tool` committed, an edge matched | yes — the same step, rewritten | the node the edge goes to, and the recorded call is cleared |
+| `tool` committed, **no** edge matched (`DeadEnd`) | only when nothing was recorded; a recorded call already has its row and it is deliberately left standing | the node itself |
+| `tool` took `on_fail` (the tool raised, or broke its own contract) | yes | the `on_fail` target |
 | `assert` routed, either way | yes | the branch it took |
 | `assert` passed but **no** edge matched (`DeadEnd`) | **no** | — nothing is written for that node |
 | `end` | yes | `None`, which is how a checkpoint says the run finished |
@@ -141,7 +150,8 @@ in `try/except DeadEnd` and checkpoints before re-raising, and the assert branch
 
 | `type` | Does | Can write state | Keys it uses |
 | --- | --- | --- | --- |
-| `generate` | renders a prompt, generates under the node's grammar, verifies, commits | yes | `output`, `retries`, `assert`, `on_fail`, `max_tokens`, `two_stage`, `think_max_tokens`, `prompt`, `grammar` |
+| `generate` | renders a prompt, generates under the node's grammar, verifies, commits | yes | `output`, `retries`, `assert`, `on_fail`, `on_unsure`, `max_tokens`, `two_stage`, `think_max_tokens`, `prompt`, `grammar` |
+| `tool` | calls one action the host registered and commits what it returns | yes | `tool` (required), `output`, `on_fail` |
 | `assert` | evaluates `expr` against state and routes | **no** | `expr` (required), `on_fail` |
 | `end` | projects `output` out of state and returns | no | `output` (a **list** of state keys) |
 
@@ -266,6 +276,227 @@ Two more things that surprise people:
   assert-node divert (`eval` reads `run_result.failures`).
 * An assert node with **no** `on_fail` whose expression is false raises `AssertFailed`
   and kills the run.
+
+### tool
+
+Calls one action the host registered and commits what it returns. It is the only node
+that can change anything outside the run, and the only one that produces state without
+spending a generation.
+
+**A pack never contains an action. It names one.** The functions live on the host's
+side, in a `ToolRegistry` the caller passes per run; the node holds a key into it and
+nothing else — no import, no dotted path, and deliberately no manifest key, so a pack
+you did not write can only reach what you already handed it (`jig/tools.py`). At the
+command line that is `--tools`, on `run` and `eval` only (`cli._add_tools_option`).
+
+```bash
+mkdir -p notify/prompts notify/grammars notify/fakes
+
+cat > notify/graph.yaml <<'EOF'
+nodes:
+  draft:
+    type: generate
+
+  send:
+    type: tool
+    tool: send_email
+    on_fail: apologise
+
+  apologise:
+    type: end
+    output: [subject]
+
+  done:
+    type: end
+    output: [subject, receipt]
+
+edges:
+  - from: draft
+    to: send
+  - from: send
+    to: done
+EOF
+
+cat > notify/manifest.yaml <<'EOF'
+name: notify
+version: 1
+entry: draft
+model: fake:fakes/script.json
+inputs: [to, incident]
+EOF
+
+cat > notify/prompts/draft.txt <<'EOF'
+Write a one-line subject for an alert about this incident, lowercase.
+
+Incident: {incident}
+EOF
+
+cat > notify/grammars/draft.json <<'EOF'
+{
+  "type": "object",
+  "properties": {"subject": {"type": "string"}},
+  "required": ["subject"],
+  "additionalProperties": false
+}
+EOF
+
+cat > notify/fakes/script.json <<'EOF'
+["{\"subject\": \"disk full on db-3\"}"]
+EOF
+
+cat > notify/evalset.jsonl <<'EOF'
+{"name": "alerts ops", "input": {"to": "ops@example.com", "incident": "db-3 disk at 100%"}, "expect": {"subject": "disk full on db-3"}, "end": "done"}
+EOF
+```
+
+The action itself is the host's file, next to the pack rather than inside it. This one
+appends to `/tmp/outbox.txt`, which is the side effect every transcript below counts:
+
+```python
+# mailer.py
+"""The host's side: the actions this machine is willing to let a pack take."""
+from jig.tools import ToolRegistry
+
+OUTBOX = "/tmp/outbox.txt"
+registry = ToolRegistry()
+
+
+@registry.register("send_email", reads=["to", "subject"], writes=["receipt"])
+def send_email(to, subject):
+    """Append one line to the outbox and hand back a receipt."""
+    with open(OUTBOX, "a") as outbox:
+        outbox.write("%s\t%s\n" % (to, subject))
+    with open(OUTBOX) as outbox:
+        return {"receipt": "message %d" % len(outbox.readlines())}
+```
+
+```
+$ python3 -m jig validate notify
+notify v1: 4 nodes, 2 edges, 1 evalset case, entry 'draft'
+
+$ python3 -m jig run notify --tools ./mailer.py --input '{"to": "ops@example.com", "incident": "db-3 disk at 100%"}'
+{"receipt": "message 1", "subject": "disk full on db-3"}
+
+$ cat /tmp/outbox.txt
+ops@example.com	disk full on db-3
+```
+
+What the walker did, in order:
+
+| Step | What happens | Where |
+| --- | --- | --- |
+| the tool is looked up | by the node's `tool:` key. No registry at all raises `ToolsNotAvailable`; a name the host never registered raises `ToolNotRegistered` | `graph._tool_for` |
+| its arguments are built | `{key: state[key] for key in tool.reads}` — exactly the state the tool declared it reads, and nothing else | `tools.Tool.invoke` |
+| it is called | once, with those as keyword arguments. A key the tool declared and state does not have is a `ToolContract`, not a dropped argument | `tools.Tool.invoke` |
+| what it returned is checked | a dict, or `None` read as `{}`. With `writes:` declared, exactly those keys — a missing one and an extra one are both refused | `tools.Tool._checked` |
+| the value is committed | merge mode, or nested under `output:`; `provenance` records the node, and `StateCollision` still refuses a run input | `graph.commit` |
+| the edge is chosen | after the commit, exactly as for a `generate` node | `graph._next` |
+
+**No prompt, no grammar, no retry ladder.** A tool is deterministic — same state in, same
+call out — so a re-sample of one is just the same call again, and the loader refuses the
+keys that would imply otherwise rather than ignoring them (`pack._TOOL_FORBIDDEN_KEYS`):
+
+| Key on a tool node | The loader's reason |
+| --- | --- |
+| `prompt` | a tool node calls a function, not a model, so there is no prompt to render |
+| `grammar` | a tool node's contract is the tool's own `writes`, declared by the host in its registry, not a grammar file in the pack |
+| `two_stage`, `max_tokens`, `think_max_tokens` | a tool node never generates |
+| `retries` | a re-run tool is a side effect done twice; route the failure with `on_fail` instead of re-attempting it |
+| `assert` | `assert:` gates a *generation* before it is committed; a tool node has no retry ladder for a rejection to spend |
+| `expr` | `expr` is the assert node's branch condition |
+
+```
+$ python3 -m jig validate notify
+jig: pack error: graph.yaml: tool node 'send' carries 'retries'. Those keys belong to a generate or an assert node and nothing would read them here — remove them, or make this a node type that uses them. 'retries': a re-run tool is a side effect done twice; route the failure with `on_fail` instead of re-attempting it.
+
+$ python3 -m jig validate notify
+jig: pack error: graph.yaml: node 'draft' is type 'generate' but carries 'tool: send_email'. Only a tool node names a tool — set 'type: tool', or drop the key.
+```
+
+Committing, nesting and looping are the `generate` node's rules unchanged:
+
+```python
+# probe_tool_commit.py — what a tool node commits, and what happens to a tool in a loop.
+from jig.graph import run
+from jig.pack import Edge, Node, Pack
+from jig.tools import ToolRegistry
+
+calls = []
+registry = ToolRegistry()
+
+
+@registry.register("tick", reads=["job"], writes=["count"])
+def tick(job):
+    calls.append(job)
+    return {"count": len(calls)}
+
+
+loop = Pack(path=".", name="loop", version=1, entry="bump", model=None,
+            nodes={"bump": Node(name="bump", type="tool", tool="tick"),
+                   "gate": Node(name="gate", type="assert", expr="count < 3",
+                                on_fail="z"),
+                   "z": Node(name="z", type="end")},
+            edges=[Edge("bump", "gate"), Edge("gate", "bump")])
+result = run(loop, None, {"job": "sweep"}, tools=registry)
+print("in a loop: the tool ran %d times, state %s, path %s"
+      % (len(calls), result.state, result.path))
+
+nested = Pack(path=".", name="nested", version=1, entry="a", model=None,
+              nodes={"a": Node(name="a", type="tool", tool="tick", output="delivery"),
+                     "z": Node(name="z", type="end")},
+              edges=[Edge("a", "z")])
+result = run(nested, None, {"job": "one"}, tools=registry)
+print("output: delivery -> state %s, provenance %s"
+      % (result.state, result.provenance))
+print("generations spent by a tool node:", result.attempts)
+```
+
+```
+$ python3 probe_tool_commit.py
+in a loop: the tool ran 3 times, state {'job': 'sweep', 'count': 3}, path ['bump', 'gate', 'bump', 'gate', 'bump', 'gate', 'z']
+output: delivery -> state {'job': 'one', 'delivery': {'count': 4}}, provenance {'delivery': 'a'}
+generations spent by a tool node: {}
+```
+
+* **`output:` nests, absence merges** — `{"count": 4}` committed under `output: delivery`
+  is `state["delivery"]`, exactly as a generation would be.
+* **A tool inside a loop calls every time round.** The record that stops a *resumed* run
+  calling twice is cleared the moment the node is left, so the next visit finds nothing
+  and calls again (`graph.run`, the `pending_calls[:]` line). That is what a tool in a
+  loop is for.
+* **`RunResult.attempts` stays empty.** A tool node spends no generations, and `node.ok`
+  logs `attempts=0` rather than omitting the field.
+
+Three limits worth knowing before you wire a real action to a pack:
+
+* **`jig validate` checks nothing about tools.** It takes no `--tools` flag
+  (`cli._add_tools_option` adds it to `run` and `eval` only), and `pack.check_tools` is
+  skipped when no registry is passed — so `validate` reports a clean pack whose tool
+  names are all wrong. The `validate` line in the first transcript above passed on a
+  pack whose tool names it never looked at.
+* **A missing registry is discovered at the node, not at the start.** By then the run has
+  already spent whatever the earlier nodes cost:
+
+```
+$ python3 -m jig run notify --log-level info --input '{"to": "ops@example.com", "incident": "db-3 disk at 100%"}'
+11:42:47.010 INFO  jig.graph run.start run_id=5b3604f061ec4a55bd4d7288e11aa7c2 pack=notify version=1 entry=draft resumed=false max_steps=100 inputs=incident,to
+11:42:47.010 INFO  jig.graph node.ok run_id=5b3604f061ec4a55bd4d7288e11aa7c2 node=draft type=generate attempts=1 output=merge duration_ms=0.1
+11:42:47.010 ERROR jig.graph run.error run_id=5b3604f061ec4a55bd4d7288e11aa7c2 pack=notify node=send step=2 error=ToolsNotAvailable reason="node 'send' is a tool node, and this run was given no tools: this pack needs tools; pass tools= to run()" duration_ms=0.5
+jig: ToolsNotAvailable: node 'send' is a tool node, and this run was given no tools: this pack needs tools; pass tools= to run()
+(exit status 1)
+```
+
+* **`jig eval` really calls the tools.** An evalset is not a dry run: every case that
+  reaches a tool node performs the side effect for real. The outbox below is the eval's
+  own doing, not the run's:
+
+```
+$ python3 -m jig eval notify --tools ./mailer.py
+notify: 1/1 cases passed
+
+$ cat /tmp/outbox.txt
+ops@example.com	disk full on db-3
+```
 
 ### end
 
@@ -885,6 +1116,10 @@ rejects one pointing at an undefined node.
 | generate: retry ladder spent (bad JSON, schema violation, failed `assert:`) | divert; `Failure(attempts=N)` recorded | **`NodeFailed` — run aborts** |
 | generate: prompt names state nobody wrote (`MissingVariable`) | divert; `Failure(attempts=0)` — no generation is spent, the ladder is skipped | **`MissingVariable` — run aborts** |
 | generate: backend answered 200 with no text (`EmptyCompletion`) | divert after the ladder — it is treated as a rejection and spends a rung | `NodeFailed` — run aborts |
+| generate: independent draws disagreed (`Unsure`) | divert — to `on_unsure` first, when the node declares one | **`Unsure` — run aborts** ([Unsure](#unsure--disagreement-is-not-rejection)) |
+| tool node: the tool's own code raised (`ToolFailed`) | divert; `Failure(attempts=0)` — a tool spends no generations | **`ToolFailed` — run aborts** |
+| tool node: the tool broke its own declaration (`ToolContract`) | divert; `Failure(attempts=0)` | **`ToolContract` — run aborts** |
+| tool node: the tool is not registered, or the run was given no registry | **not caught** — run aborts | run aborts |
 | assert node: `expr` is false | divert; **no `Failure` recorded** | **`AssertFailed` — run aborts** |
 | assert node: `expr` cannot be evaluated (`ExprError`) | divert; **no `Failure` recorded** | **`ExprError` — run aborts** (not `AssertFailed`: the expression was unanswerable, not false) |
 | backend unreachable / 500 (`BackendError`) | **not caught** — run aborts | run aborts |
@@ -1001,6 +1236,294 @@ Notes that matter when you rely on this:
 * Nothing about *why* a node failed reaches the target node's state. `RunResult.failures`
   and the checkpoint hold the reason (for the operator); the graph does not.
 * `on_fail` on an `end` node loads and is inert — an `end` node cannot fail.
+
+### A tool node's failures take the same edge
+
+Everything that stops a node producing an output takes the node's `on_fail`, and a tool
+node is not an exception: a database that is down and a spent retry ladder are the same
+fact to the graph. Two of a tool node's failures are routed and two are not, and the
+split is deliberate.
+
+```python
+# probe_tool_fail.py — how a tool node's own failures are routed.
+# The packs are built in memory so one script can vary one thing at a time.
+from jig.errors import RunError
+from jig.graph import run
+from jig.pack import Edge, Node, Pack
+from jig.tools import ToolRegistry
+
+MISSING = {}                 # a run whose inputs are empty, distinct from "the default"
+
+
+def pack_of(node):
+    nodes = {node.name: node,
+             "rescue": Node(name="rescue", type="end"),
+             "z": Node(name="z", type="end")}
+    return Pack(path=".", name="probe", version=1, entry=node.name, model=None,
+                nodes=nodes, edges=[Edge(source=node.name, target="z")])
+
+
+def tool_node(on_fail=None, calls="act"):
+    return Node(name="a", type="tool", tool=calls, on_fail=on_fail)
+
+
+def raising():
+    """A tool whose own code blows up."""
+    registry = ToolRegistry()
+
+    @registry.register("act", reads=["order_id"], writes=["total"])
+    def act(order_id):
+        raise RuntimeError("the database is down")
+
+    return registry
+
+
+def returning(value, writes=("total",)):
+    """A tool that returns `value`, having declared it writes `writes`."""
+    registry = ToolRegistry()
+
+    @registry.register("act", reads=["order_id"], writes=list(writes))
+    def act(order_id):
+        return value
+
+    return registry
+
+
+def show(label, node, tools, inputs=None):
+    try:
+        result = run(pack_of(node), None,
+                     {"order_id": 7} if inputs is None else inputs, tools=tools)
+    except RunError as exc:
+        print("%-30s -> %s: %s" % (label, type(exc).__name__, exc))
+    else:
+        print("%-30s -> ended at %r, failures %s"
+              % (label, result.end_node, result.failures or "none"))
+
+
+show("tool raised, on_fail", tool_node("rescue"), raising())
+show("tool raised, no on_fail", tool_node(), raising())
+show("undeclared key, on_fail", tool_node("rescue"), returning({"total": 1, "vat": 0}))
+show("nothing to read, on_fail", tool_node("rescue"), returning({"total": 1}), MISSING)
+show("not a dict, on_fail", tool_node("rescue"), returning(12))
+show("unregistered name, on_fail", tool_node("rescue", calls="ghost"),
+     returning({"total": 1}))
+show("no registry at all, on_fail", tool_node("rescue"), None)
+show("happy path", tool_node("rescue"), returning({"total": 12}))
+```
+
+```
+$ python3 probe_tool_fail.py
+tool raised, on_fail           -> ended at 'rescue', failures [Failure(node='a', reason="tool 'act' on node 'a' failed: RuntimeError: the database is down", attempts=0)]
+tool raised, no on_fail        -> ToolFailed: tool 'act' on node 'a' failed: RuntimeError: the database is down
+undeclared key, on_fail        -> ended at 'rescue', failures [Failure(node='a', reason="tool 'act' on node 'a' returned undeclared key(s) vat. A tool's `writes` is the contract the graph is built around — widen it deliberately rather than by accident.", attempts=0)]
+nothing to read, on_fail       -> ended at 'rescue', failures [Failure(node='a', reason="tool 'act' on node 'a' needs order_id, which state does not have (it has: nothing)", attempts=0)]
+not a dict, on_fail            -> ended at 'rescue', failures [Failure(node='a', reason="tool 'act' on node 'a' returned int; a tool must return a dict of the state it writes, or None for nothing", attempts=0)]
+unregistered name, on_fail     -> ToolNotRegistered: no tool named 'ghost' on node 'a'. A pack can only call what the host registered (available: act). Register it before the run, or remove the node.
+no registry at all, on_fail    -> ToolsNotAvailable: node 'a' is a tool node, and this run was given no tools: this pack needs tools; pass tools= to run()
+happy path                     -> ended at 'z', failures none
+```
+
+| Failure | Raised by | With `on_fail` | Without |
+| --- | --- | --- | --- |
+| the tool's own code raised (`ToolFailed`) | `tools.Tool.invoke` | divert; `Failure(attempts=0)` | run aborts |
+| the tool broke its own declaration — missing read, wrong type, undeclared key (`ToolContract`) | `tools.Tool.invoke`, `Tool._checked` | divert; `Failure(attempts=0)` | run aborts |
+| the pack names a tool the host never registered (`ToolNotRegistered`) | `graph._tool_for` | **not caught** — run aborts | run aborts |
+| this run was given no registry at all (`ToolsNotAvailable`) | `graph._tool_for` | **not caught** — run aborts | run aborts |
+
+The two that escape `on_fail` are the two that are facts about the *caller*, not about
+this run: a pack naming an action the host never allowed, and a host that started a pack
+it cannot let act. Diverting either would finish the workflow with its acting half
+missing, which is the one outcome a rescue path must not produce (`jig/graph.py`,
+`ToolsNotAvailable`).
+
+Two details the transcript is the evidence for:
+
+* **`attempts=0`, always.** A tool spends no generations, so a diverted tool node
+  records the honest zero — the same zero an unrenderable prompt records, and for the
+  same reason.
+* **A `ToolFailed`'s message is not the log's message.** `Failure.reason` holds the
+  host function's own exception text; the default-level `node.failed` line carries only
+  `tool 'x' raised RuntimeError (detail at DEBUG)`, because a tool raises about the
+  thing it was given and that is the caller's data (`graph._safe_reason`).
+
+## Unsure — disagreement is not rejection
+
+A node may be drawn more than once and have its answers compared: `samples:` draws, and
+`agree:` of them must match before the answer is accepted (`verify.gate_for`,
+`verify.run_node`). When no group of matching draws reaches the threshold, the node does
+not fail — it is **unsure**, and that is a different claim.
+
+| | Rejected | Unsure |
+| --- | --- | --- |
+| What happened | the output was invalid — bad JSON, schema violation, a failed `assert:` | every output was *valid* and the model was not consistent |
+| What fixes it | another rung of the ladder | nothing a re-sample can do |
+| Where it goes | the ladder, then `on_fail` | `on_unsure`, then `on_fail` |
+| The exception | `NodeFailed` | `Unsure` — a `RunError`, **not** a subclass of `NodeFailed`, so `except NodeFailed` does not catch it |
+
+The walker catches `Unsure` ahead of `NodeFailed` on purpose, and routes it by a ladder
+of its own (`jig/graph.py`, the generate branch):
+
+| The node declares | Where an unsure answer goes | Log line |
+| --- | --- | --- |
+| `on_unsure: desk` | `desk`, whether or not `on_fail` is also set | `edge.on_unsure` |
+| only `on_fail: rescue` | `rescue` — somewhere declared beats nowhere | `edge.on_fail` |
+| neither | nothing is committed and the run aborts with `Unsure` | `run.error` |
+
+```python
+# probe_unsure.py — where a node goes when its draws disagree.
+# `samples`/`agree` are not graph.yaml keys yet (jig/pack.py `_NODE_KEYS`), so the node
+# is built here with the fields `verify.gate_for` reads. Everything else is the real
+# runtime: real draws, real verification, real routing.
+import dataclasses
+import sys
+
+from jig import log
+from jig.errors import RunError
+from jig.graph import run
+from jig.model import FakeModel
+from jig.pack import Edge, Node, Pack
+
+log.configure(level="info", stream=sys.stdout)
+
+GRAMMAR = {
+    "type": "object",
+    "properties": {"priority": {"type": "string"}},
+    "required": ["priority"],
+    "additionalProperties": False,
+}
+
+
+@dataclasses.dataclass(frozen=True)
+class GatedNode(Node):
+    """A generate node carrying the gate's two keys."""
+
+    samples: int = 1
+    agree: int = 0
+
+
+def pack_of(node):
+    nodes = {node.name: node,
+             "done": Node(name="done", type="end"),
+             "desk": Node(name="desk", type="end"),
+             "rescue": Node(name="rescue", type="end")}
+    return Pack(path=".", name="probe", version=1, entry=node.name, model=None,
+                nodes=nodes, edges=[Edge(source=node.name, target="done")])
+
+
+def classify(**kwargs):
+    return GatedNode(name="classify", type="generate", prompt="Classify: {ticket}",
+                     grammar=GRAMMAR, samples=3, agree=2, **kwargs)
+
+
+def show(label, node, script):
+    model = FakeModel(script)
+    print("\n--- %s" % label)
+    try:
+        result = run(pack_of(node), model, {"ticket": "the card was charged twice"},
+                     run_id=label.replace(", ", "/").replace(" ", "_"))
+    except RunError as exc:
+        print("%-26s -> %s: %s" % (label, type(exc).__name__, exc))
+    else:
+        print("%-26s -> ended at %-8r generations=%d state=%s failures=%s"
+              % (label, result.end_node, model.call_count, result.state,
+                 result.failures or "none"))
+
+
+THREE_WAYS = ['{"priority": "p0"}', '{"priority": "p1"}', '{"priority": "p2"}']
+TWO_AGREE = ['{"priority": "p1"}', '{"priority": "p1"}', '{"priority": "p2"}']
+
+show("agreed, on_unsure", classify(on_unsure="desk"), TWO_AGREE)
+show("disagreed, on_unsure", classify(on_unsure="desk", on_fail="rescue"), THREE_WAYS)
+show("disagreed, only on_fail", classify(on_fail="rescue"), THREE_WAYS)
+show("disagreed, neither", classify(), THREE_WAYS)
+```
+
+```
+$ python3 probe_unsure.py
+
+--- agreed, on_unsure
+11:42:47.181 INFO  jig.graph run.start run_id=agreed/on_unsure pack=probe version=1 entry=classify resumed=false max_steps=100 inputs=ticket
+11:42:47.182 WARNING jig.verify node.samples.blind node=classify samples=3 model=FakeModel reason="backend takes no sampling hint, so extra draws repeat the first"
+11:42:47.182 INFO  jig.verify node.agreed node=classify agreed=2 of=2 required=2 asked=3 generations=2
+11:42:47.182 INFO  jig.graph node.ok run_id=agreed/on_unsure node=classify type=generate attempts=2 output=merge duration_ms=0.3
+11:42:47.182 INFO  jig.graph run.end run_id=agreed/on_unsure pack=probe end_node=done steps=2 generations=2 failures=0 output_keys=2 output_bytes=58 duration_ms=0.7
+agreed, on_unsure          -> ended at 'done'   generations=2 state={'ticket': 'the card was charged twice', 'priority': 'p1'} failures=none
+
+--- disagreed, on_unsure
+11:42:47.182 INFO  jig.graph run.start run_id=disagreed/on_unsure pack=probe version=1 entry=classify resumed=false max_steps=100 inputs=ticket
+11:42:47.182 WARNING jig.verify node.samples.blind node=classify samples=3 model=FakeModel reason="backend takes no sampling hint, so extra draws repeat the first"
+11:42:47.182 WARNING jig.verify node.unsure node=classify agreed=1 of=3 required=2 asked=3 distinct=3 generations=3
+11:42:47.182 WARNING jig.graph node.failed run_id=disagreed/on_unsure node=classify type=generate attempts=3 error=Unsure reason="node 'classify' is unsure: 1 of 3 draws agreed and 2 had to; 3 generation(s) spent" on_fail=rescue duration_ms=0.1
+11:42:47.182 INFO  jig.graph edge.on_unsure run_id=disagreed/on_unsure node=classify to=desk
+11:42:47.182 INFO  jig.graph run.end run_id=disagreed/on_unsure pack=probe end_node=desk steps=2 generations=3 failures=1 output_keys=1 output_bytes=40 duration_ms=0.2
+disagreed, on_unsure       -> ended at 'desk'   generations=3 state={'ticket': 'the card was charged twice'} failures=[Failure(node='classify', reason="node 'classify' is unsure: 1 of 3 draws agreed and 2 had to; 3 generation(s) spent", attempts=3)]
+
+--- disagreed, only on_fail
+11:42:47.182 INFO  jig.graph run.start run_id=disagreed/only_on_fail pack=probe version=1 entry=classify resumed=false max_steps=100 inputs=ticket
+11:42:47.182 WARNING jig.verify node.samples.blind node=classify samples=3 model=FakeModel reason="backend takes no sampling hint, so extra draws repeat the first"
+11:42:47.182 WARNING jig.verify node.unsure node=classify agreed=1 of=3 required=2 asked=3 distinct=3 generations=3
+11:42:47.182 WARNING jig.graph node.failed run_id=disagreed/only_on_fail node=classify type=generate attempts=3 error=Unsure reason="node 'classify' is unsure: 1 of 3 draws agreed and 2 had to; 3 generation(s) spent" on_fail=rescue duration_ms=0.1
+11:42:47.182 INFO  jig.graph edge.on_fail run_id=disagreed/only_on_fail node=classify to=rescue
+11:42:47.182 INFO  jig.graph run.end run_id=disagreed/only_on_fail pack=probe end_node=rescue steps=2 generations=3 failures=1 output_keys=1 output_bytes=40 duration_ms=0.2
+disagreed, only on_fail    -> ended at 'rescue' generations=3 state={'ticket': 'the card was charged twice'} failures=[Failure(node='classify', reason="node 'classify' is unsure: 1 of 3 draws agreed and 2 had to; 3 generation(s) spent", attempts=3)]
+
+--- disagreed, neither
+11:42:47.182 INFO  jig.graph run.start run_id=disagreed/neither pack=probe version=1 entry=classify resumed=false max_steps=100 inputs=ticket
+11:42:47.182 WARNING jig.verify node.samples.blind node=classify samples=3 model=FakeModel reason="backend takes no sampling hint, so extra draws repeat the first"
+11:42:47.182 WARNING jig.verify node.unsure node=classify agreed=1 of=3 required=2 asked=3 distinct=3 generations=3
+11:42:47.182 WARNING jig.graph node.failed run_id=disagreed/neither node=classify type=generate attempts=3 error=Unsure reason="node 'classify' is unsure: 1 of 3 draws agreed and 2 had to; 3 generation(s) spent" on_fail=- duration_ms=0.1
+11:42:47.182 ERROR jig.graph run.error run_id=disagreed/neither pack=probe node=classify step=1 error=Unsure reason="node 'classify' is unsure: 1 of 3 draws agreed and 2 had to; 3 generation(s) spent" duration_ms=0.1
+disagreed, neither         -> Unsure: node 'classify' is unsure: 1 of 3 draws agreed and 2 had to; 3 generation(s) spent
+```
+
+Read the transcript for four things it says quietly:
+
+* **The gate is not free, and it stops early.** `agreed, on_unsure` asked for three draws
+  and spent two: the first two matched, and no third draw could change that
+  (`node.agreed ... agreed=2 of=2 asked=3 generations=2`). A disagreeing node pays for
+  all three.
+* **Nothing the unsure node produced reaches state.** `priority` is absent from the state
+  of every diverted run. `Unsure.value` carries the answer that came closest, and the
+  walker drops it — a caller who decides an unsure answer is good enough for a person to
+  look at has to commit it deliberately.
+* **The divert *is* recorded in `RunResult.failures`**, unlike an assert-node divert, with
+  `attempts` set to the generations the draws cost. Its `reason` is the whole `str(exc)`
+  — counts and node names only, no model output, which is why `Unsure` is safe at any log
+  level whole (`verify.Unsure`, `graph._failure`).
+* **`node.failed` prints `on_fail=rescue` even when the run went to `desk`.** The line is
+  logged before the routing decision and reports the node's `on_fail` key; the `edge.*`
+  line on the next row is what says where the run actually went.
+
+**The gate's own keys are not pack keys yet.** This is the limit that matters most on
+this page: `on_unsure:` is a `graph.yaml` key, validated like any other edge target
+(`pack._check_reachable_targets`), but `samples:` and `agree:` are not in
+`pack._NODE_KEYS` and are not fields on `pack.Node`. `verify.gate_for` reads them with
+`getattr`, so a node loaded from disk always answers "one draw, one answer" —
+
+```
+$ python3 -m jig validate notify
+jig: pack error: graph.yaml: node 'draft' has unknown key(s): agree, samples
+```
+
+— and the probe above builds its node in memory precisely because a pack cannot. Until
+those two keys land, `on_unsure:` in a pack on disk is an edge nothing can take.
+
+Three smaller limits, all of them things the code does not do rather than does badly:
+
+* **`Consensus` never leaves the log.** `verify.run_node` will fill a caller's dict with
+  the counts (`asked`, `drawn`, `agreed`, `required`, `generations`, `distinct`), but
+  `graph.run` does not pass one — there is no `consensus=` in the walker and no field for
+  it on `RunResult`. The `node.agreed` and `node.unsure` log lines are the only place
+  those numbers are reported.
+* **`on_unsure` on any other node type is inert.** The loader accepts it on a `tool` or
+  `assert` node — it is checked as a reachable target and never read again, because only
+  the generate branch of `graph.run` looks at it.
+* **A backend that cannot vary its sampling makes the gate lie**, and jig says so at
+  WARNING: `node.samples.blind`. Identical requests produce identical answers, the draws
+  "agree", and the pack reports a confidence nobody measured. `FakeModel` is exactly such
+  a backend — its `generate` takes no `sampling` keyword — which is why that warning is
+  on every run in the transcript above. The draws differ there only because the script
+  hands back a different answer each call.
 
 ## State
 
@@ -1419,7 +1942,398 @@ Other things worth knowing before you rely on a store:
 | `--resume` without `--store` | refused: `--resume needs --store: checkpoints live in the store` |
 | resuming under a different pack | refused with `CheckpointMismatch` — the checkpoint records the pack name and version (`state._check_same_pack`) |
 | resuming an id the store never saw | `UnknownRun` |
+| resuming a pack with `tool` nodes, without `--tools` | `ToolsNotAvailable` at the tool node. The registry is per call, so a resume needs it exactly as the first attempt did (`state.resume` passes `tools=` through) |
 | retention | nothing is deleted on jig's own initiative; `Store.prune` and `Store.vacuum` are the operator's tools |
+
+## Exactly once — a tool call must not happen twice
+
+A generation can be thrown away. A sent email cannot. A tool call is the one thing in a
+run that retrying cannot undo, so it is the one thing the walker writes down before it
+does anything else with it.
+
+**Why replaying state is not enough.** Resume restores the state of the last checkpoint
+and continues from its `next_node`, and for a `generate` node that is the whole story: if
+the node's output is in state, the node ran; if it is not, running it again costs a
+generation and nothing else. A tool call breaks that reasoning in the one place it
+matters. State records what a call *returned*; nothing in it records that the call
+*happened*. A resumed run standing on a tool node with no `receipt` in state cannot tell
+"the mail was never sent" from "the mail was sent and the process died before the commit
+landed" — and those two need opposite actions.
+
+So the call itself is recorded, in the checkpoint, next to the state:
+
+| Field | What it holds | Why it is there |
+| --- | --- | --- |
+| `node` | the node that made the call | what a resumed run matches against (`graph._recorded_call`) |
+| `tool` | the registered name it called | named in the mismatch error, and in the log |
+| `args` | the exact arguments the tool was handed | a result is only ever the answer to the question it was asked (`graph._replay_call`) |
+| `result` | what the tool returned | what a resumed run commits *instead of* calling |
+
+It reaches the store as `tool_calls`, a JSON column on the checkpoint row
+(`state.Store.save`), and a resumed run reads it back into the walk (`graph.run`,
+`pending_calls`).
+
+### When it is written, and the window that is left open
+
+Read the order carefully, because the guarantee is exactly as strong as this sequence and
+no stronger (`jig/graph.py`, the `tool` branch):
+
+| # | What the walker does |
+| --- | --- |
+| 1 | builds the arguments from state |
+| 2 | **calls the tool** |
+| 3 | appends `{node, tool, args, result}` to the pending list |
+| 4 | checkpoints, with `next_node` still **this node** — the walk has not left it |
+| 5 | commits the result to state |
+| 6 | chooses the outgoing edge |
+| 7 | clears the record and checkpoints again, now with `next_node` pointing at the edge's target |
+
+**The record is written after the call returns, not before it.** That is not an oversight
+to be documented politely — it is the shape of the promise, and it means jig makes a
+narrower guarantee than "exactly once" unqualified:
+
+> A call that was **written down** is never made twice. A call that was **not** written
+> down may be made twice.
+
+Everything from step 4 onwards is protected: the commit can fail, the edge can dangle,
+the machine can lose power, and the resumed run finds the record and replays it. Steps 2
+and 3 are not: a process that dies *inside* the tool, or after the tool returned but
+before the checkpoint landed, leaves nothing on disk saying the call happened, and the
+resumed run calls again. jig cannot record a call it never saw return, and it does not
+pretend to — there is no pre-call intent record, no two-phase commit, and no
+deduplication key handed to the tool. A tool whose second execution would be
+catastrophic needs its own idempotency key on the host side; jig closes the window from
+step 4, not from step 1.
+
+**When it is cleared.** Step 7, the moment an edge out of the node is taken. From there
+the committed state is the record that the call happened, and resume will never re-enter
+the node. That is also why a tool inside a loop calls every time round.
+
+**It is a lock, not an audit log.** The row is rewritten at the same step, so a run that
+finished normally carries no trace of its calls at all:
+
+```python
+# probe_rows.py — a store's whole audit trail, tool calls included.
+import sys
+
+from jig.state import Store
+
+store = Store(sys.argv[1])
+for checkpoint in store.history(sys.argv[2]):
+    print("step=%d node=%-6s next_node=%-8r tool_calls=%s"
+          % (checkpoint.step, checkpoint.node, checkpoint.next_node,
+             checkpoint.tool_calls))
+store.close()
+```
+
+```
+$ python3 -m jig run notify --store /tmp/rows.db --run-id ok --tools ./mailer.py --input '{"to": "ops@example.com", "incident": "db-3 disk at 100%"}'
+{"receipt": "message 1", "subject": "disk full on db-3"}
+
+$ python3 probe_rows.py /tmp/rows.db ok
+step=1 node=draft  next_node='send'   tool_calls=[]
+step=2 node=send   next_node='done'   tool_calls=[]
+step=3 node=done   next_node=None     tool_calls=[]
+```
+
+The `tool_calls` column is empty on every row of a healthy run. It is only ever
+non-empty on the last row of a run that stopped between steps 4 and 7.
+
+### The worked example: run it, kill it, resume it
+
+The `notify` pack from [tool](#tool), a real store, and a child process that is killed
+the instant the call is written down.
+
+```python
+# probe_kill.py — kill a run in the window a tool call lives in, and read what the
+# crash left on disk. The dying leg is a real child process ending in os._exit.
+import os
+import subprocess
+import sys
+
+from jig.graph import run
+from jig.model import FakeModel
+from jig.pack import load_pack
+from jig.state import Store
+
+import mailer
+
+DB = "/tmp/notify.db"
+INPUTS = {"to": "ops@example.com", "incident": "db-3 disk at 100%"}
+
+
+class Guillotine(Store):
+    """A real store that kills the process the moment a tool call is written down."""
+
+    def save(self, **kwargs):
+        Store.save(self, **kwargs)
+        if kwargs.get("tool_calls"):
+            print("killed at node %r, next_node=%r"
+                  % (kwargs["node"], kwargs["next_node"]), flush=True)
+            os._exit(9)          # no unwinding, no cleanup: as close to SIGKILL as it gets
+
+
+if len(sys.argv) > 1:                                    # the child: crash on purpose
+    run(load_pack("notify", tools=mailer.registry),
+        FakeModel(['{"subject": "disk full on db-3"}']), INPUTS,
+        run_id="alert1", store=Guillotine(DB), tools=mailer.registry)
+    raise SystemExit("the child was supposed to die")
+
+for path in (mailer.OUTBOX, DB):
+    if os.path.exists(path):
+        os.remove(path)
+child = subprocess.run([sys.executable, __file__, "child"])
+print("child exit status:", child.returncode)
+print("outbox:", open(mailer.OUTBOX).read().strip())
+store = Store(DB)
+for checkpoint in store.history("alert1"):
+    print("step=%d node=%-6s next_node=%-8r state=%s\n    tool_calls=%s"
+          % (checkpoint.step, checkpoint.node, checkpoint.next_node,
+             sorted(checkpoint.state), checkpoint.tool_calls))
+store.close()
+```
+
+```
+$ python3 probe_kill.py
+killed at node 'send', next_node='send'
+child exit status: 9
+outbox: ops@example.com	disk full on db-3
+step=1 node=draft  next_node='send'   state=['incident', 'subject', 'to']
+    tool_calls=[]
+step=2 node=send   next_node='send'   state=['incident', 'subject', 'to']
+    tool_calls=[{'args': {'subject': 'disk full on db-3', 'to': 'ops@example.com'}, 'node': 'send', 'result': {'receipt': 'message 1'}, 'tool': 'send_email'}]
+```
+
+Three facts in that output:
+
+* The child died at `send` with `next_node='send'` — pointing at itself, because the walk
+  had not left the node.
+* The mail was sent: one line in the outbox.
+* The step-2 checkpoint's state holds `incident`, `subject` and `to` and **not**
+  `receipt`. The record was written before the commit, so the crash caught the run in
+  the state where the call had happened and its result had not landed. This is the exact
+  case that state alone cannot describe.
+
+Now resume it with the ordinary CLI — same pack, same store, same registry:
+
+```
+$ python3 -m jig run notify --store /tmp/notify.db --resume alert1 --tools ./mailer.py --log-level info
+11:42:58.792 INFO  jig.state resume.start run_id=alert1 pack=notify from_step=2 next_node=send
+11:42:58.793 INFO  jig.state lease.taken run_id=alert1 store=/tmp/notify.db seconds=300.0
+11:42:58.793 INFO  jig.graph run.start run_id=alert1 pack=notify version=1 entry=send resumed=true max_steps=100 inputs=incident,subject,to
+11:42:58.793 INFO  jig.graph run.resumed run_id=alert1 pack=notify from_step=2 next_node=send done=2 failures=0
+11:42:58.794 INFO  jig.graph node.ok run_id=alert1 node=send type=tool attempts=0 tool=send_email replayed=true output=merge duration_ms=0.0
+11:42:58.794 INFO  jig.graph run.end run_id=alert1 pack=notify end_node=done steps=4 generations=1 failures=0 output_keys=2 output_bytes=56 duration_ms=0.9
+11:42:58.795 INFO  jig.state lease.released run_id=alert1 store=/tmp/notify.db
+{"receipt": "message 1", "subject": "disk full on db-3"}
+
+$ cat /tmp/outbox.txt
+ops@example.com	disk full on db-3
+```
+
+| Line | What it tells you |
+| --- | --- |
+| `entry=send` | the resume point is the checkpoint's `next_node`, which the crash left pointing at the tool node |
+| `node.ok ... tool=send_email replayed=true` | the tool was **not** called. `replayed` is the field to grep for |
+| `attempts=0` | as ever for a tool node — and the `generations=1` on `run.end` is the draft node's, restored from the checkpoint |
+| the outbox, unchanged | one line, and the receipt in the output is `message 1`, the recorded result rather than a fresh one |
+
+### What turns the promise off
+
+Four ways a second call gets through, three of them things a host chooses. The driver
+below crashes the same pack at the same instant under four different hosts:
+
+```python
+# probe_exactly_once.py — kill a run in the window a tool call lives in, resume it, and
+# count the side effects. Four hosts, one kill, one pack.
+#
+#   recorded    the ordinary tool, in a store that can hold the record
+#   idempotent  the same tool declared idempotent=True, so nothing is recorded
+#   old-store   the ordinary tool, in a store whose save() predates `tool_calls`
+#   mid-call    the ordinary tool, killed inside itself: after the send, before the return
+#
+# The crashing leg runs in a real child process that ends in os._exit, so nothing is
+# unwound and nothing is flushed on the way out.
+import os
+import subprocess
+import sys
+
+from jig import log
+from jig.graph import run
+from jig.model import FakeModel
+from jig.pack import load_pack
+from jig.state import Store, resume
+from jig.tools import ToolRegistry
+
+OUTBOX = "/tmp/probe_outbox.txt"
+DB = "/tmp/probe_notify.db"
+MODES = ("recorded", "idempotent", "old-store", "mid-call")
+INPUTS = {"to": "ops@example.com", "incident": "db-3 disk at 100%"}
+
+
+def registry_for(mode, killing=False):
+    """The host's side. `killing` is true only in the leg that must crash."""
+    registry = ToolRegistry()
+
+    @registry.register("send_email", reads=["to", "subject"], writes=["receipt"],
+                       idempotent=(mode == "idempotent"))
+    def send_email(to, subject):
+        with open(OUTBOX, "a") as outbox:
+            outbox.write("%s\t%s\n" % (to, subject))
+        if killing and mode == "mid-call":
+            os._exit(9)                 # the send happened; the return never did
+        return {"receipt": "message %d" % len(open(OUTBOX).readlines())}
+
+    return registry
+
+
+class DocStore(Store):
+    """A real store, killed the instant the walk tries to leave the tool node."""
+
+    def __init__(self, path, killing=False):
+        Store.__init__(self, path)
+        self.killing = killing
+
+    def save(self, run_id, step, node, next_node, state, path, provenance, failures,
+             output=None, pack=None, attempts=None, tool_calls=None):
+        if self.killing and node == "send" and next_node == "done":
+            os._exit(9)
+        return Store.save(self, run_id=run_id, step=step, node=node,
+                          next_node=next_node, state=state, path=path,
+                          provenance=provenance, failures=failures, output=output,
+                          pack=pack, attempts=attempts, tool_calls=tool_calls)
+
+
+class OldStore(DocStore):
+    """The same store, written before the walker had a tool call to record.
+
+    `graph._store_records_tool_calls` reads the signature, so dropping the keyword is
+    all it takes to be one.
+    """
+
+    def save(self, run_id, step, node, next_node, state, path, provenance, failures,
+             output=None, pack=None, attempts=None):
+        return DocStore.save(self, run_id=run_id, step=step, node=node,
+                             next_node=next_node, state=state, path=path,
+                             provenance=provenance, failures=failures, output=output,
+                             pack=pack, attempts=attempts)
+
+
+def store_for(mode, killing=False):
+    kind = OldStore if mode == "old-store" else DocStore
+    return kind(DB, killing=killing)
+
+
+def model():
+    return FakeModel(['{"subject": "disk full on db-3"}'])
+
+
+log.configure(level="warning", stream=sys.stdout)
+
+if len(sys.argv) > 1:                                       # the child: crash on purpose
+    mode = sys.argv[1]
+    tools = registry_for(mode, killing=True)
+    run(load_pack("notify", tools=tools), model(), INPUTS,
+        run_id=mode, store=store_for(mode, killing=True), tools=tools)
+    raise SystemExit("the child was supposed to die")
+
+print("%-11s %-9s %-9s %s" % ("mode", "crash", "resume", "receipt"), flush=True)
+for mode in MODES:
+    for path in (OUTBOX, DB):
+        if os.path.exists(path):
+            os.remove(path)
+    subprocess.run([sys.executable, __file__, mode])
+    sent_before = len(open(OUTBOX).readlines())
+    tools = registry_for(mode)
+    store = store_for(mode)
+    result = resume(load_pack("notify", tools=tools), model(), mode, store, tools=tools)
+    store.close()
+    print("%-11s %-9s %-9s %s"
+          % (mode, "%d sent" % sent_before,
+             "%d sent" % len(open(OUTBOX).readlines()), result.output["receipt"]),
+          flush=True)
+```
+
+```
+$ python3 probe_exactly_once.py
+mode        crash     resume    receipt
+recorded    1 sent    1 sent    message 1
+idempotent  1 sent    2 sent    message 2
+11:42:47.693 WARNING jig.graph tool.unrecorded run_id=old-store node=send tool=send_email store=OldStore reason="store.save takes no tool_calls, so a resumed run cannot know this call already happened"
+11:42:47.697 WARNING jig.graph tool.unrecorded run_id=old-store node=send tool=send_email store=OldStore reason="store.save takes no tool_calls, so a resumed run cannot know this call already happened"
+old-store   1 sent    2 sent    message 2
+mid-call    1 sent    2 sent    message 2
+```
+
+| Mode | Sends | Why |
+| --- | --- | --- |
+| `recorded` | 1 | the record was on disk before the crash, so the resume replayed it |
+| `idempotent` | 2 | `idempotent=True` skips the bookkeeping entirely — nothing is recorded, so the resumed run calls again |
+| `old-store` | 2 | the store's `save` takes no `tool_calls`, so the record had nowhere to go |
+| `mid-call` | 2 | the process died inside the tool, before the record could be written — the open window |
+
+And a fifth, which is not in the table because there is nothing to resume: **a run with no
+`store` keeps no record at all.** That is legal and unremarkable — no store means no
+resume means no repeat — but it also means the exactly-once machinery needs `store` *and*
+`tools` together to do anything (`graph.run`).
+
+**`idempotent=True` is a promise the author makes, not a hint.** It says: calling this
+tool twice with the same arguments has the same effect as calling it once. jig takes it
+literally — it skips the record, and a resumed run calls the tool again. It is not "this
+tool is fast", "this tool is probably safe" or "this tool mostly reads". A `PUT` to a
+fixed key qualifies; an `INSERT`, a payment and an email do not.
+
+**A store that cannot hold the record says so, once per run.** Losing a diagnostic to an
+old store is a shrug; losing this is a promise broken, so the walker logs
+`tool.unrecorded` at WARNING rather than degrading in silence
+(`graph._store_records_tool_calls`) — the two lines in the transcript above, one from the
+crashing process and one from the resume. It still does not refuse the run: a host that
+brought its own store has chosen this.
+
+### When the record and the run come apart
+
+A replayed result is only the answer to the arguments it was computed from, so the walker
+compares them before committing it. They cannot differ on a faithful resume — the state
+and the record came out of the same row — so a difference means something outside jig has
+moved. Neither choice left is safe, and the run stops instead of choosing:
+
+```python
+# probe_mismatch.py — resuming a recorded call into state that would ask a different
+# question. The checkpoint is edited by hand, which is the only way to get here: on a
+# faithful resume the state and the record came out of the same row.
+import dataclasses
+
+from jig.graph import run
+from jig.model import FakeModel
+from jig.pack import load_pack
+from jig.state import Store
+
+import mailer
+
+store = Store("/tmp/notify.db")
+checkpoint = store.latest("alert1")
+print("recorded call:", checkpoint.tool_calls)
+tampered = dataclasses.replace(
+    checkpoint, state=dict(checkpoint.state, to="someone-else@example.com"))
+try:
+    run(load_pack("notify", tools=mailer.registry), FakeModel(['{"subject": "x"}']),
+        run_id="alert1", store=None, resume_from=tampered, tools=mailer.registry)
+except Exception as exc:
+    print("%s: %s" % (type(exc).__name__, exc))
+store.close()
+```
+
+```
+$ python3 probe_mismatch.py
+recorded call: [{'args': {'subject': 'disk full on db-3', 'to': 'ops@example.com'}, 'node': 'send', 'result': {'receipt': 'message 1'}, 'tool': 'send_email'}]
+ToolReplayMismatch: run resumed into node 'send' holding a call to 'send_email' that already happened, but state no longer matches the arguments it was made with (to differ). The recorded result answers a question this run is no longer asking, and calling again would repeat a side effect that already took place — so the run stops instead of choosing between them. Read the run's checkpoints before resuming it again.
+```
+
+The comparison is canonical JSON, not `==`, for the reason `state._dict_delta` gives:
+`True == 1` in Python, and two argument sets a tool would treat as different must not
+compare equal (`graph._canonical`). The error names *which* argument moved and never what
+it moved to — an argument's value is the caller's data, and it is already in the
+checkpoint where it is allowed to be (`graph._moved_args`).
 
 ## Worked example
 
@@ -1657,10 +2571,12 @@ support_triage: 12/12 cases passed
 
 | Key | Types | Default | Meaning |
 | --- | --- | --- | --- |
-| `type` | all | — | `generate` \| `assert` \| `end`, required |
-| `output` | generate | none (merge mode) | one state key (a string) to commit the object under |
+| `type` | all | — | `generate` \| `tool` \| `assert` \| `end`, required |
+| `output` | generate, tool | none (merge mode) | one state key (a string) to commit the object under |
 | `output` | end | none (whole state) | **list** of state keys to project, matched flat — a dot is part of the name, not a path |
-| `on_fail` | generate, assert | none → abort | node to divert to (accepted on an `end` node, where it is inert) |
+| `on_fail` | generate, tool, assert | none → abort | node to divert to (accepted on an `end` node, where it is inert) |
+| `on_unsure` | generate | none → falls back to `on_fail` | node to divert to when independent draws disagree. Accepted on any node type; only the generate branch reads it |
+| `tool` | tool | — | required; the registered name this node calls. Refused on any other node type |
 | `expr` | assert | — | required; the routing expression |
 | `assert` | generate | none | verification expression, checked before commit |
 | `retries` | generate | 2 | re-samples after the first attempt (must be an integer >= 0) |
@@ -1670,6 +2586,12 @@ support_triage: 12/12 cases passed
 | `prompt` | generate | `prompts/<node>.txt` | emit template path, inside the pack |
 | `grammar` | generate | `grammars/<node>.json` | schema path, inside the pack |
 | `description` | all | — | documentation, ignored at run time |
+
+There is no key here for the confidence gate. `samples:` and `agree:` are read by
+`verify.gate_for` but are not in `pack._NODE_KEYS`, so a `graph.yaml` carrying either
+fails to load; see [Unsure](#unsure--disagreement-is-not-rejection). And a tool node
+refuses `prompt`, `grammar`, `two_stage`, `retries`, `max_tokens`, `think_max_tokens`,
+`assert` and `expr` by name, each with its reason (`pack._TOOL_FORBIDDEN_KEYS`).
 
 **The think template has no key of its own.** `two_stage: true` turns the stage on;
 which text it renders is decided by the filesystem (`pack._build_node`):
@@ -1694,10 +2616,16 @@ nodes), `when` (a mapping or absent), `description`.
 (positive int, default 100).
 
 **Checked at load** (`pack.load_pack`): unknown node/edge keys; unknown node type; an
-`assert` node with no `expr`; `output: scratchpad`; a `from`/`to`/`on_fail` naming an
-undefined node; an outgoing edge from an `end` node; a non-`end` node with **no** outgoing
+`assert` node with no `expr`; a `tool` node with no `tool:`, or carrying a generate-only
+key; a `tool:` key on a node that is not a tool node; `output: scratchpad`; a
+`from`/`to`/`on_fail`/`on_unsure` naming an undefined node; an outgoing edge from an `end` node; a non-`end` node with **no** outgoing
 edge; `entry` not in `nodes`; every `end:` in `evalset.jsonl` naming a real `end` node.
 Unreachable nodes are **not** flagged.
+
+**Checked only when a registry is passed** (`pack.check_tools`, from
+`load_pack(path, tools=registry)`): that every tool node names a registered tool, and
+that everything the tool declares it `reads` is written by some earlier node or declared
+as a run input. `jig validate` has no `--tools` flag, so it never runs either check.
 
 **Checked by the CLI only** (`cli._check_output_shapes`, run by `validate`, `run` and
 `eval`): `output` written in the other node type's shape. Library callers do not get
@@ -1717,6 +2645,12 @@ strings.
 | `ExprError` | `jig.expr` | an expression is unsupported or names something absent |
 | `StateCollision` | `graph.commit` | a node's commit would overwrite a run input |
 | `BackendError` | the backend | the model could not be reached; never routed to `on_fail` |
+| `Unsure` | `verify.run_node` | a node's independent draws disagreed and it declares neither `on_unsure` nor `on_fail`. A `RunError`, **not** a `NodeFailed` |
+| `ToolsNotAvailable` | `graph._tool_for` | the walk reached a `tool` node and the run was given no registry; never routed to `on_fail` |
+| `ToolNotRegistered` | `tools.ToolRegistry.get` | the pack names a tool the host did not register — at load when `tools=` was passed, otherwise at the node; never routed to `on_fail` |
+| `ToolFailed` | `tools.Tool.invoke` | the tool's own code raised; routed to `on_fail` |
+| `ToolContract` | `tools.Tool.invoke` | the tool was missing one of its declared `reads`, or returned something its `writes` did not describe; routed to `on_fail` |
+| `ToolReplayMismatch` | `graph._replay_call` | a run resumed into a recorded call whose arguments no longer match state ([Exactly once](#exactly-once--a-tool-call-must-not-happen-twice)) |
 | `RunIdInUse` | `graph.run`, `state.Store.save` | a fresh run reused a run id that already has checkpoints |
 | `CheckpointMismatch`, `UnknownRun`, `ResumeInProgress`, `StoreBusy` | `jig.state` | resume-time and store-level failures ([Checkpoints](#checkpoints-resume-and-replay)) |
 
@@ -1728,7 +2662,7 @@ are not unique across runs unless a store is enforcing them. The store raises it
 `RunIdInUse` (different wording) when two runs race for the same id at their first
 checkpoint (`state.Store._claim`).
 
-All of these subclass `RunError` (`jig/errors.py`, plus `graph.StateCollision` and the
-`jig.state` ones). Every one raised *during* the walk is logged as `run.error` on its way
+All of these subclass `RunError` (`jig/errors.py`, plus `graph.StateCollision`, the
+`jig.tools` and `graph` tool errors, and the `jig.state` ones). Every one raised *during* the walk is logged as `run.error` on its way
 out; `graph.run`'s `RunIdInUse` check happens before the walk starts, so it is logged as
 nothing at all — the run has not even printed `run.start`.
