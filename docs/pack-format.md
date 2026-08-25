@@ -21,11 +21,17 @@ exist?" mid-run.
 | --- | --- | --- |
 | `manifest.yaml` | yes | `MissingArtifactError: manifest.yaml: required file is missing` |
 | `graph.yaml` | yes | same, for `graph.yaml` |
-| `prompts/<node>.txt` | yes, for every `generate` node | `MissingArtifactError` at load |
-| `grammars/<node>.json` | yes, for every `generate` node | `MissingArtifactError` at load |
+| `prompts/<node>.txt` | yes, for every `generate` node — **never** for a `tool` node | `MissingArtifactError` at load |
+| `grammars/<node>.json` | yes, for every `generate` node — **never** for a `tool` node | `MissingArtifactError` at load |
 | `prompts/<node>.think.txt` | no | the think stage falls back to the emit prompt plus a suffix (see [Two-stage](#two-stage-nodes)) |
 | `evalset.jsonl` | no | `pack.evalset` is `[]`; `jig eval` refuses to run |
 | everything else | no | nothing — jig reads only the files above |
+
+A `tool` node adds no file to that listing at all. It names a function the **host**
+registered, so there is nothing in the pack to read for it, and `jig/pack.py:_build_node`
+resolves `prompts/` and `grammars/` only under `if node_type == "generate"`. A pack whose
+only non-`end` node is a tool node has no `prompts/` directory and loads clean — see
+[`tool`](#tool).
 
 Directory names are not configurable. `prompts/` and `grammars/` are where jig looks by
 default; a `generate` node can point somewhere else with `prompt:` / `grammar:`, but only
@@ -58,6 +64,10 @@ support_triage: 12/12 cases passed
 
 Read one of those when you want a shape bigger than two nodes; read `/tmp/hello` when you
 want to know which single key caused which single line of output.
+
+None of the six uses a `tool` node, and none uses `on_unsure:`. For those, the worked
+packs are the ones this document builds: [`/tmp/hello-tool`](#tool) and
+[`/tmp/hello-gate`](#the-confidence-gate-samples-agree-on_unsure).
 
 Outputs are the exact bytes of the run, with one exception: log lines carry a wall-clock
 timestamp, a random `run_id`, and a measured `duration_ms`, so those three fields differ
@@ -185,7 +195,7 @@ The smallest thing that loads and runs is smaller than this: `manifest.yaml` wit
 and `entry:`, `graph.yaml` with one generate node and one end node, and the generate
 node's two artifact files. The model then comes from `--model` instead of the manifest.
 
-## Five things that are not what they look like
+## Seven things that are not what they look like
 
 Read these before you write a graph. Each is expanded in its own section.
 
@@ -193,9 +203,11 @@ Read these before you write a graph. Each is expanded in its own section.
 | --- | --- |
 | `when:` is an expression language | **Equality only.** `when: {risk: "> 5"}` compares the state value against the literal string `"> 5"`. No operators, no comparisons. [details](#when-is-equality-and-nothing-else) |
 | `assert` is one feature | **Two features with one word.** `assert:` on a `generate` node is a verify-before-commit check that burns retries. A node of `type: assert` uses `expr:` and only routes. Writing the wrong key is accepted and silently ignored. [details](#assert-means-two-different-things) |
-| `output:` means the same everywhere | **Three behaviours.** String on `generate` = nest. Omitted on `generate` = merge into state. List on `end` = project. A string on an `end` node is refused by the CLI. [details](#the-output-key) |
+| `output:` means the same everywhere | **Three behaviours.** String on `generate` or `tool` = nest. Omitted = merge into state. List on `end` = project. A string on an `end` node is refused by the CLI; a list on a `tool` node is refused at load. [details](#the-output-key) |
 | grammars are JSON Schema | **Eight keywords, and eight is all.** `minLength`, `pattern`, `minimum`, `oneOf`, `$ref`, `format`, `default` — all refused at load, not ignored. [details](#the-grammar-subset) |
 | `prompt: shared/x.txt` moves the whole node | The think template is **always** looked up at `prompts/<node>.think.txt`, never next to the overridden prompt. [details](#two-stage-nodes) |
+| a `tool` node needs `prompts/<node>.txt` and `grammars/<node>.json` like every other node | **It needs neither, and refuses both keys.** A tool node ships no files; `prompt:` and `grammar:` on one are load-time errors, not overrides. [details](#tool) |
+| `samples:` / `agree:` turn on the confidence gate in a pack | **`graph.yaml` does not accept those two keys.** The gate is implemented and tested in `jig/verify.py`; the pack format has no door to it yet, and a pack that writes them is refused at load. [details](#the-confidence-gate-samples-agree-on_unsure) |
 
 And one that is not about the format but bites just as hard: `two_stage:` is the one node
 key jig does **not** shape-check, so `two_stage: "no"` turns the node two-stage and
@@ -203,7 +215,9 @@ doubles its model calls. [details](#the-one-key-that-is-not-shape-checked)
 
 ## The CLI
 
-Three subcommands. `jig/cli.py:build_parser` is the whole surface.
+Three subcommands read a pack, and this document covers those three.
+`jig/cli.py:build_parser` is the whole surface; the fourth, `jig build`, *writes* a pack
+and is documented in `docs/building.md`.
 
 | Command | What it does | Exit 1 when |
 | --- | --- | --- |
@@ -218,6 +232,7 @@ Three subcommands. `jig/cli.py:build_parser` is the whole surface.
 | `--allow-pack-model` | `run` **only** | off | Accept a network endpoint chosen by the pack's own manifest. `eval` does not take it, though its own error message says to pass it — see [below](#a-manifest-openai-endpoint-needs-a-cli-flag). |
 | `--state` | `run` | off | Print the whole final state instead of the end node's projection. |
 | `--run-id <name>` | `run` | generated | Name this run (used in logs and checkpoints). |
+| `--tools <module[:attr]>` | `run`, `eval` | none | Python module or `./path.py` holding the `ToolRegistry` this pack's `tool` nodes may call. Looked up as `registry` or `REGISTRY` unless `:attr` names it. **Not on `validate`.** [details](#tool) |
 | `--store <file>` | `run` | none | SQLite file to checkpoint into after every completed node. |
 | `--resume <run-id>` | `run` | none | Continue a previous run instead of starting over. Needs `--store`. |
 | `--json` | `eval` | off | Emit the report as one JSON object instead of the text report. |
@@ -255,6 +270,7 @@ A mapping. Read by `jig/pack.py:load_pack`.
 | `entry` | string | **yes** | — | Name of the node the run starts at. Must exist in `graph.yaml`. May be any node type, including an `end` node (the run then terminates immediately). |
 | `version` | any | no | `1` | **Not type-checked.** `version: 1`, `version: "2.1.0"`, `version: 3.5` all load. Recorded in checkpoints, so `state.resume` can refuse a run whose pack moved on. |
 | `model` | string or absent | no | `None` | A model spec string, below. Must be a string if present. |
+| `inputs` | list of non-empty strings | no | `None` | The state keys a caller supplies to a run. **Read and shape-checked** even though nothing else in the manifest is: it is one of the two sources the [tool wiring check](#tool) counts as "the run will have this field". A value of any other shape is a `ManifestError`. It does *not* constrain what `--input` may pass. |
 | anything else | any | no | — | **Unknown keys are kept, not refused.** They land in `pack.manifest`. Every example pack uses a `description:` this way. |
 
 Note the asymmetry: `graph.yaml` refuses unknown keys on nodes and edges, `manifest.yaml`
@@ -280,6 +296,26 @@ $ python3 -c "from jig.pack import load_pack; print(load_pack('/tmp/v-manifest')
 A float version loads, and `owner:` — a key jig has never heard of — is carried through
 to `pack.manifest` untouched. A typo in a manifest key is therefore not an error; it is a
 key nothing reads.
+
+`inputs:` is the one exception in the other direction — an optional key that *is* read, so
+its shape is enforced whether or not the pack has tool nodes:
+
+```
+$ cp -r /tmp/hello /tmp/v-inputs
+$ cat > /tmp/v-inputs/manifest.yaml <<'EOF'
+name: hello
+version: 1
+entry: classify
+model: fake:fakes/script.json
+inputs: message
+EOF
+$ python3 -m jig validate /tmp/v-inputs
+jig: pack error: manifest.yaml: 'inputs', when present, must be a list of the state key names a caller supplies to a run, got message
+```
+
+Written as `inputs: [message]` it loads. Nothing at run time checks a caller against that
+list — `jig/pack.py:_declared_inputs` is its only reader, and it is read to decide whether
+a tool node's `reads` can be satisfied ([below](#tool)).
 
 ### Model spec strings
 
@@ -357,7 +393,7 @@ the message's advice gets you argparse, not a run:
 
 ```
 $ python3 -m jig eval /tmp/hello-net --allow-pack-model
-usage: jig [-h] [--version] {validate,run,eval} ...
+usage: jig [-h] [--version] {validate,run,build,eval} ...
 jig: error: unrecognized arguments: --allow-pack-model
 ```
 
@@ -387,29 +423,42 @@ raises `MaxStepsExceeded` naming the node it stopped on.
 
 Every key jig accepts on a node. Anything else is a load-time error.
 
-| Key | Type | Default | `generate` | `assert` | `end` |
-| --- | --- | --- | --- | --- | --- |
-| `type` | `generate` \| `assert` \| `end` | — (**required**) | used | used | used |
-| `output` | string | — | commit key ([details](#the-output-key)) | ignored | refused by the CLI |
-| `output` | list of strings | — | refused by the CLI | ignored | projection ([details](#the-output-key)) |
-| `prompt` | string path | `prompts/<node>.txt` | used | **never read, never resolved** | **never read, never resolved** |
-| `grammar` | string path | `grammars/<node>.json` | used | **never read, never resolved** | **never read, never resolved** |
-| `assert` | expression string | — | verify-before-commit check | **accepted and ignored** | **accepted and ignored** |
-| `expr` | expression string | — | **accepted and ignored** | **required** — the routing test | **accepted and ignored** |
-| `on_fail` | node name | — | edge taken when the ladder is spent | edge taken when `expr` is false or unevaluable | accepted, unreachable |
-| `two_stage` | anything | `false` | think → emit, if truthy ([not shape-checked](#the-one-key-that-is-not-shape-checked)) | ignored | ignored |
-| `max_tokens` | integer ≥ 1 | `512` | emit budget | shape-checked, then ignored | shape-checked, then ignored |
-| `think_max_tokens` | integer ≥ 1 | `256` | think budget | shape-checked, then ignored | shape-checked, then ignored |
-| `retries` | integer ≥ 0 | `2` | re-samples **after** the first attempt, so the default buys 3 generations | shape-checked, then ignored | shape-checked, then ignored |
-| `description` | string | — | free text, never read by jig | same | same |
+| Key | Type | Default | `generate` | `tool` | `assert` | `end` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `type` | `generate` \| `tool` \| `assert` \| `end` | — (**required**) | used | used | used | used |
+| `tool` | string | — | **refused at load** | **required** — the registered name to call | **refused at load** | **refused at load** |
+| `output` | string | — | commit key ([details](#the-output-key)) | commit key — same three behaviours | ignored | refused by the CLI |
+| `output` | list of strings | — | refused by the CLI | **refused at load** | ignored | projection ([details](#the-output-key)) |
+| `prompt` | string path | `prompts/<node>.txt` | used | **refused at load** | **never read, never resolved** | **never read, never resolved** |
+| `grammar` | string path | `grammars/<node>.json` | used | **refused at load** | **never read, never resolved** | **never read, never resolved** |
+| `assert` | expression string | — | verify-before-commit check | **refused at load** | **accepted and ignored** | **accepted and ignored** |
+| `expr` | expression string | — | **accepted and ignored** | **refused at load** | **required** — the routing test | **accepted and ignored** |
+| `on_fail` | node name | — | edge taken when the ladder is spent | edge taken when the tool raises or breaks its contract | edge taken when `expr` is false or unevaluable | accepted, unreachable |
+| `on_unsure` | node name | — | edge taken when the [gate](#the-confidence-gate-samples-agree-on_unsure) says unsure — **unreachable today** | accepted, unreachable (a tool never goes unsure) | accepted, unreachable | accepted, unreachable |
+| `two_stage` | anything | `false` | think → emit, if truthy ([not shape-checked](#the-one-key-that-is-not-shape-checked)) | **refused at load** | ignored | ignored |
+| `max_tokens` | integer ≥ 1 | `512` | emit budget | **refused at load** | shape-checked, then ignored | shape-checked, then ignored |
+| `think_max_tokens` | integer ≥ 1 | `256` | think budget | **refused at load** | shape-checked, then ignored | shape-checked, then ignored |
+| `retries` | integer ≥ 0 | `2` | re-samples **after** the first attempt, so the default buys 3 generations | **refused at load** | shape-checked, then ignored | shape-checked, then ignored |
+| `description` | string | — | free text, never read by jig | same | same | same |
 
-`jig/pack.py:_build_node` builds one `Node` dataclass for all three types and the walker
+There is no `samples:` or `agree:` row because `graph.yaml` does not accept those keys —
+see [the confidence gate](#the-confidence-gate-samples-agree-on_unsure), which is the one
+place in this document where a shipped runtime feature has no pack syntax.
+
+`jig/pack.py:_build_node` builds one `Node` dataclass for all four types and the walker
 reads only the fields its branch needs, so "ignored" is literal. For the three numeric
 keys the shape is still enforced on every node type — an assert node carrying
 `max_tokens: 0` is refused even though nothing would ever read it. The exceptions are
 `two_stage`, which is coerced rather than checked, and `prompt:` / `grammar:`, which
 `_build_node` only resolves under `if node_type == "generate"` — see
 [the containment rule](#the-containment-rule) for why that last one matters.
+
+The `tool` column is the one that refuses rather than ignores, and that asymmetry is
+deliberate (`jig/pack.py:_TOOL_FORBIDDEN_KEYS`): everywhere else a key on the wrong node
+type is dead text, but on a tool node the thing it silently would not do guards a side
+effect. `retries: 1` accepted-and-ignored on a tool node would read as "this call is
+retried" beside a function that sends money. Every one of those keys is named in the error
+with the reason it cannot be there — [the `tool` section](#tool) has the whole table.
 
 A bad node is named, with its key, at load. One worked example:
 
@@ -436,10 +485,13 @@ Each row is the whole node, and the message is what `python3 -m jig validate` th
 | `classify` node | Message |
 | --- | --- |
 | `type: generate` + `temperature: 0.7` | `graph.yaml: node 'classify' has unknown key(s): temperature` |
-| `type: transform` | `graph.yaml: node 'classify' has unknown type 'transform' (expected one of generate, assert, end)` |
+| `type: generate` + `samples: 3` + `agree: 2` | `graph.yaml: node 'classify' has unknown key(s): agree, samples` |
+| `type: transform` | `graph.yaml: node 'classify' has unknown type 'transform' (expected one of generate, assert, tool, end)` |
 | `type: generate` + `max_tokens: 0` | `graph.yaml: node 'classify': 'max_tokens' must be an integer >= 1` |
 | `type: generate` + `retries: -1` | `graph.yaml: node 'classify': 'retries' must be an integer >= 0` |
 | `type: generate` + `on_fail: human` | `graph.yaml: node 'classify' has on_fail 'human', which is not a defined node` |
+| `type: generate` + `on_unsure: desk` | `graph.yaml: node 'classify' has on_unsure 'desk', which is not a defined node` |
+| `type: generate` + `tool: file_ticket` | `graph.yaml: node 'classify' is type 'generate' but carries 'tool: file_ticket'. Only a tool node names a tool — set 'type: tool', or drop the key.` |
 
 (The CLI prefixes each with `jig: pack error: ` and exits 1.) `on_fail` must name a node
 that exists (`_check_reachable_targets`), and may point at any node type, including
@@ -658,6 +710,403 @@ once per `retries` with a temperature bump and the rejection as feedback → on 
 take `on_fail`, or raise `NodeFailed` if none is declared. A rejected generation is never
 shown to the model again and never touches state.
 
+### The confidence gate: `samples`, `agree`, `on_unsure`
+
+A generate node can ask to be drawn more than once and have the answers compared: accept
+when enough of them match, and route the node somewhere else when they do not. It is the
+second of jig's two usable confidence signals, and the reasoning is in `jig/verify.py`'s
+docstring — a number a model *says* about its own answer is generated after the answer is
+already on the page, so the ranking is a deterministic `assert` first (a fact), agreement
+across independent draws second, and anything the model claims about itself never.
+
+**Read this before the rest of the section: `graph.yaml` does not accept `samples:` or
+`agree:`.** The gate is implemented, tested and reachable from Python; the pack format has
+no key for it. A pack that writes them is refused at load, as any unknown key is:
+
+```
+$ cp -r /tmp/hello /tmp/v-gate
+$ cat > /tmp/v-gate/graph.yaml <<'EOF'
+nodes:
+  classify:
+    type: generate
+    samples: 3
+    agree: 2
+  done:
+    type: end
+    output: [kind]
+edges:
+  - from: classify
+    to: done
+EOF
+$ python3 -m jig validate /tmp/v-gate
+jig: pack error: graph.yaml: node 'classify' has unknown key(s): agree, samples
+```
+
+`jig/pack.py:_NODE_KEYS` is the accepted-key list and neither name is in it; the `Node`
+dataclass has no field for either. `jig/verify.py:gate_for` reads them with `getattr`, so
+a node object that carries them works — which is how the runtime shipped ahead of the
+format, and how `tests/test_verify.py` drives it. The third key, `on_unsure:`, **is**
+accepted by the loader and validated like `on_fail:`; it is simply unreachable from a
+pack today, because nothing in a pack can make a node unsure.
+
+Everything below is therefore documented against `jig/verify.py` and demonstrated through
+Python rather than through `graph.yaml`. It is the behaviour you get the day the two keys
+land, and the behaviour a host calling `jig.verify.run_node` gets now.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `samples` | integer ≥ 1 | `1` | How many independent verified answers to draw and compare. `1` is every pack written so far — one draw, committed, no comparison and none of the bookkeeping paid for. |
+| `agree` | integer ≥ 2 (when `samples` > 1) | a strict majority of `samples` | How many draws must match to accept. `0` or absent means the default. |
+| `on_unsure` | node name | — | Where to go when the draws did not agree. Falls back to `on_fail`; with neither, the run stops with `Unsure`. |
+
+#### What the defaults are, and what is refused
+
+```
+$ python3 - <<'PY'
+from dataclasses import dataclass
+from jig.pack import Node
+from jig.verify import GateError, gate_for
+
+SCHEMA = {"type": "object", "properties": {"kind": {"type": "string"}},
+          "required": ["kind"], "additionalProperties": False}
+
+@dataclass(frozen=True)
+class Gated(Node):
+    samples: int = 1
+    agree: int = 0
+
+def node(**kw):
+    return Gated(name="classify", type="generate", prompt="Classify: {message}",
+                 grammar=SCHEMA, **kw)
+
+for kw in [{}, {"samples": 2}, {"samples": 3}, {"samples": 4}, {"samples": 5},
+           {"samples": 5, "agree": 5}]:
+    print("  %-28s -> %s" % (kw or "{}", gate_for(node(**kw))))
+for kw in [{"samples": 3, "agree": 1}, {"samples": 3, "agree": 4},
+           {"samples": 1, "agree": 2}, {"samples": 0}, {"samples": True},
+           {"samples": "3"}, {"agree": -1}]:
+    try:
+        print("  %-28s -> %s" % (kw, gate_for(node(**kw))))
+    except GateError as exc:
+        print("  %s\n    GateError: %s" % (kw, exc))
+PY
+  {}                           -> (1, 1)
+  {'samples': 2}               -> (2, 2)
+  {'samples': 3}               -> (3, 2)
+  {'samples': 4}               -> (4, 3)
+  {'samples': 5}               -> (5, 3)
+  {'samples': 5, 'agree': 5}   -> (5, 5)
+  {'samples': 3, 'agree': 1}
+    GateError: node 'classify' asks for agree: 1, which accepts the first answer and never draws the other 2. Use agree: 2 or more, or remove samples.
+  {'samples': 3, 'agree': 4}
+    GateError: node 'classify' asks for agree: 4 out of samples: 3, which no run can satisfy. Raise samples to at least 4, or lower agree.
+  {'samples': 1, 'agree': 2}
+    GateError: node 'classify' asks for agree: 2 but draws only one sample. Add samples: 2 (or more), or remove agree.
+  {'samples': 0}
+    GateError: node 'classify' asks for samples: 0. A node draws at least once — use samples: 1 (or drop the key) for the ordinary single draw.
+  {'samples': True}
+    GateError: node 'classify' has samples: True — it must be a whole number, not bool
+  {'samples': '3'}
+    GateError: node 'classify' has samples: '3' — it must be a whole number, not str
+  {'agree': -1}
+    GateError: node 'classify' has agree: -1 — it cannot be negative
+```
+
+The default is a strict majority — `samples // 2 + 1` — and it is the only default that is
+a *rule* rather than a preference. Any other number would be a confidence threshold nobody
+measured. Note `samples: 2` therefore needs both draws to match, which is usually what a
+pack means by asking for two.
+
+Every one of those `GateError`s is raised rather than quietly repaired, and each names a
+gate that cannot do anything:
+
+| Gate | Why it is refused |
+| --- | --- |
+| `agree` > `samples` | no run can satisfy it. Clamping it down to `samples` would silently weaken the check the author asked for. |
+| `agree: 1` with `samples` > 1 | accepts the first answer and never draws the rest — a gate that never fires, and an author who believes it does. |
+| `agree` > 1 with `samples: 1` | there is nothing to compare a lone draw with. A pack that set one key and not the other has a gate its author believes in and the runtime does not. |
+| `samples: 0` | a node draws at least once. |
+| `samples: true` / `agree: "2"` | `isinstance(True, int)` is true in Python and `samples: yes` is a plausible slip in YAML, so a boolean is read as a key that was misunderstood, not a count. |
+| a negative count | cannot mean anything. |
+
+`GateError` is a `RunError` raised from `gate_for`, which `run_node` calls **before** the
+first generation — a broken gate costs no tokens.
+
+#### What "agree" compares
+
+Two draws agree when the objects that would be committed are the same object, compared as
+canonical JSON: `json.dumps(value, sort_keys=True, separators=(",", ":"))`
+(`jig/verify.py:_canonical`). The whole object, not the fields that matter — at this layer
+nothing knows which fields those are, and two draws that match on the enum and differ on
+the amount are not a confident answer when the next node is a tool that spends the amount.
+The node's grammar is already the pack's declaration of what matters; a node that wants
+agreement on less should commit less.
+
+Two consequences worth knowing:
+
+* Key order and whitespace never cause a disagreement.
+* It is stricter than `==` in exactly one place: `1` and `1.0` are different draws, where
+  Python would call them equal. That is the direction to be strict in for a gate whose
+  whole job is to notice the model was not consistent.
+
+#### Agreement, disagreement, and what each costs
+
+```
+$ python3 - <<'PY'
+from dataclasses import dataclass
+from jig.model import FakeModel
+from jig.pack import Node
+from jig.verify import Unsure, run_node
+
+SCHEMA = {"type": "object", "properties": {"kind": {"type": "string"}},
+          "required": ["kind"], "additionalProperties": False}
+
+@dataclass(frozen=True)
+class Gated(Node):
+    samples: int = 1
+    agree: int = 0
+
+def node(**kw):
+    return Gated(name="classify", type="generate", prompt="Classify: {message}",
+                 grammar=SCHEMA, **kw)
+
+model = FakeModel(['{"kind": "complaint"}', '{"kind": "complaint"}', '{"kind": "question"}'])
+seen = {}
+print("value      ", run_node(node(samples=3, agree=2), {"message": "m"}, model, consensus=seen))
+print("generations", model.call_count, "(the script had 3 responses)")
+print("consensus  ", seen["classify"])
+
+model = FakeModel(['{"kind": "a"}', '{"kind": "b"}', '{"kind": "c"}'])
+seen = {}
+try:
+    run_node(node(samples=3, agree=2), {"message": "m"}, model, consensus=seen)
+except Unsure as exc:
+    print("Unsure:    ", exc)
+    print("closest    ", exc.value)
+    print("consensus  ", seen["classify"])
+PY
+value       {'kind': 'complaint'}
+generations 2 (the script had 3 responses)
+consensus   Consensus(node='classify', asked=3, drawn=2, agreed=2, required=2, generations=2, distinct=1)
+Unsure:     node 'classify' is unsure: 1 of 3 draws agreed and 2 had to; 3 generation(s) spent
+closest     {'kind': 'a'}
+consensus   Consensus(node='classify', asked=3, drawn=3, agreed=1, required=2, generations=3, distinct=3)
+```
+
+`samples: 3, agree: 2` cost two generations, not three: the loop stops the moment the
+answer cannot change — as soon as one group reaches the threshold, and as soon as the
+draws left cannot lift any group to it. `drawn` is what was paid for and `asked` is what
+the pack requested, so the two differing is the gate working.
+
+`Unsure` is **not** a rejection, and this is the distinction the whole feature turns on. A
+rejection means the output was invalid, and the retry ladder answers it. Disagreement
+means every output was *valid* and the model was not consistent — which no re-sample
+fixes, and which deserves a different destination: a human queue, a cheaper safe branch, a
+second opinion. So `Unsure` is a sibling of `NodeFailed`, not a subclass, and a walker
+that wants to route both to `on_fail` has to say so.
+
+Nothing is committed either way. `Unsure.value` carries the answer that came closest (the
+largest group's, ties going to the earliest draw) for a caller that decides a
+low-confidence answer is still worth showing a person, but committing it is that caller's
+deliberate act. `Consensus` holds counts only — no model output — so it is safe to log,
+checkpoint and print in `jig eval`.
+
+#### The ladder is per draw, and so is the bill
+
+Each draw runs the node's full retry ladder from rung 0, with no feedback and no
+scratchpad carried over from the draw before it: a draw conditioned on another draw's
+rejection is not independent, and agreement between draws that saw each other's mistakes
+measures nothing. So the worst case for a node is `samples × (retries + 1)` generations —
+with the defaults, `samples: 3` can cost nine.
+
+A draw that spends its whole ladder fails the **node** (`NodeFailed`), rather than
+counting as one dissenting voice. A node that could not produce a valid answer has
+produced no evidence about anything:
+
+```
+$ python3 - <<'PY'
+from dataclasses import dataclass
+from jig.errors import NodeFailed
+from jig.model import FakeModel
+from jig.pack import Node
+from jig.verify import run_node
+
+SCHEMA = {"type": "object", "properties": {"kind": {"type": "string"}},
+          "required": ["kind"], "additionalProperties": False}
+
+@dataclass(frozen=True)
+class Gated(Node):
+    samples: int = 1
+    agree: int = 0
+
+node = Gated(name="classify", type="generate", prompt="Classify: {message}",
+             grammar=SCHEMA, samples=2)
+
+# draw 1 is rejected once and then valid; draw 2 matches it
+model = FakeModel(['{"kind": 7}', '{"kind": "complaint"}', '{"kind": "complaint"}'])
+seen = {}
+print("value      ", run_node(node, {"message": "m"}, model, consensus=seen))
+print("generations", model.call_count, seen["classify"])
+
+# draw 2 spends its whole ladder instead
+model = FakeModel(['{"kind": "complaint"}'] + ['{"kind": 7}'] * 3)
+try:
+    run_node(node, {"message": "m"}, model)
+except NodeFailed as exc:
+    print("NodeFailed:", exc)
+    print("generations", model.call_count)
+PY
+value       {'kind': 'complaint'}
+generations 3 Consensus(node='classify', asked=2, drawn=2, agreed=2, required=2, generations=3, distinct=1)
+NodeFailed: node 'classify' failed after 4 attempt(s): schema: kind: expected string, got int
+generations 4
+```
+
+`Consensus.generations` counts the bill, rejected draws included; `drawn` counts answers.
+
+#### A backend that cannot vary its sampling makes the gate lie
+
+Every generation after the very first asks for a distinct sampling hint — a different seed
+per draw, at a fixed temperature (`jig/verify.py:sampling_for`, `DRAW_TEMPERATURE`,
+`DRAW_SEED_STRIDE`). Against a backend that ignores the hint, two draws are one draw
+charged twice: the answers are identical, they "agree", and the pack reports a confidence
+it never measured. That failure is silent by nature, so jig says so at WARNING. `FakeModel`
+is such a backend — its `generate` declares no `sampling` parameter, so
+`codegen.accepts_sampling` is false for it:
+
+```
+$ python3 - <<'PY'
+import sys
+from dataclasses import dataclass
+from jig.log import configure
+from jig.model import FakeModel
+from jig.pack import Node
+from jig.verify import run_node
+
+configure(level="info", stream=sys.stdout)
+
+SCHEMA = {"type": "object", "properties": {"kind": {"type": "string"}},
+          "required": ["kind"], "additionalProperties": False}
+
+@dataclass(frozen=True)
+class Gated(Node):
+    samples: int = 1
+    agree: int = 0
+
+node = Gated(name="classify", type="generate", prompt="Classify: {message}",
+             grammar=SCHEMA, samples=3, agree=2)
+print("value:", run_node(node, {"message": "m"},
+                         FakeModel(['{"kind": "complaint"}', '{"kind": "complaint"}'])))
+PY
+11:36:49.443 WARNING jig.verify node.samples.blind node=classify samples=3 model=FakeModel reason="backend takes no sampling hint, so extra draws repeat the first"
+11:36:49.443 INFO  jig.verify node.agreed node=classify agreed=2 of=2 required=2 asked=3 generations=2
+value: {'kind': 'complaint'}
+```
+
+A gated node behind a `fake:` model is therefore not a test of the gate. It is worth
+knowing before an evalset is written around one.
+
+#### Where an unsure node goes
+
+`on_unsure:` is a pack key today — it loads, and it is checked against the node table
+exactly as `on_fail:` is:
+
+```
+$ cp -r /tmp/hello /tmp/v-onunsure
+$ cat > /tmp/v-onunsure/graph.yaml <<'EOF'
+nodes:
+  classify:
+    type: generate
+    on_unsure: desk
+  done:
+    type: end
+edges:
+  - from: classify
+    to: done
+EOF
+$ python3 -m jig validate /tmp/v-onunsure
+jig: pack error: graph.yaml: node 'classify' has on_unsure 'desk', which is not a defined node
+```
+
+The walker's rule is three deep (`jig/graph.py`, the `except Unsure` clause, which sits
+ahead of the `NodeFailed` clause on purpose): `on_unsure` if the node declares one,
+`on_fail` if it does not, and the run stops with `Unsure` if it declares neither.
+Somewhere declared is better than nowhere, and a node with neither aborts rather than
+committing on a coin flip. Adding a `desk` end node and driving the same graph with a
+gated node shows all three:
+
+```
+$ cp -r /tmp/hello /tmp/hello-gate
+$ cat > /tmp/hello-gate/graph.yaml <<'EOF'
+max_steps: 8
+
+nodes:
+  classify:
+    type: generate
+
+  done:
+    type: end
+    output: [kind]
+
+  desk:
+    type: end
+    output: [message]
+
+edges:
+  - from: classify
+    to: done
+EOF
+$ python3 - <<'PY'
+import dataclasses
+from jig.graph import run
+from jig.model import FakeModel
+from jig.pack import Node, load_pack
+from jig.verify import Unsure
+
+@dataclasses.dataclass(frozen=True)
+class Gated(Node):
+    samples: int = 1
+    agree: int = 0
+
+def gated_pack(**routing):
+    pack = load_pack("/tmp/hello-gate")
+    fields = dataclasses.asdict(pack.nodes["classify"])
+    fields.update(routing)
+    node = Gated(samples=3, agree=3, **fields)
+    return dataclasses.replace(pack, nodes=dict(pack.nodes, classify=node))
+
+def draws():
+    return FakeModel(['{"kind": "question"}', '{"kind": "complaint"}'])
+
+for routing in [{"on_unsure": "desk", "on_fail": "done"},
+                {"on_unsure": None, "on_fail": "done"},
+                {"on_unsure": None, "on_fail": None}]:
+    label = ", ".join("%s: %s" % (k, v) for k, v in routing.items())
+    try:
+        result = run(gated_pack(**routing), draws(), {"message": "is my order late?"})
+        print("%-34s -> ended at %r, output %s"
+              % (label, result.end_node, result.output))
+    except Unsure as exc:
+        print("%-34s -> %s: %s" % (label, type(exc).__name__, exc))
+PY
+on_unsure: desk, on_fail: done     -> ended at 'desk', output {'message': 'is my order late?'}
+on_unsure: None, on_fail: done     -> ended at 'done', output {}
+on_unsure: None, on_fail: None     -> Unsure: node 'classify' is unsure: 1 of 2 draws agreed and 3 had to; 2 generation(s) spent
+```
+
+The second line is the fact worth pausing on. `done` projects `[kind]` and printed `{}`:
+the unsure node's answer was never committed, so the field the end node names does not
+exist. Falling back to `on_fail` sends the *walk* somewhere, not the value — every branch
+downstream of an unsure node has to be written for state that node never wrote.
+
+For the pack's own validation, `on_unsure` counts as a path along which the node **did**
+commit (`jig/pack.py:_links`) — unlike `on_fail`, which counts as a path along which it
+committed nothing. That is what the tool wiring check reads, and it is deliberately the
+generous reading: being unsure about a value is not the same as not having produced one,
+and a pack that routes a low-confidence result onward for review should not be told it is
+wired wrong. It also means `check_tools` will not catch a tool on an `on_unsure` path
+reading a field the unsure node was the only writer of.
+
 ### `assert`
 
 A deterministic gate. Requires `expr:`; a node without one is refused, and an `assert:`
@@ -766,6 +1215,409 @@ jig: ExprError: expression references 'nosuchname', which is not in state
 ```
 
 An `assert` node spends no model call and has no prompt or grammar.
+
+### `tool`
+
+Calls one of the actions the **host** registered and commits what it returns. No prompt,
+no grammar, no model call, no retry ladder — a tool node is deterministic: same state in,
+same call out (`jig/graph.py`, the `node.type == "tool"` branch).
+
+The whole security model is in one sentence from `jig/tools.py`: a pack is text, so it
+can only *name* an action, never contain one. There is no import, no dotted path, no
+`eval` — `tool: file_ticket` is a key into a registry the host built, and a name nobody
+registered can never resolve to anything.
+
+```
+$ cat > /tmp/hellotools.py <<'EOF'
+from jig.tools import ToolRegistry
+
+registry = ToolRegistry()
+
+
+@registry.register("file_ticket", reads=["kind"], writes=["ticket_id"])
+def file_ticket(kind):
+    """Open a ticket of this kind and return its id."""
+    return {"ticket_id": "T-%s" % kind[:4].upper()}
+
+
+@registry.register("page_oncall", reads=["kind"], writes=["paged"])
+def page_oncall(kind):
+    """Wake the on-call engineer."""
+    raise ConnectionError("pager gateway unreachable")
+
+
+@registry.register("ship_order", reads=["order_id"], writes=["tracking"])
+def ship_order(order_id):
+    """Hand the order to the carrier."""
+    return {"tracking": "1Z-%s" % order_id}
+EOF
+```
+
+That file is the host's, not the pack's. `/tmp/hello` plus one tool node between
+`classify` and `done`:
+
+```
+$ cp -r /tmp/hello /tmp/hello-tool
+$ cat > /tmp/hello-tool/graph.yaml <<'EOF'
+max_steps: 8
+
+nodes:
+  classify:
+    type: generate
+    max_tokens: 32
+
+  file:
+    type: tool
+    tool: file_ticket
+
+  done:
+    type: end
+    output: [kind, ticket_id]
+
+edges:
+  - from: classify
+    to: file
+  - from: file
+    to: done
+EOF
+$ python3 -m jig validate /tmp/hello-tool
+hello v1: 3 nodes, 2 edges, 2 evalset cases, entry 'classify'
+
+$ python3 -m jig run /tmp/hello-tool --input '{"message": "my order never arrived"}' --tools /tmp/hellotools.py
+{"kind": "complaint", "ticket_id": "T-COMP"}
+
+$ python3 -m jig eval /tmp/hello-tool --tools /tmp/hellotools.py
+hello: 2/2 cases passed
+```
+
+#### A tool node has no files
+
+This is the rule a reader who has internalised the `generate` rules will get wrong.
+`prompts/file.txt` and `grammars/file.json` do not exist above, and nothing asked for
+them:
+
+```
+$ find /tmp/hello-tool -type f | sort
+/tmp/hello-tool/evalset.jsonl
+/tmp/hello-tool/fakes/script.json
+/tmp/hello-tool/grammars/classify.json
+/tmp/hello-tool/graph.yaml
+/tmp/hello-tool/manifest.yaml
+/tmp/hello-tool/prompts/classify.txt
+```
+
+`_build_node` resolves artifacts only under `if node_type == "generate"`, so a tool node
+never reaches the loader that would demand them. It is not that the files are optional —
+there is no file a tool node can have. Its prompt equivalent is the tool's `reads`, and
+its grammar equivalent is the tool's `writes`, and both are declared by the host in
+Python when it registers the function.
+
+#### Keys
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `tool` | **yes** | The registered name to call. Must be a non-empty string; it is `.strip()`ed. |
+| `output` | no | The single state key to commit the tool's returned dict under. Omitted merges the dict into state, exactly as on a generate node. Must be a **string** — a list is refused at load, not by the CLI. |
+| `on_fail` | no | Where to go when the tool raises (`ToolFailed`) or breaks its own contract (`ToolContract`). |
+| `on_unsure` | no | Accepted and never taken. Only `jig.verify` raises `Unsure`, and a tool node never calls it. |
+| `description` | no | Free text, never read. |
+
+Everything else is refused by name, with the reason, at load. Not ignored:
+
+```
+$ cp -r /tmp/hello-tool /tmp/v-toolkeys
+$ cat > /tmp/v-toolkeys/graph.yaml <<'EOF'
+nodes:
+  classify:
+    type: generate
+  file:
+    type: tool
+    tool: file_ticket
+    prompt: prompts/file.txt
+    retries: 1
+  done:
+    type: end
+edges:
+  - from: classify
+    to: file
+  - from: file
+    to: done
+EOF
+$ python3 -m jig validate /tmp/v-toolkeys
+jig: pack error: graph.yaml: tool node 'file' carries 'prompt', 'retries'. Those keys belong to a generate or an assert node and nothing would read them here — remove them, or make this a node type that uses them. 'prompt': a tool node calls a function, not a model, so there is no prompt to render. 'retries': a re-run tool is a side effect done twice; route the failure with `on_fail` instead of re-attempting it.
+```
+
+All eight, and the reason each carries (`jig/pack.py:_TOOL_FORBIDDEN_KEYS` — the reasons
+below are that dict's own text):
+
+| Key on a tool node | Why it is refused rather than ignored |
+| --- | --- |
+| `prompt:` | a tool node calls a function, not a model, so there is no prompt to render |
+| `grammar:` | a tool node's contract is the tool's own `writes`, declared by the host in its registry, not a grammar file in the pack |
+| `two_stage:` | a tool node never generates, so there is no think stage to run |
+| `retries:` | a re-run tool is a side effect done twice; route the failure with `on_fail` instead of re-attempting it |
+| `max_tokens:` | a tool node never generates |
+| `think_max_tokens:` | a tool node never generates |
+| `assert:` | `assert:` gates a *generation* before it is committed; a tool node has no retry ladder for a rejection to spend |
+| `expr:` | `expr` is the assert node's branch condition |
+
+Silently ignoring them would be worse than refusing them, and this is the one place in
+the format where that is worth the strictness. Elsewhere a misplaced key is dead text —
+an `expr:` on a generate node costs nothing but a reader's time. On a tool node the key
+that does nothing is the key that was guarding a side effect. `retries: 1` next to
+`tool: charge_card` reads as "this call is retried"; accepted and ignored, it would be a
+pack that says one thing to its reviewer and another to the runtime, about the one node
+in the graph that spends money. The same argument runs the other way for `assert:`: a
+pack author who writes it believes the result is being checked before it is committed,
+and on a tool node nothing would check it.
+
+The mirror-image mistake is refused too — `tool:` on a node that is not a tool node:
+
+```
+$ cp -r /tmp/hello /tmp/v-toolkey-generate
+$ cat > /tmp/v-toolkey-generate/graph.yaml <<'EOF'
+nodes:
+  classify:
+    type: generate
+    tool: file_ticket
+  done:
+    type: end
+edges:
+  - from: classify
+    to: done
+EOF
+$ python3 -m jig validate /tmp/v-toolkey-generate
+jig: pack error: graph.yaml: node 'classify' is type 'generate' but carries 'tool: file_ticket'. Only a tool node names a tool — set 'type: tool', or drop the key.
+```
+
+And a tool node with no name to call:
+
+```
+$ cp -r /tmp/hello-tool /tmp/v-toolnoname
+$ python3 - <<'PY'
+import pathlib
+p = pathlib.Path("/tmp/v-toolnoname/graph.yaml")
+p.write_text(p.read_text().replace("    tool: file_ticket\n", ""))
+PY
+$ python3 -m jig validate /tmp/v-toolnoname
+jig: pack error: graph.yaml: tool node 'file' needs a 'tool:' naming the registered tool it calls (got None). A pack names an action; the host registers it.
+```
+
+#### Validating against a registry
+
+`load_pack(path, tools=registry)` turns on two checks the loader cannot do on its own
+(`jig/pack.py:check_tools`):
+
+| Check | What it refuses |
+| --- | --- |
+| every `tool:` names something registered | `jig.tools.ToolNotRegistered` |
+| every registered tool's `reads` can be satisfied before its node runs | `ToolWiringError` |
+
+Both read the host's declarations, not the pack's: `reads` is the tool's whole argument
+list, and a host that registers without one gets it inferred from the function's
+parameter names (`jig/tools.py:ToolRegistry.register`). So a wiring error names a field
+the pack never mentions anywhere — it comes from the Python signature on the other side.
+
+A name the host never registered:
+
+```
+$ cp -r /tmp/hello-tool /tmp/v-unregistered
+$ python3 - <<'PY'
+import pathlib
+p = pathlib.Path("/tmp/v-unregistered/graph.yaml")
+p.write_text(p.read_text().replace("tool: file_ticket", "tool: refund_customer"))
+PY
+$ python3 - <<'PY'
+import sys; sys.path.insert(0, "/tmp")
+from hellotools import registry
+from jig.pack import load_pack
+try:
+    load_pack("/tmp/v-unregistered", tools=registry)
+except Exception as exc:
+    print("%s: %s" % (type(exc).__name__, exc))
+PY
+ToolNotRegistered: no tool named 'refund_customer' on node 'file'. A pack can only call what the host registered (available: file_ticket, page_oncall, ship_order). Register it before the run, or remove the node.
+```
+
+A tool wired to a field nothing writes. `ship_order` reads `order_id`; the graph writes
+`kind` and the caller supplies `message`:
+
+```
+$ cp -r /tmp/hello-tool /tmp/v-wiring
+$ cat > /tmp/v-wiring/graph.yaml <<'EOF'
+max_steps: 8
+nodes:
+  classify:
+    type: generate
+  ship:
+    type: tool
+    tool: ship_order
+  done:
+    type: end
+    output: [kind, tracking]
+edges:
+  - from: classify
+    to: ship
+  - from: ship
+    to: done
+EOF
+$ python3 - <<'PY'
+import sys; sys.path.insert(0, "/tmp")
+from hellotools import registry
+from jig.pack import load_pack
+try:
+    load_pack("/tmp/v-wiring", tools=registry)
+except Exception as exc:
+    print("%s: %s" % (type(exc).__name__, exc))
+PY
+ToolWiringError: graph.yaml: tool node 'ship' calls tool 'ship_order', which reads 'order_id' — and nothing writes it before this node runs. Earlier nodes write: kind. The run inputs this pack declares are: message. Give an earlier node an 'output:' that names the field, add it to the pack's inputs (an evalset case, or manifest 'inputs:'), or call a tool that reads what this graph has.
+```
+
+What counts as "the graph will have it by then" is any node the walk can reach this one
+from — down any branch, round any loop, along any rescue path (`check_tools`'s own
+docstring):
+
+| Source | The state keys it contributes |
+| --- | --- |
+| a node with `output:` | the one key it commits under |
+| a generate node without one | its grammar's property names (merge mode) |
+| a tool node without one | the registered tool's `writes` |
+| the run's own inputs | keys an evalset case supplies, plus the manifest's `inputs:` |
+
+Two silences are deliberate, and both mean "unproven", not "fine":
+
+* A node reached only through another node's `on_fail` does not get credit for that
+  node's fields. A node whose ladder ran out committed nothing.
+* A pack that declares no inputs anywhere — no evalset, and no manifest `inputs:` — has
+  the wiring check skipped entirely (`_declared_inputs` returns `None`). Deleting
+  `evalset.jsonl` from `/tmp/v-wiring` above makes it load clean against the same
+  registry. The same is true of an earlier generate node whose grammar declares no
+  `properties`: it may write anything, so nothing can be called missing.
+
+**Passing the registry is optional, and the CLI never does it.** That is two separate
+facts and the second one is the one that costs.
+
+The first is by design (`load_pack`'s docstring): a pack whose tools live in another
+process, another language, or another machine must still be checkable, and a check that
+*cannot run* is not the same as a check that failed. So `load_pack(path)` with no
+registry loads a pack full of tool nodes and says nothing about them.
+
+The second is that `jig/cli.py:command_run` and `command_eval` both call
+`load_pack(args.pack)` — no `tools=` — and then hand the registry to `run()` instead.
+`--tools` therefore supplies the actions without ever running `check_tools`. Every
+transcript above needed `python3 -` to reach that check at all, and through the CLI both
+failures arrive mid-run instead:
+
+```
+$ python3 -m jig validate /tmp/v-wiring
+hello v1: 3 nodes, 2 edges, 2 evalset cases, entry 'classify'
+
+$ python3 -m jig run /tmp/v-wiring --input '{"message":"my order never arrived"}' --tools /tmp/hellotools.py --log-level info
+11:35:47.066 INFO  jig.graph run.start run_id=08b7c97dca124e528738a9f8ff1da98b pack=hello version=1 entry=classify resumed=false max_steps=8 inputs=message
+11:35:47.066 INFO  jig.graph node.ok run_id=08b7c97dca124e528738a9f8ff1da98b node=classify type=generate attempts=1 output=merge duration_ms=0.1
+11:35:47.066 WARNING jig.graph node.failed run_id=08b7c97dca124e528738a9f8ff1da98b node=ship type=tool attempts=0 error=ToolContract reason="tool 'ship_order' on node 'ship' needs order_id, which state does not have (it has: kind, message)" on_fail=- duration_ms=0.0
+11:35:47.066 ERROR jig.graph run.error run_id=08b7c97dca124e528738a9f8ff1da98b pack=hello node=ship step=2 error=ToolContract reason="tool 'ship_order' on node 'ship' needs order_id, which state does not have (it has: kind, message)" duration_ms=0.6
+jig: ToolContract: tool 'ship_order' on node 'ship' needs order_id, which state does not have (it has: kind, message)
+```
+
+`node.ok` for `classify` is the cost of the missing check: a generation was already spent,
+and on a longer graph so was every side effect before the broken node. If you host packs,
+call `load_pack(path, tools=registry)` yourself and do not rely on `jig validate`.
+
+#### Without a registry, a tool node cannot run at all
+
+`--tools` is an operator flag with no manifest equivalent, deliberately: a pack you did
+not write must not be able to choose which code its names resolve to
+(`jig/cli.py:_add_tools_option`). A run that meets a tool node with no registry stops
+there, and is not diverted by `on_fail` — a pack that cannot act is a wiring mistake in
+the caller, not a runtime condition the graph author wrote a rescue path for:
+
+```
+$ python3 -m jig run /tmp/hello-tool --input '{"message": "my order never arrived"}'
+jig: ToolsNotAvailable: node 'file' is a tool node, and this run was given no tools: this pack needs tools; pass tools= to run()
+```
+
+Exit 1. `jig eval` without `--tools` scores every case as a failure of that node rather
+than refusing up front:
+
+```
+$ python3 -m jig eval /tmp/hello-tool
+hello: 0/2 cases passed
+  FAIL missing order [file]
+    error: ToolsNotAvailable: node 'file' is a tool node, and this run was given no tools: this pack needs tools; pass tools= to run()
+  FAIL opening hours [file]
+    error: ToolsNotAvailable: node 'file' is a tool node, and this run was given no tools: this pack needs tools; pass tools= to run()
+  failures by node: file=2
+```
+
+`ToolNotRegistered` behaves the same way: it is not routed to `on_fail` either. A pack
+naming an action the host never allowed is a fact about the pack, and an `on_fail` edge
+must not quietly finish a workflow around it.
+
+#### When the tool fails
+
+A tool that raises, or that returns something its own declaration said it would not,
+takes the node's `on_fail` edge — the same edge a spent retry ladder takes. A database
+being down and a model failing are the same fact to the graph: this node produced no
+output.
+
+```
+$ cp -r /tmp/hello-tool /tmp/v-toolfail
+$ cat > /tmp/v-toolfail/graph.yaml <<'EOF'
+max_steps: 8
+nodes:
+  classify:
+    type: generate
+  page:
+    type: tool
+    tool: page_oncall
+    on_fail: human
+  human:
+    type: end
+    output: [kind]
+  done:
+    type: end
+    output: [kind, paged]
+edges:
+  - from: classify
+    to: page
+  - from: page
+    to: done
+EOF
+$ python3 -m jig run /tmp/v-toolfail --input '{"message":"my order never arrived"}' --tools /tmp/hellotools.py --log-level info
+11:36:08.790 INFO  jig.graph run.start run_id=01dbc18d00b74e098b4badfd879fc574 pack=hello version=1 entry=classify resumed=false max_steps=8 inputs=message
+11:36:08.790 INFO  jig.graph node.ok run_id=01dbc18d00b74e098b4badfd879fc574 node=classify type=generate attempts=1 output=merge duration_ms=0.1
+11:36:08.790 WARNING jig.graph node.failed run_id=01dbc18d00b74e098b4badfd879fc574 node=page type=tool attempts=0 error=ToolFailed reason="tool 'page_oncall' raised ConnectionError (detail at DEBUG)" on_fail=human duration_ms=0.0
+11:36:08.790 INFO  jig.graph edge.on_fail run_id=01dbc18d00b74e098b4badfd879fc574 node=page to=human
+11:36:08.790 INFO  jig.graph run.end run_id=01dbc18d00b74e098b4badfd879fc574 pack=hello end_node=human steps=3 generations=1 failures=1 output_keys=1 output_bytes=21 duration_ms=0.6
+{"kind": "complaint"}
+```
+
+Exit 0 — the rescue path is the pack's declared answer, so taking it is a completed run.
+Note `attempts=0`: a tool node spends no generations, and that zero is the honest number
+rather than a missing field. Note too that the exception's own text is not in the log
+line at default level — `tool 'page_oncall' raised ConnectionError (detail at DEBUG)`,
+because a host's exception message is the host's data (`jig/graph.py:_safe_reason`).
+
+Delete the `on_fail: human` line and the same run stops instead:
+
+```
+$ python3 - <<'PY'
+import pathlib
+p = pathlib.Path("/tmp/v-toolfail/graph.yaml")
+p.write_text(p.read_text().replace("    on_fail: human\n", ""))
+PY
+$ python3 -m jig run /tmp/v-toolfail --input '{"message":"my order never arrived"}' --tools /tmp/hellotools.py
+jig: ToolFailed: tool 'page_oncall' on node 'page' failed: ConnectionError: pager gateway unreachable
+```
+
+There is no retry. `retries:` is one of the eight refused keys, and that is the design:
+re-running a tool is the side effect done twice. What a tool node has instead is
+exactly-once *across a crash* — the call is written into the checkpoint before it is
+committed, and a resumed run replays the recorded result rather than calling again,
+unless the host registered the tool `idempotent=True`. That machinery is the walker's,
+not the format's: `docs/graph.md` and `jig/tools.py` own it, and nothing in `graph.yaml`
+turns it on or off.
 
 ### `end`
 
@@ -935,6 +1787,25 @@ The pattern in the probe is quoting, not spelling: bare `false`, `no` and `0` al
 ## The `output:` key
 
 One word, three behaviours. `jig/graph.py:commit` and `jig/graph.py:_project`.
+
+A `tool` node's `output:` is the generate node's, exactly: `jig/graph.py` calls the same
+`commit` for both, so a string nests the tool's returned dict under that key and no key at
+all merges its fields into state. The one difference is the refusal — a list on a tool
+node is a load-time `GraphError`, where on a generate node it loads and is caught by the
+CLI's own shape check ([below](#the-two-shapes-that-are-refused)). Both of the behaviours
+below therefore read as written with "generate" replaced by "tool":
+
+```
+$ cp -r /tmp/hello-tool /tmp/v-toolnest
+$ python3 - <<'PY'
+import pathlib
+p = pathlib.Path("/tmp/v-toolnest/graph.yaml")
+p.write_text(p.read_text().replace("    tool: file_ticket",
+                                   "    tool: file_ticket\n    output: ticket"))
+PY
+$ python3 -m jig run /tmp/v-toolnest --input '{"message": "my order never arrived"}' --tools /tmp/hellotools.py --state
+{"kind": "complaint", "message": "my order never arrived", "ticket": {"ticket_id": "T-COMP"}}
+```
 
 ### `output: <string>` on a generate node — nest
 
@@ -1372,7 +2243,9 @@ The same rule covers `fake:<path>` model scripts.
 
 **The rule reaches exactly as far as the resolver runs.** `_build_node` reads `prompt:`
 and `grammar:` only under `if node_type == "generate"`, so on an `assert` or `end` node
-those keys are never resolved and never checked:
+those keys are never resolved and never checked. A `tool` node is not in that gap — it
+refuses both keys outright ([above](#tool)), so the two node types below are the whole of
+it:
 
 ```
 $ cp -r /tmp/hello /tmp/hello-endpaths
@@ -1826,12 +2699,19 @@ $ python3 -m jig eval /tmp/hello-evalfail --json
 ## What load-time validation does and does not check
 
 `jig validate` catches: missing files, unparseable YAML, unknown node/edge keys, unknown
-node types, a missing `expr` on an assert node, non-integer or out-of-range numeric
-fields, a reserved `output` name, an entry node that does not exist, an `on_fail` naming a
-node that does not exist, an edge pointing at an undefined node, an outgoing edge from an
-`end` node, a non-`end` node with no outgoing edge, an unsupported grammar keyword,
+node types, a missing `expr` on an assert node, a tool node with no `tool:` or carrying a
+generate node's keys, a `tool:` on a node that is not one, a tool node's `output:` that is
+not a string, a malformed manifest `inputs:`, non-integer or out-of-range numeric fields,
+a reserved `output` name, an entry node that does not exist, an `on_fail` or `on_unsure`
+naming a node that does not exist, an edge pointing at an undefined node, an outgoing edge
+from an `end` node, a non-`end` node with no outgoing edge, an unsupported grammar keyword,
 malformed JSON, and an evalset `end:` that is not an end node. Plus, when invoked through
 the CLI, the `output:` shape check on `generate` and `end` nodes.
+
+Two more checks exist but `jig validate` cannot run them: that every `tool:` names a
+registered tool, and that each tool's `reads` can be satisfied. They need the host's
+registry, and the CLI never passes one to `load_pack` — see [`tool`](#tool). A library
+caller gets them with `load_pack(path, tools=registry)`.
 
 It does **not** check:
 
@@ -1845,6 +2725,10 @@ It does **not** check:
 | `two_stage`'s type | coerced with `bool()` — see [above](#the-one-key-that-is-not-shape-checked) |
 | `prompt:` / `grammar:` on non-`generate` nodes | never resolved, so never contained |
 | `output:` shape on `assert` nodes | ignored at run time |
+| that a `tool:` names anything that exists — through the CLI, ever | `ToolNotRegistered` at the step that would have called it, after every earlier node has run |
+| that a tool's `reads` are ever written — through the CLI, ever | `ToolContract` mid-run, with the side effects before that node already done |
+| that a tool node's pack even has a registry to run against | `ToolsNotAvailable` at the node, not routed to `on_fail` |
+| that a run supplies the manifest's declared `inputs:` | nothing — `inputs:` is read by the tool wiring check and by nothing else |
 
 The first row is the one that looks like a bug and is not. `orphan` below is reachable
 from nothing, and the pack is fine:
@@ -1900,15 +2784,31 @@ manifest.yaml
 
 Nodes
 
-- [ ] Every node has a `type`, spelled `generate`, `assert`, or `end`.
+- [ ] Every node has a `type`, spelled `generate`, `tool`, `assert`, or `end`.
 - [ ] Every `assert` node has `expr:`. Every model-output invariant is `assert:` on a
       `generate` node. Neither key is on the wrong node type — it would be ignored.
 - [ ] `two_stage:` is a bare `true` or `false`, never quoted — a quoted value is truthy.
-- [ ] `output:` is a **string** on generate nodes, a **list** on end nodes, and never
-      `scratchpad`.
+- [ ] `output:` is a **string** on generate and tool nodes, a **list** on end nodes, and
+      never `scratchpad`.
 - [ ] Every field an `end` node projects is actually written by some node's grammar.
 - [ ] Every non-`end` node has at least one outgoing edge; no `end` node has one.
-- [ ] Every `on_fail` names a node that exists.
+- [ ] Every `on_fail` and every `on_unsure` names a node that exists.
+- [ ] No node carries `samples:` or `agree:` — `graph.yaml` does not accept them yet, and
+      a pack that has them does not load.
+
+Tool nodes
+
+- [ ] Every `tool` node has a `tool:`, and no `prompt:`, `grammar:`, `two_stage:`,
+      `retries:`, `max_tokens:`, `think_max_tokens:`, `assert:` or `expr:` — each is
+      refused by name at load.
+- [ ] No `prompts/<node>.txt` or `grammars/<node>.json` exists for a tool node. It needs
+      neither.
+- [ ] The name in `tool:` is one the host actually registers, and the tool's `reads` are
+      written by an earlier node or declared in the manifest's `inputs:`. Check it with
+      `load_pack(path, tools=registry)` — `jig validate` does not.
+- [ ] Every tool node that can fail recoverably has an `on_fail:`; there are no retries.
+- [ ] Whoever runs the pack passes `--tools` (or `tools=`). Without it the run stops at
+      the first tool node, and `on_fail` does not catch that.
 
 Edges
 
