@@ -1,4 +1,4 @@
-"""Stage 1 of `jig build` — the schema, induced from the gold examples.
+"""Stage 1 of `stepmold build` — the schema, induced from the gold examples.
 
 No model, no network, no randomness: everything here is arithmetic over the cases the
 author already wrote — the `expect` objects, plus (for rule 6 below) the question of
@@ -15,7 +15,7 @@ What it derives, per key seen in any `expect`:
 | `enum`     | the closed-set rule below                                           |
 | `examples` | the first few distinct non-null values, verbatim, for the prompt    |
 
-Booleans are checked before integers, as `jig/grammar.py` does, because Python says a
+Booleans are checked before integers, as `stepmold/grammar.py` does, because Python says a
 bool is an int and JSON says it is not. An `int` in one case and a `float` in another is
 `number` — the only widening the compiler performs, because it is the only one JSON's
 type list makes lossless.
@@ -177,7 +177,7 @@ def analyze(description, cases, name):
     """
     if not cases:
         raise BuildError(
-            "no gold examples: `jig build` induces the schema from the examples, so it "
+            "no gold examples: `stepmold build` induces the schema from the examples, so it "
             "needs at least one case of the form "
             '{"input": {...}, "expect": {...}}'
         )

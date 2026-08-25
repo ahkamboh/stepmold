@@ -61,7 +61,7 @@ nodes:
 
   tracked:
     type: end
-    # jig's YAML subset takes a flow sequence only on one line, so this is a
+    # stepmold's YAML subset takes a flow sequence only on one line, so this is a
     # block sequence rather than a wrapped [a, b, c].
     output:
       - meeting_kind

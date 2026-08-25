@@ -14,8 +14,8 @@ import textwrap
 import unittest
 from unittest import mock
 
-from jig import cli
-from jig.eval import (
+from stepmold import cli
+from stepmold.eval import (
     TIER_AUTO,
     TIER_ESCALATED,
     TIER_FAILED,
@@ -24,9 +24,9 @@ from jig.eval import (
     Report,
     evaluate,
 )
-from jig.graph import Failure, RunResult
-from jig.model import FakeModel
-from jig.pack import Edge, EvalCase, Node, Pack
+from stepmold.graph import Failure, RunResult
+from stepmold.model import FakeModel
+from stepmold.pack import Edge, EvalCase, Node, Pack
 
 
 def two_node_pack():
@@ -544,7 +544,7 @@ class TestTheUnsureSignal(unittest.TestCase):
         result.unsure = unsure
         pack = two_node_pack()
         pack.evalset[:] = [EvalCase({"ticket": "t1"}, {"category": "billing"}, "one")]
-        with mock.patch("jig.eval.run", return_value=result):
+        with mock.patch("stepmold.eval.run", return_value=result):
             return evaluate(pack, FakeModel(["unused"]))
 
     def test_an_unsure_node_takes_the_case_out_of_the_auto_bucket(self):
@@ -594,7 +594,7 @@ class TestTheUnsureSignal(unittest.TestCase):
         self.assertFalse(hasattr(result, "unsure"))
         pack = two_node_pack()
         pack.evalset[:] = [EvalCase({"ticket": "t1"}, {"category": "billing"}, "one")]
-        with mock.patch("jig.eval.run", return_value=result):
+        with mock.patch("stepmold.eval.run", return_value=result):
             report = evaluate(pack, FakeModel(["unused"]))
         self.assertEqual(report.cases[0].tier, TIER_AUTO)
         self.assertEqual(report.auto_accuracy, 1.0)
@@ -607,7 +607,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLI_PACK = os.path.join(ROOT, "tests", "fixtures", "cli_pack")
 
 
-def jig_main(*argv):
+def stepmold_main(*argv):
     """Run the CLI in-process and return (exit code, stdout)."""
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
@@ -618,12 +618,12 @@ def jig_main(*argv):
 class TestEvalTiersFlag(unittest.TestCase):
     def test_the_default_output_is_exactly_what_it_was(self):
         """Scripts grep this and the README's transcripts are executed as tests."""
-        code, out = jig_main("eval", CLI_PACK)
+        code, out = stepmold_main("eval", CLI_PACK)
         self.assertEqual(code, 0)
         self.assertEqual(out, "cli_demo: 2/2 cases passed\n")
 
     def test_the_flag_adds_the_breakdown_underneath(self):
-        code, out = jig_main("eval", CLI_PACK, "--tiers")
+        code, out = stepmold_main("eval", CLI_PACK, "--tiers")
         self.assertEqual(code, 0)
         lines = out.splitlines()
         self.assertEqual(lines[0], "cli_demo: 2/2 cases passed")
@@ -632,7 +632,7 @@ class TestEvalTiersFlag(unittest.TestCase):
 
     def test_the_exit_code_still_comes_from_the_cases_not_the_tiers(self):
         """A pack can automate 100% of its cases and still be wrong about them."""
-        code, out = jig_main("eval", CLI_PACK, "--model", "fake:fakes/wrong.json",
+        code, out = stepmold_main("eval", CLI_PACK, "--model", "fake:fakes/wrong.json",
                              "--tiers")
         self.assertEqual(code, 1)
         self.assertIn("1/2", out)
@@ -642,7 +642,7 @@ class TestEvalTiersFlag(unittest.TestCase):
     def test_json_carries_the_split_without_being_asked(self):
         import json
 
-        code, out = jig_main("eval", CLI_PACK, "--json")
+        code, out = stepmold_main("eval", CLI_PACK, "--json")
         self.assertEqual(code, 0)
         report = json.loads(out)
         self.assertEqual(report["tiers"]["counts"],
@@ -655,7 +655,7 @@ class TestEvalTiersFlag(unittest.TestCase):
     def test_the_json_keys_that_were_always_there_still_are(self):
         import json
 
-        code, out = jig_main("eval", CLI_PACK, "--model", "fake:fakes/wrong.json",
+        code, out = stepmold_main("eval", CLI_PACK, "--model", "fake:fakes/wrong.json",
                              "--json")
         self.assertEqual(code, 1)
         report = json.loads(out)
@@ -676,7 +676,7 @@ class TestToolsOption(unittest.TestCase):
 
     MODULE = textwrap.dedent(
         """
-        from jig.tools import ToolRegistry
+        from stepmold.tools import ToolRegistry
 
         registry = ToolRegistry()
 
@@ -797,7 +797,7 @@ class TestEvaluateForwardsTools(unittest.TestCase):
 
         pack = two_node_pack()
         pack.evalset[:] = [EvalCase({"ticket": "t1"}, {"category": "billing"}, "one")]
-        with mock.patch("jig.eval.run", fake_run):
+        with mock.patch("stepmold.eval.run", fake_run):
             evaluate(pack, FakeModel(["unused"]), **kwargs)
         return seen
 

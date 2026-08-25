@@ -10,5 +10,5 @@ description: >-
 
   The model below is a scripted stand-in, so the evalset scores offline with no
   GPU and no network. Unlike a positional script it is keyed on the alert id, so
-  `jig run` answers whichever of the thirteen alerts you hand it, not just the
+  `stepmold run` answers whichever of the thirteen alerts you hand it, not just the
   first. Point --model at a real backend to triage real alerts.

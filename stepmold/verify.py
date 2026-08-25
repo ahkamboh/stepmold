@@ -44,7 +44,7 @@ those notes was ever judged, and re-thinking would be a call spent to learn noth
 `EmptyCompletion` also turns that content-less 200 into a rejection rather than an abort,
 so the ladder answers it and the node's `on_fail` edge still means what the pack says.
 
-Rule 2 has one more downstream now that jig logs (`jig.log`). A log file cannot condition
+Rule 2 has one more downstream now that stepmold logs (`stepmold.log`). A log file cannot condition
 a model, so `Rejected.detail` is allowed there — but a log an operator ships to a
 collector is still somewhere a customer's ticket should not turn up by accident, so the
 detail is DEBUG-only and every other level carries `feedback`, the half already derived
@@ -62,7 +62,7 @@ A node may ask to be drawn more than once and have the answers compared:
 This exists because the obvious alternative does not work. A number the model *says*
 about its own answer is generated after the answer is already on the page: it reflects
 the rubric in the prompt, not whether the answer is right, and it is overconfident
-exactly where being wrong costs the most. jig's usable signals, best first, are a
+exactly where being wrong costs the most. stepmold's usable signals, best first, are a
 deterministic `assert` (a fact, not a guess), then agreement across independent draws,
 and only then anything the model claims about itself. `verify` is the first. This is the
 second. There is no third.
@@ -192,7 +192,7 @@ class EmptyCompletion(BackendError):
     only delays the error.
 
     `empty_content` is the flag `run_node` actually reads, so a backend can mark an
-    existing `BackendError` instead of raising this class — `jig.backends.openai_compat`
+    existing `BackendError` instead of raising this class — `stepmold.backends.openai_compat`
     keeps its own diagnostic message either way.
     """
 
@@ -204,7 +204,7 @@ class Consensus:
     """What one visit to a sampled node found out — the reporting half of the gate.
 
     Counts only, deliberately. This record is meant to be logged, checkpointed and
-    printed by `jig eval`, and every one of those is somewhere a customer's data must not
+    printed by `stepmold eval`, and every one of those is somewhere a customer's data must not
     turn up by accident; a record that holds no model output is safe in all three without
     anyone having to remember that it is. The value itself is *returned* when the node
     agreed, and carried on `Unsure.value` when it did not.
@@ -280,7 +280,7 @@ class GateError(RunError):
     Raised rather than quietly repaired. Every reading of a broken gate is a lie about
     confidence — clamping `agree: 5, samples: 3` down to 3 silently weakens the check the
     author asked for, and accepting `agree: 1` alongside `samples: 3` gives a pack a gate
-    that never fires and an author who believes it does. `jig validate` should catch these
+    that never fires and an author who believes it does. `stepmold validate` should catch these
     before a run starts; this is the backstop for a pack that arrived another way.
     """
 
@@ -581,7 +581,7 @@ def _ladder(node, state, model, draw=0):
             # generation verbatim, so it is DEBUG-only: someone who asked for DEBUG asked
             # to read what came back, and a log file cannot condition a model — but a
             # default-level line that carried it would put rejected model output into
-            # every collector jig is ever pointed at.
+            # every collector stepmold is ever pointed at.
             if _log.isEnabledFor(WARNING):
                 event(_log, WARNING, "node.rejected", node=node.name, attempt=spent,
                       cause="verify", reason=feedback, of=rungs)

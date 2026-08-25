@@ -1,6 +1,6 @@
 """Checkpoints: a run that dies at node 17 resumes at node 17.
 
-Long workflows are the whole point of jig, and a workflow that restarts from zero on any
+Long workflows are the whole point of stepmold, and a workflow that restarts from zero on any
 failure is a workflow you cannot run on real volume (docs/ARCHITECTURE.md §3). So state is written
 to SQLite after every node that completes, keyed by run id, and `resume` picks the walk up
 at the node the crash interrupted.
@@ -38,7 +38,7 @@ Two contracts hold this together, and both are enforced rather than hoped for:
 Concurrency
 -----------
 
-A deployed jig is a pool of workers over one store file, and every operation here is
+A deployed stepmold is a pool of workers over one store file, and every operation here is
 written for that rather than for the single-threaded in-process case it grew up in.
 
 * **A `Store` is safe to share between threads and between processes.** The connection is
@@ -55,9 +55,9 @@ written for that rather than for the single-threaded in-process case it grew up 
   would otherwise both replay from the same checkpoint and both execute every remaining
   node — twice the charges, twice the emails. `Store.lease` is a claim with an expiry, so
   a resumer that dies holding one does not wedge the run forever.
-* **Contention arrives as a `JigError`.** sqlite's busy handler retries for `timeout`
+* **Contention arrives as a `StepmoldError`.** sqlite's busy handler retries for `timeout`
   seconds; past that the raw `sqlite3.OperationalError` is wrapped in `StoreBusy`, which
-  names the run and the node, so `except JigError` around a run keeps working.
+  names the run and the node, so `except StepmoldError` around a run keeps working.
 
 Size and retention
 ------------------
@@ -68,7 +68,7 @@ the deltas since the last one would cost more to read than the snapshot would, w
 bounds rebuilding a state of size S at roughly 2S bytes read — reconstruction is an
 implementation detail, `latest` and `history` still hand back whole `Checkpoint` objects.
 
-Nothing is deleted on jig's own initiative: a checkpoint chain is an audit trail, and a
+Nothing is deleted on stepmold's own initiative: a checkpoint chain is an audit trail, and a
 store that quietly forgot last month's runs would be worse than one that grows. Retention
 is the operator's call, and `prune` plus `vacuum` are how they make it — drop finished
 runs older than a date or beyond a count, then give the pages back to the filesystem.
@@ -104,8 +104,8 @@ __all__ = [
 class CheckpointMismatch(RunError):
     """The checkpoint being resumed was written by a different pack than the one given.
 
-    Lives here rather than in `jig.errors` for the same reason the pack-loading errors
-    live in `jig.pack`: it is raised before the walk restarts, by the store's own
+    Lives here rather than in `stepmold.errors` for the same reason the pack-loading errors
+    live in `stepmold.pack`: it is raised before the walk restarts, by the store's own
     bookkeeping, and nothing in the walker can produce it.
     """
 
@@ -113,9 +113,9 @@ class CheckpointMismatch(RunError):
 class StoreBusy(RunError):
     """The store stayed locked for longer than its busy timeout.
 
-    Raised instead of the bare `sqlite3.OperationalError`, which is not a `JigError` and
+    Raised instead of the bare `sqlite3.OperationalError`, which is not a `StepmoldError` and
     names neither the run nor the node — so a caller wrapping its runs in
-    `except JigError` was shown a traceback about a database it never opened.
+    `except StepmoldError` was shown a traceback about a database it never opened.
     """
 
 
@@ -157,7 +157,7 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 """
 
-# Columns added after the first release. A store file written by an older jig has the
+# Columns added after the first release. A store file written by an older stepmold has the
 # table already, so CREATE TABLE IF NOT EXISTS silently leaves it short a column and
 # every read of that column fails. Adding them on open keeps old files readable.
 _ADDED_COLUMNS = (("pack_version", "TEXT"), ("state_kind", "TEXT"),
@@ -169,7 +169,7 @@ _ADDED_COLUMNS = (("pack_version", "TEXT"), ("state_kind", "TEXT"),
 _FIRST_STEP = 1
 
 #: Seconds sqlite may spend retrying a locked database before `save` gives up. Higher
-#: than sqlite3's own 5s default because a jig store is written by a fleet and may sit on
+#: than sqlite3's own 5s default because a stepmold store is written by a fleet and may sit on
 #: a slow or networked filesystem; `Store(path, timeout=...)` is the knob.
 DEFAULT_TIMEOUT = 30.0
 
@@ -276,7 +276,7 @@ class Store:
                 time.sleep(0.005)
 
     def _migrate(self):
-        """Add columns a store file written by an older jig is missing."""
+        """Add columns a store file written by an older stepmold is missing."""
         for column, declared_type in _ADDED_COLUMNS:
             _add_column(self._connection, column, declared_type)
 
@@ -396,7 +396,7 @@ class Store:
     def prune(self, keep_last=None, before=None):
         """Delete finished runs, and return the ids deleted.
 
-        Retention is the operator's policy, not jig's, so this does nothing unless it is
+        Retention is the operator's policy, not stepmold's, so this does nothing unless it is
         called and it never touches a run that has not finished — an unfinished chain is
         the only copy of work someone still intends to resume.
 
@@ -437,7 +437,7 @@ class Store:
 
         Deleting runs does not shrink the file — sqlite keeps the pages for reuse — so an
         operator who has just pruned a year of runs and wants the disk back needs this.
-        It rewrites the whole database, so it is theirs to schedule, not jig's to run.
+        It rewrites the whole database, so it is theirs to schedule, not stepmold's to run.
         """
         with self._lock:
             self._connection.execute("VACUUM")
@@ -498,7 +498,7 @@ class Store:
 
     @contextlib.contextmanager
     def _transaction(self, run_id, step, node):
-        """One BEGIN IMMEDIATE, and contention reported as a jig error.
+        """One BEGIN IMMEDIATE, and contention reported as a stepmold error.
 
         IMMEDIATE rather than the default deferred begin: the write lock is taken before
         the claim is read, so two workers cannot both read "unclaimed" and both write.
@@ -564,7 +564,7 @@ class Store:
         """('full'|'delta', (state, path, provenance)) as this row should be written.
 
         A checkpoint that repeated the whole of state cost an N-node run O(N^2) bytes,
-        which is the one shape jig's own pitch — long workflows — guarantees. `path` and
+        which is the one shape stepmold's own pitch — long workflows — guarantees. `path` and
         `provenance` grow the same way and are encoded the same way, because moving the
         quadratic term from one column to the next is not a fix.
 
@@ -658,7 +658,7 @@ def _raise_busy(exc, run_id, step, node):
     """Re-raise a lock timeout as `StoreBusy`; leave every other sqlite error alone.
 
     A schema that is wrong, a disk that is full and a database that is merely contended
-    are three different operator problems, and only the last one is jig's to rename.
+    are three different operator problems, and only the last one is stepmold's to rename.
     """
     text = str(exc).lower()
     if "locked" not in text and "busy" not in text:
@@ -945,7 +945,7 @@ def _json_column(row, column, kind):
     """A JSON column read back, or its empty value if this row has nothing usable.
 
     Both columns this serves were added after the first release, so a store file written
-    by an older jig may not have them at all — and a row written before the column
+    by an older stepmold may not have them at all — and a row written before the column
     existed has NULL in it. Neither is a broken chain, so both read back empty rather
     than raising: what is lost is a diagnostic, and in `tool_calls`' case a replay that
     was never recorded to begin with.

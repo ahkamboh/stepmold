@@ -1,6 +1,6 @@
 """Stage 4 — the scripted offline model, derived from the gold answers.
 
-Every pack ships a stand-in model so `jig eval` scores in CI with no GPU and no network
+Every pack ships a stand-in model so `stepmold eval` scores in CI with no GPU and no network
 (`manifest.yaml: model: fake:fakes/script.json`). Writing that file by hand is the most
 expensive part of authoring a pack and the least interesting: a node's `writes` says
 which fields it produces and a gold case says what those fields must be, so the answer a
@@ -10,7 +10,7 @@ node owes a case is
 
 and the only real work is deciding *which* cases reach the node at all. That is the bug
 this stage exists to prevent. A branching graph means the number of answers a node needs
-is the number of cases that REACH it, and nothing else in jig cross-checks the two: a
+is the number of cases that REACH it, and nothing else in stepmold cross-checks the two: a
 script that is one answer long at node three fails at case eleven with `ModelExhausted`,
 naming neither the case nor the reason. So the walk here follows the plan's edges per
 case rather than assuming every case visits every node — `route` is that walk, and it is
@@ -35,7 +35,7 @@ in its own template and in no other, so the longest-match cannot land on a neigh
 node whose script is a string can never run out — and a node that can never run out is a
 node whose branching is never checked. A list of exactly the answers the reaching cases
 expect turns a routing mistake into a loud failure at eval time, which is the whole
-point. The queue is in evalset order because `jig eval` builds one `FakeModel` for the
+point. The queue is in evalset order because `stepmold eval` builds one `FakeModel` for the
 whole run (`cli.resolve_model`) and walks the cases in file order.
 
 **The think stage is the exception.** A two-stage node makes two calls on one visit, so
@@ -514,7 +514,7 @@ def _case_name(case):
 
 
 def _simulate(script, task, plan, prompts, think_prompts):
-    """Replay the whole evalset against `script` exactly as `jig eval` would.
+    """Replay the whole evalset against `script` exactly as `stepmold eval` would.
 
     Returns the calls in run order, each carrying the key `FakeModel` would resolve it
     to, and one `(case, nodes, ending)` triple per case. Nothing here trusts a naming

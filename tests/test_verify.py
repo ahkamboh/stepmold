@@ -8,12 +8,12 @@ import logging
 import unittest
 from dataclasses import dataclass
 
-from jig.codegen import Sampling
-from jig.errors import BackendError, MissingVariable, NodeFailed, RunError
-from jig.graph import run
-from jig.model import FakeModel
-from jig.pack import Edge, Node, Pack
-from jig.verify import (
+from stepmold.codegen import Sampling
+from stepmold.errors import BackendError, MissingVariable, NodeFailed, RunError
+from stepmold.graph import run
+from stepmold.model import FakeModel
+from stepmold.pack import Edge, Node, Pack
+from stepmold.verify import (
     DRAW_TEMPERATURE,
     Consensus,
     EmptyCompletion,
@@ -52,7 +52,7 @@ def node(name="classify", **kwargs):
 
 @dataclass(frozen=True)
 class GatedNode(Node):
-    """A node carrying the gate's keys, for as long as `jig.pack.Node` does not.
+    """A node carrying the gate's keys, for as long as `stepmold.pack.Node` does not.
 
     `verify.gate_for` reads `samples` and `agree` with `getattr`, so the runtime works
     whether or not the pack format has grown them yet — and `gated()` below builds the
@@ -463,7 +463,7 @@ class DeeplyNestedOutputIsRejectedNotFatal(unittest.TestCase):
     """
 
     def _with_exploding_decoder(self, call):
-        import jig.verify as verify_module
+        import stepmold.verify as verify_module
 
         real = verify_module.json.loads
 
@@ -833,28 +833,28 @@ class TestTheDrawsAreIndependent(unittest.TestCase):
     def test_a_backend_that_cannot_vary_its_sampling_is_reported(self):
         """The silent failure: identical requests 'agree', and the pack reports a
         confidence nobody measured."""
-        with self.assertLogs("jig.verify", level="WARNING") as caught:
+        with self.assertLogs("stepmold.verify", level="WARNING") as caught:
             run_node(gated(samples=2), {"ticket": "t"}, FakeModel([GOOD, GOOD]))
         self.assertIn("node.samples.blind", [record.msg for record in caught.records])
 
     def test_a_backend_that_can_is_not_reported(self):
-        with self.assertLogs("jig.verify", level="WARNING") as caught:
+        with self.assertLogs("stepmold.verify", level="WARNING") as caught:
             # One record has to exist for assertLogs to pass, so a rejection provides it.
             run_node(gated(samples=2), {"ticket": "t"},
                      SamplingModel([BAD_ENUM, GOOD, GOOD]))
         self.assertNotIn("node.samples.blind", [record.msg for record in caught.records])
 
     def test_an_ungated_node_never_reports_it(self):
-        with self.assertLogs("jig.verify", level="WARNING") as caught:
+        with self.assertLogs("stepmold.verify", level="WARNING") as caught:
             # assertLogs needs at least one record to pass; this is it, and it is the
             # only one that may be there.
-            logging.getLogger("jig.verify").warning("marker")
+            logging.getLogger("stepmold.verify").warning("marker")
             run_node(node(), {"ticket": "t"}, FakeModel([GOOD]))
         self.assertEqual([record.msg for record in caught.records], ["marker"])
 
 
 class TestTheGateReportsItself(unittest.TestCase):
-    """`jig eval` has to be able to say how sure each node was."""
+    """`stepmold eval` has to be able to say how sure each node was."""
 
     def test_an_agreeing_node_records_what_it_found(self):
         report = {}

@@ -15,12 +15,12 @@
 #    routed here instead of committing an answer nobody stands behind.
 #
 #    The gate's *entrance* — `samples:` and `agree:` — cannot be written in this
-#    file yet. `jig.pack._NODE_KEYS` does not carry them, so a graph.yaml that
+#    file yet. `stepmold.pack._NODE_KEYS` does not carry them, so a graph.yaml that
 #    names them is refused at load:
 #
-#      jig: pack error: graph.yaml: node 'approve' has unknown key(s): agree, samples
+#      stepmold: pack error: graph.yaml: node 'approve' has unknown key(s): agree, samples
 #
-#    `jig.verify.gate_for` reads them off the node with getattr and the walker
+#    `stepmold.verify.gate_for` reads them off the node with getattr and the walker
 #    already routes `Unsure`, so the runtime half is real and tested — see
 #    gate_demo.py in this directory, which attaches the keys from Python and
 #    shows a refund NOT being issued because two draws disagreed. README.md

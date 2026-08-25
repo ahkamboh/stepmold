@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "jig"
+name = "stepmold"
 description = "Compile your agent once with a frontier model. Run it forever on a small one."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -26,29 +26,29 @@ classifiers = [
 ]
 
 # Deliberately empty, and load-bearing. A pack has to run on a client's own box, and
-# "python3 -m jig" must work there without a wheel-build toolchain, a resolver, or a
+# "python3 -m stepmold" must work there without a wheel-build toolchain, a resolver, or a
 # CUDA-adjacent dependency tree. docs/ARCHITECTURE.md §7.2 sizes the whole runtime around this.
 # tests/production/test_packaging.py fails the build if anything is ever added here.
 dependencies = []
 
-# The version lives in exactly one place: jig/__init__.py.
+# The version lives in exactly one place: stepmold/__init__.py.
 dynamic = ["version"]
 
 [project.urls]
-Homepage = "https://github.com/ahkamboh/jig"
-Repository = "https://github.com/ahkamboh/jig"
-Issues = "https://github.com/ahkamboh/jig/issues"
+Homepage = "https://github.com/ahkamboh/stepmold"
+Repository = "https://github.com/ahkamboh/stepmold"
+Issues = "https://github.com/ahkamboh/stepmold/issues"
 
 [project.scripts]
-jig = "jig.cli:main"
+stepmold = "stepmold.cli:main"
 
 [tool.setuptools]
 # Explicit rather than auto-discovered: tests/ and examples/ ship in the sdist (they are
 # how you check a release actually works) but must never land in site-packages.
-packages = ["jig", "jig.backends"]
+packages = ["stepmold", "stepmold.backends"]
 
 [tool.setuptools.dynamic]
-version = { attr = "jig.__version__" }
+version = { attr = "stepmold.__version__" }
 
 [tool.setuptools.package-data]
-jig = ["py.typed"]
+stepmold = ["py.typed"]

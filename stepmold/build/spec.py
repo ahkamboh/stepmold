@@ -1,4 +1,4 @@
-"""The types every stage of `jig build` passes to the next.
+"""The types every stage of `stepmold build` passes to the next.
 
 The compiler is a pipeline, and these are the only things that cross between its stages:
 
@@ -16,8 +16,8 @@ Frozen dataclasses throughout. A stage returns a new plan rather than editing th
 was given, so a compile that fails halfway leaves nothing half-written — the same
 verify-before-commit discipline the runtime uses, applied to the compiler.
 
-Standard library only, like everything else in jig. `jig build` may cost more at build
-time than `jig run` does at run time, but it must not drag a dependency into the package
+Standard library only, like everything else in stepmold. `stepmold build` may cost more at build
+time than `stepmold run` does at run time, but it must not drag a dependency into the package
 that ships to a client box.
 """
 
@@ -54,7 +54,7 @@ class FieldSpec:
 
     @property
     def schema(self):
-        """This field as the JSON-Schema fragment jig's grammar subset accepts."""
+        """This field as the JSON-Schema fragment stepmold's grammar subset accepts."""
         out = {"type": self.type}
         if self.enum:
             out["enum"] = list(self.enum)

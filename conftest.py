@@ -1,4 +1,4 @@
-"""Present so the repo root lands on sys.path for both the real pytest and jig's shim."""
+"""Present so the repo root lands on sys.path for both the real pytest and stepmold's shim."""
 
 import os
 import sys

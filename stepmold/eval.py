@@ -5,10 +5,10 @@ regenerable build outputs, but the gold examples are the hand-maintained asset, 
 "v3 passes 50/50" is the sentence a regulated buyer can actually audit.
 
 What makes this more than a test runner is **attribution**. DSPy's known limitation is
-that optimisation is end-to-end and a failure is a black box; because a jig graph gives
+that optimisation is end-to-end and a failure is a black box; because a stepmold graph gives
 every node its own input/output contract and the walker records which node wrote which
 state key, a failed case can name the node that caused it. `Report.by_node` is that
-per-node signal — the thing a future `jig build` would optimise against.
+per-node signal — the thing a future `stepmold build` would optimise against.
 
 The second thing it reports is **the tier split**. A single pass rate is the wrong number
 to ship on: it averages the cases the pack answered on its own together with the cases it
@@ -251,7 +251,7 @@ class Report:
         return "\n".join(lines)
 
     def tier_summary(self):
-        """The automation rate, as three lines, printed by `jig eval --tiers`.
+        """The automation rate, as three lines, printed by `stepmold eval --tiers`.
 
         Separate from `summary()` on purpose. `summary()` is what every existing script
         and transcript already parses, and it does not change; this is an operator asking
@@ -287,7 +287,7 @@ def evaluate(pack, model, cases=None, tools=None):
     gives each case a fresh model, which is how an ordered `FakeModel` script stays
     readable across a dozen cases.
 
-    `tools` is the host's `ToolRegistry` (see `jig.tools`), for a pack whose graph has
+    `tools` is the host's `ToolRegistry` (see `stepmold.tools`), for a pack whose graph has
     `tool` nodes. It is handed to the walker only when it was given, so a pack with no
     tools — and a runtime whose walker predates them — scores exactly as it did before.
     """

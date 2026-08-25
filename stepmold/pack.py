@@ -1,4 +1,4 @@
-"""Loading and validating a JigPack.
+"""Loading and validating a StepmoldPack.
 
 A pack is a directory, not a database — it is meant to be read in a diff, checked into
 a client's repo, and shipped as text (docs/ARCHITECTURE.md §7.2):
@@ -12,7 +12,7 @@ a client's repo, and shipped as text (docs/ARCHITECTURE.md §7.2):
       evalset.jsonl        the contract: {"input": {...}, "expect": {...}} per line
 
 A `tool` node has no files of its own: it names a function the *host* registered
-(`jig/tools.py`), so there is nothing in the pack to read for it. Pass the registry —
+(`stepmold/tools.py`), so there is nothing in the pack to read for it. Pass the registry —
 `load_pack(path, tools=registry)` — and the name it calls and the state that tool reads
 are checked here too; leave it out and the pack still loads, unchecked on that one point.
 
@@ -48,7 +48,7 @@ __all__ = [
 
 NODE_TYPES = ("generate", "assert", "tool", "end")
 
-# Names jig binds in a run's scope for its own purposes. `codegen.think` renders the
+# Names stepmold binds in a run's scope for its own purposes. `codegen.think` renders the
 # think template with a `scratchpad` of its own, so anything else that lands under that
 # name is served to the model in the slot the prompt labels "your notes from thinking
 # this through" — the most persuasive position in the whole prompt, filled with text that
@@ -117,7 +117,7 @@ class GraphError(PackError):
 
 
 class GrammarError(PackError):
-    """A node's grammar file is not a schema jig can enforce."""
+    """A node's grammar file is not a schema stepmold can enforce."""
 
 
 class EvalsetError(PackError):
@@ -152,7 +152,7 @@ class Node:
     expr: Optional[str] = None
     assert_expr: Optional[str] = None
     # The registered name a `type: tool` node calls. A pack names an action; it never
-    # contains one (see jig/tools.py) — so this is a key into the host's registry and
+    # contains one (see stepmold/tools.py) — so this is a key into the host's registry and
     # nothing else: no import, no dotted path, no default.
     tool: Optional[str] = None
 
@@ -213,12 +213,12 @@ class Pack:
 def load_pack(path, tools=None):
     """Read the pack at `path`, validate it, and return a `Pack`.
 
-    `tools` is the host's `jig.tools.ToolRegistry`, and passing it turns on the one
+    `tools` is the host's `stepmold.tools.ToolRegistry`, and passing it turns on the one
     check this loader cannot do alone: that every `type: tool` node names something the
     host actually registered, and that what each tool declares it `reads` is a field
     this graph will have by the time the node runs. See `check_tools`.
 
-    It is optional on purpose. `jig validate` on a machine where the tools live in
+    It is optional on purpose. `stepmold validate` on a machine where the tools live in
     somebody else's process must still be able to say the pack is well formed — a check
     that cannot run is not the same as a check that failed.
     """
@@ -361,7 +361,7 @@ def _build_node(path, node_name, node_type, spec):
 
     if spec.get("output") in RESERVED_STATE_NAMES:
         raise GraphError(
-            "graph.yaml: node %r has output %r, which is a name jig reserves for its "
+            "graph.yaml: node %r has output %r, which is a name stepmold reserves for its "
             "own scope — committing there would write the node's answer into the think "
             "stage's notes slot" % (node_name, spec.get("output"))
         )
@@ -561,7 +561,7 @@ def check_tools(pack, tools):
     Two questions, both of which have a right answer before the run starts:
 
     * **Is the tool there?** A name the host never registered is refused here rather
-      than at the step that would have called it. `jig/tools.py` builds the allowlist
+      than at the step that would have called it. `stepmold/tools.py` builds the allowlist
       that way on purpose — a pack can only call what the host already handed it — and
       an allowlist that is checked halfway through a job is not one.
     * **Can the tool's `reads` be satisfied?** A tool is invoked with exactly the state
@@ -591,7 +591,7 @@ def check_tools(pack, tools):
     caller passes, and an earlier node whose grammar declares no properties can write
     anything at all; in either case an unknown field is unproven, not wrong.
 
-    Raises `jig.tools.ToolNotRegistered` for a name the registry does not hold, and
+    Raises `stepmold.tools.ToolNotRegistered` for a name the registry does not hold, and
     `ToolWiringError` for a field nothing produces.
     """
     tool_nodes = [node for node in pack.nodes.values() if node.type == "tool"]
@@ -601,7 +601,7 @@ def check_tools(pack, tools):
         # A plain dict would answer `get(name, node_name)` with the node name and sail
         # straight past the registration check, so refuse the shape rather than trust it.
         raise TypeError(
-            "tools must be a jig.tools.ToolRegistry (got %s)" % type(tools).__name__
+            "tools must be a stepmold.tools.ToolRegistry (got %s)" % type(tools).__name__
         )
 
     # Every name first: an unregistered tool is the more basic mistake, and reporting it

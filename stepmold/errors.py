@@ -2,7 +2,7 @@
 
 The walker, the codegen, the verifier and the eval runner all raise these, and several
 of them import each other. Keeping the hierarchy in a leaf module is what stops that from
-becoming an import cycle. Pack-loading errors are different — they belong to `jig.pack`,
+becoming an import cycle. Pack-loading errors are different — they belong to `stepmold.pack`,
 because they happen before a run exists.
 """
 
@@ -12,7 +12,7 @@ __all__ = [
     "DanglingEdge",
     "DeadEnd",
     "ExprError",
-    "JigError",
+    "StepmoldError",
     "MaxStepsExceeded",
     "MissingVariable",
     "NodeFailed",
@@ -22,11 +22,11 @@ __all__ = [
 ]
 
 
-class JigError(Exception):
-    """Base class for everything jig raises at run time."""
+class StepmoldError(Exception):
+    """Base class for everything stepmold raises at run time."""
 
 
-class RunError(JigError):
+class RunError(StepmoldError):
     """A run could not continue."""
 
 

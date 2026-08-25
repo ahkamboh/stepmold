@@ -1,10 +1,10 @@
-# jig
+# stepmold
 
 **A Python framework for running LLM workflows reliably on small models.**
 
 A small model is not bad at any one step. It is bad at *many steps in a row* — a 2% error
 per step compounds to a 33% failure rate over 20 steps, and worse the longer the task runs.
-Most agent frameworks answer that by reaching for a bigger model. jig answers it by making
+Most agent frameworks answer that by reaching for a bigger model. stepmold answers it by making
 each step short, schema-constrained and verified before anything is committed, so errors
 stop compounding.
 
@@ -12,11 +12,11 @@ Measured on a 50-node workflow at a 10% per-step error rate: **96.5% end-to-end 
 against 2.0% for the same model with the same prompts and no verification.**
 
 ```bash
-pip install git+https://github.com/ahkamboh/jig
-jig run mypack --input '{"ticket": "I was charged twice"}'
+pip install git+https://github.com/ahkamboh/stepmold
+stepmold run mypack --input '{"ticket": "I was charged twice"}'
 ```
 
-- Zero dependencies. `jig` imports nothing outside the Python standard library.
+- Zero dependencies. `stepmold` imports nothing outside the Python standard library.
 - Any OpenAI-compatible endpoint — llama.cpp-server, vLLM, SGLang, or a hosted API.
 - A workflow is a directory of text files, so it can be diffed, reviewed and copied to a
   machine that cannot install anything.
@@ -28,7 +28,7 @@ jig run mypack --input '{"ticket": "I was charged twice"}'
 
 ## Contents
 
-- [Why](#why) — the problem jig exists for
+- [Why](#why) — the problem stepmold exists for
 - [Results](#results) — what has been measured
 - [Install](#install)
 - [Quickstart](#quickstart)
@@ -46,7 +46,7 @@ Agent frameworks are runtimes: the model decides what happens next on every step
 run. That works, and it is why they need a frontier model — the model is doing the planning
 continuously, and you pay for planning on every request forever.
 
-jig splits that in two.
+stepmold splits that in two.
 
 |                   | Who decides            | How often               |
 | ----------------- | ---------------------- | ----------------------- |
@@ -73,7 +73,7 @@ against a seeded model with a controllable per-step error rate. Both arms see id
 first attempts at every node (blake2b-seeded), so the comparison is paired. 200 seeds per
 cell, 2,400 runs.
 
-| Nodes | Error/step | jig       | no verification | analytical `(1-p)^N` |
+| Nodes | Error/step | stepmold       | no verification | analytical `(1-p)^N` |
 | ----- | ---------- | --------- | --------------- | -------------------- |
 | 20    | 2%         | **100.0%** | 68.0%           | 66.8%                |
 | 20    | 10%        | **99.0%**  | 16.0%           | 12.2%                |
@@ -83,8 +83,8 @@ cell, 2,400 runs.
 
 The margin over the analytical curve grows with N, which is the signature of attacking
 compounding rather than attacking individual errors. Expressed as effective per-step error
-at 50 nodes and 10%: **0.0007 for jig against 0.0753 without**, for 1.09× the generations.
-Across all 2,400 jig runs there were **zero silently-wrong answers**; the unverified arm
+at 50 nodes and 10%: **0.0007 for stepmold against 0.0753 without**, for 1.09× the generations.
+Across all 2,400 stepmold runs there were **zero silently-wrong answers**; the unverified arm
 returns one in 34% of runs at 20 nodes and 10%.
 
 Reproduce: `python3 -m tests.production.test_longhorizon`
@@ -98,53 +98,50 @@ wrong choice for bounded steps. Full table and method in
 ## Install
 
 ```bash
-pip install git+https://github.com/ahkamboh/jig
+pip install git+https://github.com/ahkamboh/stepmold
 ```
 
 Python 3.9 or newer. No other dependencies, ever — CI fails the build if the dependency
 list is not empty.
 
-**Not yet on PyPI.** `pip install jig` fetches an unrelated Python 2 project of the same
-name, so install from the repository until this one is published under a name that is free.
-
 From a clone, with nothing installed at all:
 
 ```bash
-git clone https://github.com/ahkamboh/jig
-cd jig
-python3 -m jig --help
+git clone https://github.com/ahkamboh/stepmold
+cd stepmold
+python3 -m stepmold --help
 ```
 
 ## Quickstart
 
 The repository ships seven worked packs. Each runs offline against a scripted model, so this
-needs no GPU, no API key and no network. From a clone, use `python3 -m jig`; once
-installed the bare `jig` command does the same thing from anywhere.
+needs no GPU, no API key and no network. From a clone, use `python3 -m stepmold`; once
+installed the bare `stepmold` command does the same thing from anywhere.
 
 ```console
-$ python3 -m jig validate examples/support_triage
+$ python3 -m stepmold validate examples/support_triage
 support_triage v1: 7 nodes, 5 edges, 12 evalset cases, entry 'classify'
 ```
 
 Score it against its gold cases:
 
 ```console
-$ python3 -m jig eval examples/support_triage
+$ python3 -m stepmold eval examples/support_triage
 support_triage: 12/12 cases passed
 ```
 
 Run one case through it:
 
 ```console
-$ python3 -m jig run examples/support_triage --input '{"ticket": "I was charged twice for order A-1001, $49.99 both times."}'
+$ python3 -m stepmold run examples/support_triage --input '{"ticket": "I was charged twice for order A-1001, $49.99 both times."}'
 {"amount_usd": 49.99, "category": "billing", "escalate": false, "order_id": "A-1001", "priority": "p1", "queue": "billing-ops", "sentiment": "frustrated"}
 ```
 
-`jig eval` exits non-zero when a case fails, so a pack can gate a build. Here is a pack
+`stepmold eval` exits non-zero when a case fails, so a pack can gate a build. Here is a pack
 wired to a deliberately wrong model, to show what that looks like:
 
 ```console
-$ python3 -m jig eval tests/fixtures/cli_pack --model fake:fakes/wrong.json
+$ python3 -m stepmold eval tests/fixtures/cli_pack --model fake:fakes/wrong.json
 cli_demo: 1/2 cases passed
   FAIL technical case [classify]
     category: expected 'technical', got 'billing'
@@ -156,7 +153,7 @@ Note `[classify]` — the report names the node that caused the failure, not jus
 Point it at a real model, any OpenAI-compatible server:
 
 ```bash
-JIG_API_KEY=... python3 -m jig eval examples/support_triage \
+STEPMOLD_API_KEY=... python3 -m stepmold eval examples/support_triage \
   --model 'openai:http://localhost:8000/v1#qwen3-8b'
 ```
 
@@ -212,7 +209,7 @@ Running it:
 7. **Checkpoint.** State is persisted after each committed node, so a killed run resumes
    instead of restarting.
 
-The evalset is the pack's contract. `jig eval` scores every case, names which node caused
+The evalset is the pack's contract. `stepmold eval` scores every case, names which node caused
 each failure, and can assert which branch a case must reach — so a change that quietly
 reroutes a workflow fails its tests instead of passing them.
 
@@ -225,7 +222,7 @@ reroutes a workflow fails its tests instead of passing them.
 | [Confidence](docs/confidence.md)              | The agreement gate, why a self-reported number is not one, and how to read the tier split |
 | [Expressions](docs/expressions.md)            | The `assert` language: what it supports and what it refuses       |
 | [Testing packs](docs/testing.md)              | Evalsets, scripted models, and scoring offline                    |
-| [Compiling a pack](docs/building.md)          | `jig build`: the spec format, the loop, and what it cannot do yet |
+| [Compiling a pack](docs/building.md)          | `stepmold build`: the spec format, the loop, and what it cannot do yet |
 | [Architecture](docs/ARCHITECTURE.md)          | Why it is built this way                                          |
 | [Benchmarks](docs/BENCHMARKS.md)              | Every measurement, with the command that produced it              |
 
@@ -234,7 +231,7 @@ reroutes a workflow fails its tests instead of passing them.
 Off by default — a library should not configure logging for its host. Turn it on per run:
 
 ```bash
-jig run mypack --input '{...}' --log-level info
+stepmold run mypack --input '{...}' --log-level info
 ```
 
 ```
@@ -264,7 +261,7 @@ has not been shown:
 - **One example pack uses a tool: `examples/refund_desk`.** It classifies a message, looks
   the order up through a host-registered tool, decides, and either issues the refund
   through a second tool or routes to a human. Run it with
-  `python3 -m jig eval examples/refund_desk --tools examples/refund_desk/tools.py:registry`.
+  `python3 -m stepmold eval examples/refund_desk --tools examples/refund_desk/tools.py:registry`.
   The other six decide without acting.
 - **The gate has no pack-file surface.** `samples:` and `agree:` are not keys `graph.yaml`
   accepts; a pack carrying them is refused at load, and the gate is reachable only from
@@ -276,17 +273,17 @@ has not been shown:
   in this repository can quote. [Confidence](docs/confidence.md) says how to find out on
   your own workflow, and says the same thing there.
 
-**Built, and newer:** `jig build` — the compiler. A frontier model authors a pack once from
+**Built, and newer:** `stepmold build` — the compiler. A frontier model authors a pack once from
 a task description and gold examples; a small model then runs it forever. Two of its four
 stages use no model at all: schema induction and the offline test model are arithmetic over
 the examples.
 
 ```console
-$ jig build ./myspec -o ./mypack --model 'openai:https://host/v1#a-big-model'
+$ stepmold build ./myspec -o ./mypack --model 'openai:https://host/v1#a-big-model'
 ```
 
 The loop is what makes it a compiler rather than a generator: it emits a pack, runs
-`jig eval` against it, and if the pack does not score full marks on its own gold cases it
+`stepmold eval` against it, and if the pack does not score full marks on its own gold cases it
 re-plans with the failing node named. It never edits the evalset — that is the contract —
 and a failed attempt never overwrites a working pack. See [Compiling a pack](docs/building.md).
 
@@ -311,7 +308,7 @@ $ python3 -m pytest -q
 ```
 
 Around 1,500 tests, no network, no GPU. The suite runs with no dependencies installed — including no pytest, via a stdlib shim. CI
-runs it on Python 3.9 through 3.13, checks that `jig/` imports nothing outside the standard
+runs it on Python 3.9 through 3.13, checks that `stepmold/` imports nothing outside the standard
 library, and builds and installs the wheel into a clean environment.
 
 Roughly 11,000 lines of framework and 20,000 lines of tests. The load-bearing invariants —

@@ -176,7 +176,7 @@ class TestNoInventedNumbers(unittest.TestCase):
         """
         benchmarks = _benchmarks_document()
         for required in ("Measured", "2026-08-24", "api.cerebras.ai",
-                         "gpt-oss-120b", "python3 -m jig eval"):
+                         "gpt-oss-120b", "python3 -m stepmold eval"):
             self.assertIn(
                 required, benchmarks,
                 "benchmark section states numbers without %r — no provenance" % required,
@@ -215,12 +215,12 @@ class TestTheGuardCatchesFabrications(unittest.TestCase):
     """
 
     def test_a_digit_is_caught(self):
-        self.assertTrue(unmeasured_claims("jig scores 48/50 on the gold cases."))
+        self.assertTrue(unmeasured_claims("stepmold scores 48/50 on the gold cases."))
 
     def test_a_spelled_out_number_is_caught(self):
         self.assertTrue(
             unmeasured_claims(
-                "jig plus a small model passed forty-eight of the fifty gold cases."
+                "stepmold plus a small model passed forty-eight of the fifty gold cases."
             )
         )
 

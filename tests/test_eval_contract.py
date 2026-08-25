@@ -21,9 +21,9 @@ import shutil
 import tempfile
 import unittest
 
-from jig.eval import evaluate
-from jig.model import FakeModel
-from jig.pack import PackError, load_pack
+from stepmold.eval import evaluate
+from stepmold.model import FakeModel
+from stepmold.pack import PackError, load_pack
 
 
 ROUTE_SCHEMA = {

@@ -1,14 +1,14 @@
-"""`python3 -m jig` — run a pack, score it, or check it.
+"""`python3 -m stepmold` — run a pack, score it, or check it.
 
 Three commands, because a pack has exactly three things you do to it:
 
-    jig validate <pack>                     is this pack well-formed?
-    jig run <pack> --input '<json>'         execute it once
-    jig eval <pack>                         score it against its contract
+    stepmold validate <pack>                     is this pack well-formed?
+    stepmold run <pack> --input '<json>'         execute it once
+    stepmold eval <pack>                         score it against its contract
 
 Exit codes are the contract with CI: **0** success, **1** the thing failed (invalid pack,
 failed run, evalset not fully passed), **2** you called it wrong (argparse's own code).
-`jig eval` exiting 1 on a single failed case is the point — that is what makes an evalset
+`stepmold eval` exiting 1 on a single failed case is the point — that is what makes an evalset
 a gate rather than a report.
 
 argparse only, per the stdlib rule. ARCHITECTURE.md §7 names Typer + Rich; both are dependencies,
@@ -21,7 +21,7 @@ import os
 import sys
 
 from . import __version__, log
-from .errors import JigError
+from .errors import StepmoldError
 from .eval import evaluate
 from .grammar import ValidationError
 from .pack import PackError, _resolve_inside, load_pack
@@ -43,7 +43,7 @@ def main(argv=None):
         return _fail("pack error: %s" % exc)
     except _build_error() as exc:
         return _fail("build error: %s" % exc)
-    except JigError as exc:
+    except StepmoldError as exc:
         return _fail("%s: %s" % (type(exc).__name__, exc))
     except (ValidationError, ValueError) as exc:
         return _fail(str(exc))
@@ -51,7 +51,7 @@ def main(argv=None):
         # A tool is free to return a datetime, a Decimal or an ORM row; JSON is not. The
         # value travels as far as the store or stdout before json refuses it, and the
         # refusal is a TypeError — the one error shape this handler did not name, so it
-        # arrived as a raw traceback full of jig frames. Found by audit.
+        # arrived as a raw traceback full of stepmold frames. Found by audit.
         #
         # Only that TypeError. json states its own case in a recognisable way, and a
         # TypeError from anywhere else is a bug that deserves its traceback rather than a
@@ -66,7 +66,7 @@ def _as_json(payload):
     """Serialise for stdout the way the store already serialises for disk.
 
     Python writes NaN and Infinity by default; RFC 8259 has no such tokens, so jq, Go and
-    most non-Python readers reject them. `jig run --store` refused those values already
+    most non-Python readers reject them. `stepmold run --store` refused those values already
     while the same run printed them to stdout and exited 0 — one invocation disagreeing
     with itself about whether a value was writable. Found by audit.
     """
@@ -76,12 +76,12 @@ def _as_json(payload):
 def _build_error():
     """BuildError, or a class that never matches when the compiler is not installed.
 
-    Importing jig.build from the top of this module would defeat the separation the
+    Importing stepmold.build from the top of this module would defeat the separation the
     compiler is built around, so the exception type is fetched only when it is needed.
     """
     try:
         from .build.spec import BuildError
-    except Exception:  # pragma: no cover - the runtime may ship without jig.build
+    except Exception:  # pragma: no cover - the runtime may ship without stepmold.build
         class BuildError(Exception):
             pass
     return BuildError
@@ -89,11 +89,11 @@ def _build_error():
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        prog="jig",
+        prog="stepmold",
         description="Compile your agent once with a frontier model. "
                     "Run it forever on a small one.",
     )
-    parser.add_argument("--version", action="version", version="jig %s" % __version__)
+    parser.add_argument("--version", action="version", version="stepmold %s" % __version__)
     commands = parser.add_subparsers(dest="command")
     observability = _observability_options()
 
@@ -153,7 +153,7 @@ def build_parser():
 def _add_tools_option(command):
     """`--tools`, on the two subcommands that execute a pack.
 
-    An operator-only flag, and that is the whole security model of `jig.tools` expressed
+    An operator-only flag, and that is the whole security model of `stepmold.tools` expressed
     at the command line: a pack *names* the actions it wants and the host *supplies*
     them. There is deliberately no manifest key for this — a pack you did not write must
     not be able to choose which code its tool names resolve to.
@@ -170,9 +170,9 @@ def _observability_options():
 
     A parent parser rather than three copies, and rather than options on the top-level
     parser: argparse only accepts a top-level option *before* the subcommand, and nobody
-    types `jig --log-level info run pack`.
+    types `stepmold --log-level info run pack`.
 
-    The default is `off`, and that is the contract: with no flag, jig configures no
+    The default is `off`, and that is the contract: with no flag, stepmold configures no
     handler, sets no level, and prints exactly what it printed before this existed.
     Logging is an operator's explicit request, not a thing that happens to them.
     """
@@ -191,7 +191,7 @@ def _observability_options():
 def _start_logging(args):
     """Turn logging on if this invocation asked for it. Only an application may.
 
-    stderr, always. `jig run` prints its result as JSON on stdout and callers pipe it
+    stderr, always. `stepmold run` prints its result as JSON on stdout and callers pipe it
     onward; a log line there would corrupt the output instead of describing it.
     """
     level = getattr(args, "log_level", "off")
@@ -361,9 +361,9 @@ def _allow(args):
 def command_build(args):
     """Compile a pack. The only subcommand that needs a model at all times.
 
-    jig.build is imported here rather than at module scope on purpose: the runtime ships
+    stepmold.build is imported here rather than at module scope on purpose: the runtime ships
     to a client box and must not carry the compiler, and a test asserts that importing
-    jig.cli does not pull jig.build in behind it.
+    stepmold.cli does not pull stepmold.build in behind it.
     """
     from .build.compile import compile_pack, load_build_spec
 
@@ -507,13 +507,13 @@ def _tool_registry(args, entry_point):
         return None
     # `entry_point` is None when the registry is wanted only to CHECK a pack's wiring at
     # load time, not to run it. There is nothing to be compatible with in that case, so
-    # the capability check does not apply — `jig validate --tools` must work on a runtime
+    # the capability check does not apply — `stepmold validate --tools` must work on a runtime
     # whose walker predates tool nodes, since checking is exactly what such a runtime can
     # still usefully do.
     if entry_point is not None and not _accepts_tools(entry_point):
         raise ValueError(
-            "--tools: this jig runtime cannot run tools — %s.%s takes no 'tools' "
-            "argument. Upgrade jig, or drop the flag."
+            "--tools: this stepmold runtime cannot run tools — %s.%s takes no 'tools' "
+            "argument. Upgrade stepmold, or drop the flag."
             % (entry_point.__module__, entry_point.__name__)
         )
     return _load_registry(spec)
@@ -523,7 +523,7 @@ def _accepts_tools(function):
     """Whether `function` will accept a `tools=` keyword.
 
     The same question `graph._save_accepts_attempts` asks of a store, asked for the same
-    reason: these are seams between a version of jig and code written against another
+    reason: these are seams between a version of stepmold and code written against another
     one, and a clear refusal beats a keyword error from three frames down.
     """
     import inspect
@@ -548,8 +548,8 @@ def _load_registry(spec):
     the pack reaches this function — see `_add_tools_option`.
 
     importlib is imported here rather than at module scope, like every other thing the
-    CLI can reach into: `import jig.cli` must stay as cheap as the runtime that never
-    passes this flag. Nothing here imports `jig.tools` either — the registry is
+    CLI can reach into: `import stepmold.cli` must stay as cheap as the runtime that never
+    passes this flag. Nothing here imports `stepmold.tools` either — the registry is
     duck-typed, so a host may hand over its own wrapper.
     """
     import importlib
@@ -588,7 +588,7 @@ def _module_from_file(path):
     full = os.path.abspath(path)
     if not os.path.isfile(full):
         raise ValueError("--tools: no such file %s" % full)
-    name = "_jig_tools_%s" % os.path.splitext(os.path.basename(full))[0]
+    name = "_stepmold_tools_%s" % os.path.splitext(os.path.basename(full))[0]
     spec = importlib.util.spec_from_file_location(name, full)
     if spec is None or spec.loader is None:
         raise ValueError("--tools: %s is not importable as a Python module" % full)
@@ -618,7 +618,7 @@ def _registry_from(module, attribute, spec):
         found = found()
     if not _looks_like_registry(found):
         raise ValueError(
-            "--tools: %s is a %s, not a ToolRegistry (see jig.tools)"
+            "--tools: %s is a %s, not a ToolRegistry (see stepmold.tools)"
             % (spec, type(found).__name__)
         )
     return found
@@ -699,10 +699,10 @@ def _parse_input(text):
 
 def _usage(parser):
     parser.print_usage(sys.stderr)
-    sys.stderr.write("jig: a command is required (run, eval, validate)\n")
+    sys.stderr.write("stepmold: a command is required (run, eval, validate)\n")
     return 2
 
 
 def _fail(message):
-    sys.stderr.write("jig: %s\n" % message)
+    sys.stderr.write("stepmold: %s\n" % message)
     return 1

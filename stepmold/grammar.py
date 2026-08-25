@@ -5,9 +5,9 @@ Two jobs, and they are deliberately separate:
 * `schema_to_grammar` turns a node's schema into the backend-neutral struct that gets
   handed to `Model.generate`. It is a pass-through today — real backends (T11) translate
   it into `response_format` / `grammar` on the way out. It also *checks* the schema, so a
-  typo in a pack fails at `jig validate` time rather than at 3am in production.
+  typo in a pack fails at `stepmold validate` time rather than at 3am in production.
 * `validate_against` is the runtime half of verify-before-commit (docs/ARCHITECTURE.md §3): even
-  with a constrained decoder, jig never trusts output it has not checked itself. It also
+  with a constrained decoder, stepmold never trusts output it has not checked itself. It also
   refuses what `json.loads` accepts but JSON does not have — NaN, Infinity, and nesting
   deep enough to exhaust the interpreter — because every one of those is fatal *after*
   the commit, where no retry and no `on_fail` edge can reach it.
@@ -31,10 +31,10 @@ __all__ = [
 
 GRAMMAR_KIND = "json_schema"
 
-# How deep a candidate value may nest before jig refuses it. `json.loads` will happily
+# How deep a candidate value may nest before stepmold refuses it. `json.loads` will happily
 # build a structure thousands of levels deep, and everything downstream of the commit
 # walks it recursively — `state._check`, `json.dumps`, the checkpoint — so a deep enough
-# object dies with a `RecursionError`, which is not a `JigError`, is not caught by the
+# object dies with a `RecursionError`, which is not a `StepmoldError`, is not caught by the
 # CLI, and does not take the node's `on_fail` edge. The ceiling is far above any node
 # contract a pack expresses and far below the interpreter's own limit.
 _MAX_DEPTH = 64
@@ -55,7 +55,7 @@ _KEYWORDS = {
 
 
 class SchemaError(ValueError):
-    """The schema itself is not something jig can enforce."""
+    """The schema itself is not something stepmold can enforce."""
 
 
 class ValidationError(ValueError):
@@ -71,7 +71,7 @@ class ValidationError(ValueError):
         # `safe` is the model-facing half of the message. It may describe the constraint
         # (which comes from the pack's own schema) but never the offending value (which
         # came from the model). Quoting a rejected value back into a retry prompt is the
-        # self-conditioning spiral jig/verify.py exists to prevent.
+        # self-conditioning spiral stepmold/verify.py exists to prevent.
         self.safe = message if safe is None else safe
         # The *location* is model-authored text too, whenever the last segment is a key
         # the model invented: `additionalProperties: false` names the offending property,
@@ -158,7 +158,7 @@ def _check_shape(value, path, depth):
     if depth > _MAX_DEPTH:
         raise ValidationError(
             path,
-            "value nests more than %d levels deep, which jig refuses to commit"
+            "value nests more than %d levels deep, which stepmold refuses to commit"
             % _MAX_DEPTH,
             safe="value nests more than %d levels deep" % _MAX_DEPTH,
             # Every segment past the root here may be a key the model invented.

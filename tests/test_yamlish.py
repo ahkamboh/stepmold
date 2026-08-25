@@ -2,7 +2,7 @@
 
 import unittest
 
-from jig.yamlish import YamlError, parse
+from stepmold.yamlish import YamlError, parse
 
 
 class TestScalars(unittest.TestCase):
@@ -91,14 +91,14 @@ class TestStructure(unittest.TestCase):
         self.assertEqual(parse("- one\n- two\n"), ["one", "two"])
 
     def test_comments_and_blank_lines_are_ignored(self):
-        doc = parse("# leading\n\nname: jig   # trailing\n\n# trailing block\n")
-        self.assertEqual(doc, {"name": "jig"})
+        doc = parse("# leading\n\nname: stepmold   # trailing\n\n# trailing block\n")
+        self.assertEqual(doc, {"name": "stepmold"})
 
     def test_hash_inside_a_quoted_string_is_not_a_comment(self):
         self.assertEqual(parse("t: 'a # b'\n"), {"t": "a # b"})
 
     def test_document_markers_are_skipped(self):
-        self.assertEqual(parse("---\nname: jig\n...\n"), {"name": "jig"})
+        self.assertEqual(parse("---\nname: stepmold\n...\n"), {"name": "stepmold"})
 
     def test_empty_document(self):
         self.assertIsNone(parse(""))
@@ -169,7 +169,7 @@ class TestErrors(unittest.TestCase):
         return str(caught.exception)
 
     def test_missing_colon_reports_the_line(self):
-        message = self._error("name: jig\njust a bare line\n")
+        message = self._error("name: stepmold\njust a bare line\n")
         self.assertIn("graph.yaml:2", message)
         self.assertIn("key: value", message)
 

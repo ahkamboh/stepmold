@@ -1,9 +1,9 @@
 """Stages 2 and 3 — decompose the task, then write one prompt per node.
 
-These are the two stages that need a model, and they use the model the same way jig's
+These are the two stages that need a model, and they use the model the same way stepmold's
 runtime does: a schema goes out with the request, the answer is validated against that
 schema by hand, and a rejected answer is re-asked with *what was wrong* and never with
-what it said (jig/verify.py, rule 2). A compiler that asked for unconstrained JSON and
+what it said (stepmold/verify.py, rule 2). A compiler that asked for unconstrained JSON and
 hoped would be a poor advertisement for the thing it compiles.
 
 What the planner is *allowed to say* matters as much as what is checked afterwards. It
@@ -98,7 +98,7 @@ _PLAN_SCHEMA = {
                 "additionalProperties": False,
             },
         },
-        # An ending's condition is a field name and one value, not a mapping: jig's
+        # An ending's condition is a field name and one value, not a mapping: stepmold's
         # grammar subset pins named properties, and an open mapping of state-path to
         # value would be `{"type": "object"}` — a constraint you think you have and
         # don't. The pair is turned into `when: {field: value}` here.
@@ -560,7 +560,7 @@ def write_prompts(task, plan, model):
     """Write one prompt per node in `plan`, keyed by node name.
 
     One entry per node and nothing else. A two_stage node's optional `<node>.think.txt`
-    is deliberately not emitted: jig/codegen.py already derives a think prompt from the
+    is deliberately not emitted: stepmold/codegen.py already derives a think prompt from the
     emit prompt when the file is absent, and inventing a second key would put a filename
     convention into a contract that says one prompt per node.
     """
@@ -677,7 +677,7 @@ def _check_prompt(task, node, text):
 
 
 def _variables_used(task, node, text):
-    """The state names the prompt actually substitutes — found with jig's own renderer.
+    """The state names the prompt actually substitutes — found with stepmold's own renderer.
 
     Rendering a probe state is the check, rather than a second copy of render's regex:
     whatever the runtime would substitute is exactly what is counted here, and whatever
@@ -732,7 +732,7 @@ def _ask(model, prompt, schema, max_tokens, check, what):
     The same three rungs the runtime spends on a node, and the same rule about what a
     retry is allowed to say: the re-ask carries the reason the last answer was rejected,
     never the answer itself. Feeding a model its own bad output back is the
-    self-conditioning spiral jig/verify.py exists to prevent, and a compiler that did it
+    self-conditioning spiral stepmold/verify.py exists to prevent, and a compiler that did it
     would be arguing against its own runtime.
 
     The one thing a rejection may repeat back is a *name* the model invented — the field

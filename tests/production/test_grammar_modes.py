@@ -1,6 +1,6 @@
 """The four grammar modes, driven over a real socket.
 
-`jig.backends.openai_compat.GRAMMAR_MODES` names four ways to ask an OpenAI-compatible
+`stepmold.backends.openai_compat.GRAMMAR_MODES` names four ways to ask an OpenAI-compatible
 server for constrained output. Exactly one of them — `response_format` — has ever been
 executed against a live server. The other three were written from a spec and read back
 by a mocked test that asserted the same dict the author had just typed. That is the
@@ -24,7 +24,7 @@ NO NETWORK. The proxy is constructed with no upstream, so it answers by itself a
 never opens an outbound connection.
 
 Tests whose name or comment says DEFECT document behaviour that is wrong. They assert
-what jig does today so the suite stays honest; fixing the defect is expected to fail
+what stepmold does today so the suite stays honest; fixing the defect is expected to fail
 them, and the comment says what the assertion should become. Three of those defects are
 now fixed and their tests assert the fix instead: `extra_body` can no longer overwrite
 the grammar, `strict: true` is claimed only for a schema that satisfies it, and a socket
@@ -38,12 +38,12 @@ import json
 import os
 import unittest
 
-from jig.backends.openai_compat import GRAMMAR_MODES, OpenAICompatModel
-from jig.errors import BackendError, JigError, NodeFailed
-from jig.grammar import check_schema, schema_to_grammar, validate_against
-from jig.graph import run
-from jig.pack import Edge, Node, Pack
-from jig.verify import run_node
+from stepmold.backends.openai_compat import GRAMMAR_MODES, OpenAICompatModel
+from stepmold.errors import BackendError, StepmoldError, NodeFailed
+from stepmold.grammar import check_schema, schema_to_grammar, validate_against
+from stepmold.graph import run
+from stepmold.pack import Edge, Node, Pack
+from stepmold.verify import run_node
 
 from .faultproxy import FaultProxy
 
@@ -61,7 +61,7 @@ ENUM_SCHEMA = {
     "additionalProperties": False,
 }
 
-# The same schema jig's own invariant suite uses (tests/test_invariants.py OPEN_SCHEMA):
+# The same schema stepmold's own invariant suite uses (tests/test_invariants.py OPEN_SCHEMA):
 # no `additionalProperties`, and a property that is not required. `check_schema` accepts
 # it. OpenAI-family strict structured output does not. See TheStrictFlagIsUnconditional.
 OPEN_SCHEMA = {
@@ -114,7 +114,7 @@ class Recorder(FaultProxy):
                 "strict") else []
             if problems:
                 return self._send(handler, 400, {"error": {
-                    "message": "Invalid schema for response_format 'jig_node': %s"
+                    "message": "Invalid schema for response_format 'stepmold_node': %s"
                                % "; ".join(problems)}})
         return FaultProxy._respond(self, handler, fault, _with_prompt_schema(payload))
 
@@ -257,7 +257,7 @@ class ProxyTest(unittest.TestCase):
 class TheWirePayloadMatchesTheServerFamily(ProxyTest):
     """Each mode names a server family. Assert what that family actually reads.
 
-    The mapping is the module docstring of `jig/backends/openai_compat.py`:
+    The mapping is the module docstring of `stepmold/backends/openai_compat.py`:
 
         response_format  vLLM, SGLang, OpenAI  -> response_format.json_schema.schema
         json_schema      llama.cpp-server      -> a top-level "json_schema" field
@@ -267,7 +267,7 @@ class TheWirePayloadMatchesTheServerFamily(ProxyTest):
 
     A mode that puts the schema in the wrong place fails open: the server ignores the
     field it does not know, returns unconstrained text, and nothing anywhere reports a
-    problem. That is the failure `jig/grammar.py` calls "a constraint you think you have
+    problem. That is the failure `stepmold/grammar.py` calls "a constraint you think you have
     and don't", so it is asserted field by field rather than by shape.
     """
 
@@ -276,7 +276,7 @@ class TheWirePayloadMatchesTheServerFamily(ProxyTest):
         payload = self.proxy.payload
         self.assertEqual(payload["response_format"]["type"], "json_schema")
         self.assertEqual(payload["response_format"]["json_schema"]["schema"], ENUM_SCHEMA)
-        self.assertEqual(payload["response_format"]["json_schema"]["name"], "jig_node")
+        self.assertEqual(payload["response_format"]["json_schema"]["name"], "stepmold_node")
         self.assertIs(payload["response_format"]["json_schema"]["strict"], True)
         # The llama.cpp spelling must not also be present: two constraints, one of which
         # the server silently ignores, is how a mode gets "verified" against the wrong one.
@@ -358,11 +358,11 @@ class TheWirePayloadMatchesTheServerFamily(ProxyTest):
         for mode in GRAMMAR_MODES:
             self.proxy.ask(mode)
             agent = self.proxy.calls[-1]["user_agent"]
-            self.assertTrue(agent.startswith("jig/"), mode)
+            self.assertTrue(agent.startswith("stepmold/"), mode)
             self.assertNotIn("python-urllib", agent.lower(), mode)
 
 
-class TheSchemaOnTheWireIsTheSchemaJigVerifies(ProxyTest):
+class TheSchemaOnTheWireIsTheSchemaStepmoldVerifies(ProxyTest):
     """Whatever the mode, the server is told the same contract the verifier enforces.
 
     A mode that reshapes the schema on the way out (drops a keyword the server does not
@@ -392,14 +392,14 @@ class TheSchemaOnTheWireIsTheSchemaJigVerifies(ProxyTest):
             "required": ["priority", "order_id", "tags"],
             "additionalProperties": False,
         }
-        check_schema(rich)  # jig accepts it, so a pack can ship it
+        check_schema(rich)  # stepmold accepts it, so a pack can ship it
         self.proxy.ask("json_object", schema=rich)
         self.assertEqual(_prompt_schema(self.proxy.prompt()), rich)
 
     def test_braces_in_the_appended_schema_are_never_re_rendered(self):
         """The schema is appended *after* template rendering, so its braces are inert.
 
-        `jig.render` substitutes `{name}` from state. The schema is JSON: it is nothing
+        `stepmold.render` substitutes `{name}` from state. The schema is JSON: it is nothing
         but braces, and a `description` may hold a literal `{placeholder}`. Appending it
         inside the renderer would either explode on a missing variable or splice run
         state into the schema. It is appended in the backend instead, downstream of the
@@ -455,14 +455,14 @@ class AnUnknownGrammarModeIsRefused(ProxyTest):
 
     def test_the_cli_spec_path_refuses_it_too(self):
         """`--model openai:URL#name#mode` is where a typo actually gets typed."""
-        from jig.cli import resolve_model
+        from stepmold.cli import resolve_model
 
         with self.assertRaises(ValueError) as caught:
             resolve_model("openai:%s#m#telepathy" % self.proxy.base_url, pack=None)
         self.assertIn("telepathy", str(caught.exception))
 
     def test_the_cli_spec_path_accepts_every_declared_mode(self):
-        from jig.cli import resolve_model
+        from stepmold.cli import resolve_model
 
         for mode in GRAMMAR_MODES:
             model = resolve_model("openai:%s#m#%s" % (self.proxy.base_url, mode),
@@ -495,7 +495,7 @@ class TheLadderIsTheOnlyThingHoldingUpTheUnconstrainedModes(ProxyTest):
 
     With `response_format` or `json_schema` the server is doing the work and the ladder
     is insurance. With these two the server is doing nothing, so every claim in
-    `jig/verify.py` — parse, validate, re-sample with feedback — is load-bearing on the
+    `stepmold/verify.py` — parse, validate, re-sample with feedback — is load-bearing on the
     first attempt, every time.
 
     The proxy answers as a server that honours whatever schema the mode gave it, which
@@ -557,8 +557,8 @@ class TheLadderIsTheOnlyThingHoldingUpTheUnconstrainedModes(ProxyTest):
 
 
 def _first_verified(text):
-    """What `jig.verify.extract_json` would pull out of a generation."""
-    from jig.verify import extract_json
+    """What `stepmold.verify.extract_json` would pull out of a generation."""
+    from stepmold.verify import extract_json
 
     return extract_json(text)
 
@@ -603,7 +603,7 @@ class TheSurvivalRateOfEachMode(ProxyTest):
         `json_object` mode already carries the fallback — append the schema to the
         prompt — and `none` does not use it, so a `none`-mode node's only hope is that
         the pack's prompt text happens to spell out the JSON shape. Against a server
-        that knows only what jig told it, the survival rate is zero *for every script*,
+        that knows only what stepmold told it, the survival rate is zero *for every script*,
         including the three where the server was willing to cooperate.
 
         SHOULD BE: `none` means "no *server-side* constraint", not "no contract" —
@@ -792,7 +792,7 @@ class TheAppendedSchemaSurvivesThinkThenEmit(ProxyTest):
     def test_the_schema_block_is_appended_after_the_volatile_correction(self):
         """DEFECT (minor, prompt ordering): the most stable block is placed last.
 
-        `jig/codegen.py` states the rule explicitly — "Volatile content goes last. That
+        `stepmold/codegen.py` states the rule explicitly — "Volatile content goes last. That
         is a prefix-cache decision" — and orders the emit prompt stable-first: template,
         then scratchpad, then correction. `build_payload` then appends the schema, the
         single most stable block in the whole prompt, *after* all of it. Every retry
@@ -859,7 +859,7 @@ class ThePackIsNeverEditedByBuildingAPayload(ProxyTest):
         """DEFECT (latent): the schema goes into the payload by reference.
 
         Nothing in `build_payload` mutates it today, so the invariant above holds — but
-        only because `jig.grammar.schema_to_grammar` deep-copies the schema one layer
+        only because `stepmold.grammar.schema_to_grammar` deep-copies the schema one layer
         up, on every call. The backend's other documented entry point does not go
         through that copy: `generate(prompt, grammar=<bare schema>)` is supported and
         tested (tests/test_backend.py), and there the payload aliases the caller's own
@@ -895,7 +895,7 @@ class ExtraBodyCannotSilentlyRemoveTheConstraint(ProxyTest):
     `extra_body` for an unrelated server knob could overwrite the very field the grammar
     mode had just set. The request still succeeded, the model returned whatever it liked,
     and nothing reported that the node had lost its grammar — exactly the failure
-    `jig/grammar.py` names: "a silently-ignored constraint is a constraint you think you
+    `stepmold/grammar.py` names: "a silently-ignored constraint is a constraint you think you
     have and don't".
 
     The fix refuses the collision at construction, the way an unknown `grammar_mode` is
@@ -959,7 +959,7 @@ class TheStrictFlagIsClaimedOnlyWhenItHolds(ProxyTest):
 
     OpenAI-family structured output only accepts `strict: true` when every object in the
     schema sets `additionalProperties: false` and lists every declared property in
-    `required`. `jig.grammar.check_schema` requires neither — both keywords are optional,
+    `required`. `stepmold.grammar.check_schema` requires neither — both keywords are optional,
     by design — so a pack that validated cleanly, evalled green against a FakeModel and
     shipped could be rejected with HTTP 400 by the default grammar mode on the default
     server family. `tests/test_invariants.py` uses exactly such a schema (OPEN_SCHEMA) for
@@ -972,15 +972,15 @@ class TheStrictFlagIsClaimedOnlyWhenItHolds(ProxyTest):
     The fix is `_strict_ready(schema)`: claim strictness only for a schema that satisfies
     the rules. The alternative — normalising the schema into strict shape — was rejected
     because closing an object and marking every property required *changes the contract
-    the pack declared*: an optional field becomes one the model must emit, and jig would
+    the pack declared*: an optional field becomes one the model must emit, and stepmold would
     then be verifying against one schema while the server enforced another. Nothing is
     lost by not claiming it. The schema still goes on the wire in the same place, servers
-    that constrain decoding still use it, and `jig.verify` checks every output against
+    that constrain decoding still use it, and `stepmold.verify` checks every output against
     the pack's own schema either way.
     """
 
-    def test_jig_accepts_a_schema_that_strict_mode_forbids(self):
-        check_schema(OPEN_SCHEMA)  # jig is happy
+    def test_stepmold_accepts_a_schema_that_strict_mode_forbids(self):
+        check_schema(OPEN_SCHEMA)  # stepmold is happy
         self.assertEqual(
             _strict_violations(OPEN_SCHEMA),
             ["<root>: 'additionalProperties' must be false",
@@ -993,7 +993,7 @@ class TheStrictFlagIsClaimedOnlyWhenItHolds(ProxyTest):
         envelope = self.proxy.payload["response_format"]["json_schema"]
         self.assertIs(envelope["strict"], False)
         self.assertEqual(envelope["schema"], OPEN_SCHEMA)
-        self.assertEqual(envelope["name"], "jig_node")
+        self.assertEqual(envelope["name"], "stepmold_node")
 
     def test_strict_is_still_asserted_for_a_schema_that_satisfies_it(self):
         """ENUM_SCHEMA is closed and fully required, so the claim is true of it."""
@@ -1106,7 +1106,7 @@ class ADeadSocketIsAWrappedRetryableBackendError(ProxyTest):
     when a body is shorter than its `Content-Length`, and `RemoteDisconnected` when the
     peer closes before writing anything. Both come out of `response.read()` /
     `getresponse()` inside the `with self.opener(...)` block, and both walked straight
-    past the handler — so they were not `JigError`s (the CLI reported them as an
+    past the handler — so they were not `StepmoldError`s (the CLI reported them as an
     unhandled traceback rather than a diagnosed failure) and they were not retried at
     all, although a truncated body or a disconnect from an idle-timing-out proxy is the
     textbook transient, the exact thing `max_retries` exists for.
@@ -1132,13 +1132,13 @@ class ADeadSocketIsAWrappedRetryableBackendError(ProxyTest):
                     "p", grammar=schema_to_grammar(ENUM_SCHEMA), max_tokens=16)
             self.assertIn(self.proxy.base_url, str(caught.exception), mode)
 
-    def test_both_are_jig_errors_so_the_cli_can_diagnose_them(self):
+    def test_both_are_stepmold_errors_so_the_cli_can_diagnose_them(self):
         for fault in ("truncated", "reset"):
             self.proxy.script([fault], default=fault)
             try:
                 self.proxy.client("response_format").generate("p", None, 16)
             except BackendError as exc:
-                self.assertIsInstance(exc, JigError)
+                self.assertIsInstance(exc, StepmoldError)
             else:
                 self.fail("expected a BackendError for fault %r" % fault)
 

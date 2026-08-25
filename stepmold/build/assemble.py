@@ -1,19 +1,19 @@
 """Stage 5 — write the pack to disk, then prove it works.
 
 The four stages before this one produce data structures. This one produces the artifact:
-a directory of text files that `jig.pack.load_pack` accepts and `jig eval` scores.
+a directory of text files that `stepmold.pack.load_pack` accepts and `stepmold eval` scores.
 
     write_pack(directory, task, plan, prompts, script) -> str
-    verify_pack(directory)                             -> jig.eval.Report
+    verify_pack(directory)                             -> stepmold.eval.Report
     compile_report(report)                             -> str
 
 Two disciplines run through the whole module, and both exist because a compiler that is
 merely *usually* right is worse than no compiler:
 
-**Round-trip everything.** jig reads a YAML subset (`jig/yamlish.py`), not YAML, and that
+**Round-trip everything.** stepmold reads a YAML subset (`stepmold/yamlish.py`), not YAML, and that
 subset resolves `no` to `False` and `007` to `7`. An emitter that guesses wrong produces a
 pack that loads cleanly and means something else. So every document is parsed back with
-jig's own reader *before* it reaches the disk and compared against the structure it was
+stepmold's own reader *before* it reaches the disk and compared against the structure it was
 built from; then the finished directory is handed to `load_pack` and compared against the
 plan. A quoting bug fails the compile, loudly, instead of shipping.
 
@@ -46,13 +46,13 @@ __all__ = ["write_pack", "verify_pack", "compile_report"]
 # would work in one of those places and not the others.
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-# The plain scalars that survive `jig/yamlish.py` unchanged: a leading letter and nothing
+# The plain scalars that survive `stepmold/yamlish.py` unchanged: a leading letter and nothing
 # in the body that the parser gives a meaning to. Everything else is double-quoted. The
 # whitelist is deliberately narrow — over-quoting costs readability, under-quoting costs
 # correctness, and only one of those is caught by a test.
 _PLAIN = re.compile(r"^[A-Za-z][A-Za-z0-9_.\- ]*[A-Za-z0-9_.]$|^[A-Za-z]$")
 
-# Words `jig/yamlish.py:_scalar` resolves to something other than a string. Kept here
+# Words `stepmold/yamlish.py:_scalar` resolves to something other than a string. Kept here
 # rather than imported because they are that parser's private resolution table; if it
 # grows a word, the round-trip check below is what catches the divergence.
 _RESOLVED = (
@@ -79,7 +79,7 @@ def write_pack(directory, task, plan, prompts, script, overwrite=False):
 
     `prompts` maps node name -> emit template. A key of the form `"<node>.think"` is
     written as that node's two-stage think template (`prompts/<node>.think.txt`), which
-    is the one artifact whose location jig will not let a node override.
+    is the one artifact whose location stepmold will not let a node override.
 
     `script` is the offline model: a list of responses or an object keyed by prompt
     substring, written to `fakes/script.json` and named by the manifest, so the finished
@@ -153,7 +153,7 @@ def _check_plan(task, plan, prompts, script):
         )
     if not task.cases:
         raise BuildError(
-            "no gold cases: the evalset is the pack's contract and `jig eval` refuses "
+            "no gold cases: the evalset is the pack's contract and `stepmold eval` refuses "
             "an empty one, so a pack compiled without cases could never be verified"
         )
     if not script:
@@ -248,7 +248,7 @@ def _check_prompts(plan, prompts):
         if key.endswith(".think") and not plan.node_named(base).two_stage:
             raise BuildError(
                 "a think template was given for %r, which the plan does not mark "
-                "two_stage; jig would never read it" % base
+                "two_stage; stepmold would never read it" % base
             )
 
 
@@ -334,7 +334,7 @@ def _manifest(task, plan):
     }
     description = (task.description or "").strip()
     note = textwrap.fill(
-        "Compiled by `jig build`. The model above is the scripted stand-in this pack "
+        "Compiled by `stepmold build`. The model above is the scripted stand-in this pack "
         "ships with, so the evalset scores offline with no GPU and no network. Point "
         "--model at a real backend to run real inputs.",
         width=84,
@@ -357,7 +357,7 @@ def _graph(task, plan):
     for node in plan.nodes:
         spec = {"type": "generate", "max_tokens": _max_tokens(task, node.writes)}
         if node.two_stage:
-            # Bare `true`. `two_stage` is the one node key jig does not shape-check —
+            # Bare `true`. `two_stage` is the one node key stepmold does not shape-check —
             # `bool("false")` is True — so a quoted value here would silently double
             # every call this node makes (docs/pack-format.md).
             spec["two_stage"] = True
@@ -400,7 +400,7 @@ def _default_edges(plan):
 def _max_tokens(task, writes):
     """An emit budget measured off the gold answers this node has to reproduce.
 
-    jig has no tokenizer and must not grow one, so this counts bytes. A token is at least
+    stepmold has no tokenizer and must not grow one, so this counts bytes. A token is at least
     one byte in every tokenizer, which makes the byte length of the longest gold answer
     already an upper bound on its token count; the extra half plus a fixed floor covers
     the whitespace a model adds around the same JSON. It is a deliberate over-estimate,
@@ -492,9 +492,9 @@ def _json(value, sort_keys=False):
 
 
 def _yaml_document(data, filename, header=""):
-    """Render `data`, then read it back with jig's own parser before returning it.
+    """Render `data`, then read it back with stepmold's own parser before returning it.
 
-    This is the check that matters. jig reads a YAML subset that resolves `no`, `on` and
+    This is the check that matters. stepmold reads a YAML subset that resolves `no`, `on` and
     `007` to values that are not strings, so a quoting mistake produces a file that loads
     fine and means something else. Comparing the parse against the structure it came from
     turns that class of bug into a failed compile.
@@ -504,7 +504,7 @@ def _yaml_document(data, filename, header=""):
         parsed = parse_yaml(text, filename=filename)
     except YamlError as exc:
         raise BuildError(
-            "emitted %s is not readable by jig's own YAML parser: %s" % (filename, exc)
+            "emitted %s is not readable by stepmold's own YAML parser: %s" % (filename, exc)
         )
     if parsed != data:
         raise BuildError(
@@ -532,7 +532,7 @@ def _dump_mapping(mapping, indent, lines):
             if isinstance(value, dict):
                 _dump_mapping(value, indent + 2, lines)
             else:
-                # jig's parser wants a nested sequence indented past its key, so this
+                # stepmold's parser wants a nested sequence indented past its key, so this
                 # never emits the zero-indent `edges:` / `- from:` form real YAML allows.
                 _dump_sequence(value, indent + 2, lines)
         elif isinstance(value, str) and _block_safe(value):
@@ -639,7 +639,7 @@ def _block_safe(text):
 
 
 def _check_written(directory, task, plan, prompts):
-    """Load the finished directory as jig would, and hold it against the plan.
+    """Load the finished directory as stepmold would, and hold it against the plan.
 
     The in-memory round trip proves each document reads back as written; this proves the
     *pack* is the one that was planned — the node set, the entry, the edges, the prompt
@@ -680,9 +680,9 @@ def _check_written(directory, task, plan, prompts):
 def verify_pack(directory):
     """Load the pack at `directory` and score it against its own gold cases.
 
-    This is the gate. `jig eval` is what a buyer runs, so the compiler runs exactly that:
+    This is the gate. `stepmold eval` is what a buyer runs, so the compiler runs exactly that:
     the same loader, the same scripted model named by the manifest, the same
-    `jig.eval.evaluate`. A report that is not full marks means the compile failed, however
+    `stepmold.eval.evaluate`. A report that is not full marks means the compile failed, however
     plausible the prompts look.
     """
     pack = load_pack(directory)
@@ -697,7 +697,7 @@ def verify_pack(directory):
 def compile_report(report):
     """A short human summary of a verification: the score, and who is to blame.
 
-    On failure it leans on the per-node attribution `jig.eval` already produces, because
+    On failure it leans on the per-node attribution `stepmold.eval` already produces, because
     "10/12, and both failures are the priority node" is the sentence that says what to
     recompile — which is the signal a whole-pack pass/fail throws away.
     """

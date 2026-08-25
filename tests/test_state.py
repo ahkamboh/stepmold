@@ -9,12 +9,12 @@ import tempfile
 import threading
 import unittest
 
-import jig.state
-from jig.errors import JigError, NodeFailed, RunIdInUse, UnknownRun
-from jig.graph import run
-from jig.model import FakeModel, ModelExhausted
-from jig.pack import Edge, Node, Pack
-from jig.state import (
+import stepmold.state
+from stepmold.errors import StepmoldError, NodeFailed, RunIdInUse, UnknownRun
+from stepmold.graph import run
+from stepmold.model import FakeModel, ModelExhausted
+from stepmold.pack import Edge, Node, Pack
+from stepmold.state import (
     CheckpointMismatch,
     ResumeInProgress,
     Store,
@@ -341,7 +341,7 @@ class TestTheRoundTripContract(unittest.TestCase):
         It no longer gets as far as the store: `grammar.validate_against` refuses a
         non-finite number where the value enters, so the retry ladder sees an ordinary
         rejection and a run that never answers otherwise ends as `NodeFailed` — a
-        `JigError` the walker can route — instead of a bare `ValueError` raised from
+        `StepmoldError` the walker can route — instead of a bare `ValueError` raised from
         inside the checkpoint after the node had already committed. The store's own
         refusal, tested above, is the belt to that pair of braces.
         """
@@ -667,7 +667,7 @@ class TestCheckpointsRecordOnlyWhatChanged(unittest.TestCase):
     """State, path and provenance are stored as deltas — and must come back whole.
 
     Repeating all three in every checkpoint made an N-node run cost O(N^2) bytes, which
-    is precisely the shape jig exists to run. What a caller sees is unchanged: `latest`
+    is precisely the shape stepmold exists to run. What a caller sees is unchanged: `latest`
     and `history` hand back the same `Checkpoint` objects they always did.
     """
 
@@ -804,12 +804,12 @@ class TestTheStoreUnderContention(unittest.TestCase):
         self.assertEqual([repr(f) for f in failures], [])
         self.assertEqual(store.latest("r1").state, {"a": 1})
 
-    def test_the_busy_timeout_is_jigs_own_and_can_be_raised(self):
+    def test_the_busy_timeout_is_stepmolds_own_and_can_be_raised(self):
         store = Store(self.path)
         self.addCleanup(store.close)
         self.assertEqual(
             store._connection.execute("PRAGMA busy_timeout").fetchone()[0],
-            int(jig.state.DEFAULT_TIMEOUT * 1000),
+            int(stepmold.state.DEFAULT_TIMEOUT * 1000),
         )
         slow = Store(self.path, timeout=0.5)
         self.addCleanup(slow.close)
@@ -817,7 +817,7 @@ class TestTheStoreUnderContention(unittest.TestCase):
             slow._connection.execute("PRAGMA busy_timeout").fetchone()[0], 500
         )
 
-    def test_a_lock_that_outlasts_the_timeout_is_a_jig_error(self):
+    def test_a_lock_that_outlasts_the_timeout_is_a_stepmold_error(self):
         store = Store(self.path, timeout=0.1)
         self.addCleanup(store.close)
         blocker = sqlite3.connect(self.path)
@@ -831,7 +831,7 @@ class TestTheStoreUnderContention(unittest.TestCase):
         with self.assertRaises(StoreBusy) as caught:
             store.save(run_id="r1", step=1, node="one", next_node=None, state={})
         blocker.rollback()
-        self.assertIsInstance(caught.exception, JigError)
+        self.assertIsInstance(caught.exception, StepmoldError)
         self.assertIn("r1", str(caught.exception))
 
     def test_the_store_directory_is_created_even_if_it_already_exists(self):

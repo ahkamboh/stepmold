@@ -1,9 +1,9 @@
 # Compiling a pack
 
-`jig build` takes a description of a task and some gold examples, and writes a pack.
+`stepmold build` takes a description of a task and some gold examples, and writes a pack.
 
 ```console
-$ jig build ./myspec -o ./mypack --model 'openai:https://host/v1#a-big-model'
+$ stepmold build ./myspec -o ./mypack --model 'openai:https://host/v1#a-big-model'
 ```
 
 The model is used **at build time only**. What it produces is a directory of text files
@@ -80,7 +80,7 @@ every value a field can take appears, and that the labels are actually correct �
 | `write_prompts` | yes | one prompt per node |
 | `script` | **no** | the scripted offline model, from the gold answers |
 | `assemble` | **no** | the pack on disk, loaded back to prove it parses |
-| `verify` | **no** | `jig eval` against the pack's own gold cases |
+| `verify` | **no** | `stepmold eval` against the pack's own gold cases |
 
 Two of those need no model at all. Schema induction is arithmetic over the examples, and
 the offline model is arithmetic over the gold answers — if a node writes `category` and the
@@ -91,12 +91,12 @@ the lines of a hand-written pack.
 value outside an enum is not merely unlikely — it is unrepresentable. That is also why it is
 the most dangerous: an enum wrongly inferred from a set of names would make a seventh name
 impossible to emit, forever, with no way to recover at run time. The rule that decides is
-documented in `jig/build/analyze.py` and errs toward leaving a field open.
+documented in `stepmold/build/analyze.py` and errs toward leaving a field open.
 
 ## The loop
 
 An emitted pack is scored against its own gold cases before it is returned. If it does not
-pass, the compiler re-plans — and because `jig eval` names the node responsible for each
+pass, the compiler re-plans — and because `stepmold eval` names the node responsible for each
 failure, the next attempt is told *"node `extract` produced sentiment=calm where the gold
 says frustrated"* rather than *"try again"*. That per-node attribution is the reason the
 loop converges instead of wandering.
@@ -106,7 +106,7 @@ marks, so a failed compile never leaves a half-written pack where a working one 
 `--overwrite` is required to replace an existing pack at all.
 
 ```console
-$ jig build ./myspec -o ./mypack --model 'openai:https://host/v1#a-big-model'
+$ stepmold build ./myspec -o ./mypack --model 'openai:https://host/v1#a-big-model'
 analyzing 12 gold case(s)
   7 field(s), 1 input(s), 4 enum(s) inferred
 attempt 1: planning
@@ -127,7 +127,7 @@ reliability comes from shorter steps rather than a larger model.
 | Flag | Default | What it does |
 | --- | --- | --- |
 | `-o`, `--out` | required | where to write the pack |
-| `--model` | required | the planning model; same spec grammar as `jig run` |
+| `--model` | required | the planning model; same spec grammar as `stepmold run` |
 | `--name` | the output directory's name | the pack's name |
 | `--attempts` | 3 | how many times to re-plan on a failing eval |
 | `--overwrite` | off | replace the output directory if it exists |

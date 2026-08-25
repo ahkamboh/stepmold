@@ -3,7 +3,7 @@
 import json
 import unittest
 
-from jig.grammar import (
+from stepmold.grammar import (
     SchemaError,
     ValidationError,
     schema_to_grammar,
@@ -224,10 +224,10 @@ class TestTheModelFacingHalfOfAMessage(unittest.TestCase):
 class TestValuesThatAreNotJson(unittest.TestCase):
     """`json.loads` hands back two things JSON has no word for. Both are refused here.
 
-    Both used to arrive too late to route: `jig.state` refuses a non-finite number only
+    Both used to arrive too late to route: `stepmold.state` refuses a non-finite number only
     at checkpoint time, after the node committed, and nothing bounded depth at all — so a
     deep enough object died in `json.dumps` with a `RecursionError`, which is not a
-    `JigError` and does not take a node's `on_fail` edge. Checking where the value enters
+    `StepmoldError` and does not take a node's `on_fail` edge. Checking where the value enters
     makes both of them ordinary rejections.
     """
 

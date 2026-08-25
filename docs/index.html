@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>jig — reliable LLM workflows on small models</title>
+<title>stepmold — reliable LLM workflows on small models</title>
 <meta name="description" content="A zero-dependency Python framework that makes small models reliable over long tasks. 96.5% end-to-end success on a 50-node workflow where the unverified baseline scores 2.0%. MIT." />
-<meta property="og:title" content="jig — reliable LLM workflows on small models" />
-<meta property="og:description" content="A small model is not bad at one step. It is bad at many steps in a row. jig fixes the compounding, not the model." />
+<meta property="og:title" content="stepmold — reliable LLM workflows on small models" />
+<meta property="og:description" content="A small model is not bad at one step. It is bad at many steps in a row. stepmold fixes the compounding, not the model." />
 <meta property="og:type" content="website" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='9' fill='%230a0b10'/><path d='M6 10h20' stroke='%238b7cff' stroke-width='2.6' stroke-linecap='round'/><path d='M6 10c6 0 9 6 20 13' stroke='%23f87171' stroke-width='2.6' stroke-linecap='round' fill='none' opacity='.85'/></svg>" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -223,13 +223,13 @@
           </linearGradient></defs>
         </svg>
       </span>
-      <span class="wordmark">jig</span>
+      <span class="wordmark">stepmold</span>
     </a>
     <div class="navlinks">
       <a class="hide" href="#measurement">Measurement</a>
       <a class="hide" href="#how">How it works</a>
-      <a class="hide" href="https://github.com/ahkamboh/jig#documentation">Docs</a>
-      <a class="ghbtn" href="https://github.com/ahkamboh/jig">
+      <a class="hide" href="https://github.com/ahkamboh/stepmold#documentation">Docs</a>
+      <a class="ghbtn" href="https://github.com/ahkamboh/stepmold">
         <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.07.55-.17.55-.38v-1.33c-2.23.48-2.7-1.07-2.7-1.07-.36-.93-.89-1.18-.89-1.18-.73-.5.05-.49.05-.49.81.06 1.23.83 1.23.83.72 1.23 1.89.87 2.35.67.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
         GitHub
       </a>
@@ -242,23 +242,23 @@
     <span class="eyebrow"><em>●</em> python · MIT · zero dependencies</span>
     <h1>Small models.<br/><span class="g">Long tasks.</span></h1>
     <p class="sub">A small model is not bad at any one step. It is bad at <b>many steps in a row</b> — a 2% error per step compounds to a 33% failure rate over 20 steps.</p>
-    <p class="sub">jig makes every step short, schema-constrained and verified before anything is committed. The errors stop compounding.</p>
+    <p class="sub">stepmold makes every step short, schema-constrained and verified before anything is committed. The errors stop compounding.</p>
 
     <div class="cta">
-      <a class="btn primary" href="https://github.com/ahkamboh/jig">Get started</a>
-      <a class="btn" href="https://github.com/ahkamboh/jig/blob/main/docs/BENCHMARKS.md">Read the benchmarks</a>
+      <a class="btn primary" href="https://github.com/ahkamboh/stepmold">Get started</a>
+      <a class="btn" href="https://github.com/ahkamboh/stepmold/blob/main/docs/BENCHMARKS.md">Read the benchmarks</a>
     </div>
 
     <div class="figure">
       <div class="fighead">
         <div class="figtitle">End-to-end success as a workflow gets longer <span>· 10% error per step · 2,400 paired runs</span></div>
         <div class="legend">
-          <span><i style="background:linear-gradient(90deg,#8b7cff,#4dd4ff)"></i>jig</span>
+          <span><i style="background:linear-gradient(90deg,#8b7cff,#4dd4ff)"></i>stepmold</span>
           <span><i style="background:#f87171"></i>no verification</span>
         </div>
       </div>
       <div class="figbody">
-        <svg class="chart" viewBox="0 0 640 268" role="img" aria-label="jig holds near 100% success from 0 to 50 nodes while the unverified baseline collapses to 2%">
+        <svg class="chart" viewBox="0 0 640 268" role="img" aria-label="stepmold holds near 100% success from 0 to 50 nodes while the unverified baseline collapses to 2%">
           <defs>
             <linearGradient id="jg" x1="40" y1="0" x2="600" y2="0" gradientUnits="userSpaceOnUse">
               <stop stop-color="#8b7cff"/><stop offset="1" stop-color="#4dd4ff"/>
@@ -280,7 +280,7 @@
             <text x="14" y="138">50%</text><text x="14" y="190">25%</text><text x="22" y="240">0%</text>
             <text x="36" y="258">0</text><text x="258" y="258">20 nodes</text><text x="576" y="258">50</text>
           </g>
-          <!-- jig: area + line -->
+          <!-- stepmold: area + line -->
           <path class="fade" d="M40 30 L600 37 L600 236 L40 236 Z" fill="url(#jgf)"/>
           <path class="draw" d="M40 30 C 180 31, 380 33, 600 37"
                 stroke="url(#jg)" stroke-width="3.2" fill="none" stroke-linecap="round"/>
@@ -308,7 +308,7 @@
 
     <div class="panel rv"><div class="scroll">
       <table>
-        <thead><tr><th>Nodes</th><th>Error / step</th><th>jig</th><th>No verification</th><th>Analytical (1−p)<sup>N</sup></th></tr></thead>
+        <thead><tr><th>Nodes</th><th>Error / step</th><th>stepmold</th><th>No verification</th><th>Analytical (1−p)<sup>N</sup></th></tr></thead>
         <tbody>
           <tr><td>20</td><td class="dim">2%</td><td class="win">100.0%</td><td class="lose">68.0%</td><td class="dim">66.8%</td></tr>
           <tr><td>20</td><td class="dim">10%</td><td class="win">99.0%</td><td class="lose">16.0%</td><td class="dim">12.2%</td></tr>
@@ -344,20 +344,20 @@
   <div class="wrap">
     <p class="kicker rv">Try it</p>
     <h2 class="rv">Seven worked workflows, all offline.</h2>
-    <p class="lead rv">No GPU, no API key, no network. Then point it at any OpenAI-compatible server — llama.cpp-server, vLLM, SGLang, or a hosted API. Or let <code>jig build</code> write one for you from a task description and a dozen gold examples.</p>
+    <p class="lead rv">No GPU, no API key, no network. Then point it at any OpenAI-compatible server — llama.cpp-server, vLLM, SGLang, or a hosted API. Or let <code>stepmold build</code> write one for you from a task description and a dozen gold examples.</p>
     <div class="term rv">
       <div class="termbar"><i></i><i></i><i></i><span>bash</span></div>
-<pre><span class="p">$</span> pip install git+https://github.com/ahkamboh/jig
-<span class="p">$</span> git clone https://github.com/ahkamboh/jig &amp;&amp; cd jig
-<span class="p">$</span> python3 -m jig eval examples/support_triage
+<pre><span class="p">$</span> pip install git+https://github.com/ahkamboh/stepmold
+<span class="p">$</span> git clone https://github.com/ahkamboh/stepmold &amp;&amp; cd stepmold
+<span class="p">$</span> python3 -m stepmold eval examples/support_triage
 <span class="ok">support_triage: 12/12 cases passed</span>
 
 <span class="c"># then against a real model</span>
-<span class="p">$</span> python3 -m jig eval examples/support_triage \
+<span class="p">$</span> python3 -m stepmold eval examples/support_triage \
     --model <span class="ok">'openai:http://localhost:8000/v1#qwen3-8b'</span>
 
 <span class="c"># or compile a new one from a task description + gold examples</span>
-<span class="p">$</span> python3 -m jig build ./myspec -o ./mypack \
+<span class="p">$</span> python3 -m stepmold build ./myspec -o ./mypack \
     --model <span class="ok">'openai:https://host/v1#a-big-model'</span>
 <span class="ok">attempt 2: 12/12 cases</span></pre>
     </div>
@@ -386,16 +386,16 @@
     <h2 class="rv">What is not built.</h2>
     <div class="honest rv">
       <h3>The compiler works, and is unproven</h3>
-      <p><code>jig build</code> exists: give it a task description and gold examples and it writes the workflow, then scores the result against those same examples and re-plans if it falls short. It has recompiled a shipped workflow from its own gold cases into a <i>different, finer</i> six-step decomposition that scores 12/12 and answers correctly against a live model — finding its four enums with no model involved.</p>
+      <p><code>stepmold build</code> exists: give it a task description and gold examples and it writes the workflow, then scores the result against those same examples and re-plans if it falls short. It has recompiled a shipped workflow from its own gold cases into a <i>different, finer</i> six-step decomposition that scores 12/12 and answers correctly against a live model — finding its four enums with no model involved.</p>
       <p><b>That is regeneration, not creation.</b> Compiling a workflow nobody has built before has not been demonstrated, and the task description in that run was written by someone who already knew the answer. Three of the seven example workflows also cannot be regenerated at all: two because a plan cannot yet express a conditional check or a failure edge, and the refund workflow because the compiler has no notion of an action step.</p>
-      <p>It has separately not been shown that a small model matches a frontier model on a real workflow. That needs gold labels which are ground truth and a frontier baseline on the same cases. Both are open, and <a href="https://github.com/ahkamboh/jig/blob/main/docs/BENCHMARKS.md">the benchmarks page says so</a> rather than hiding it.</p>
+      <p>It has separately not been shown that a small model matches a frontier model on a real workflow. That needs gold labels which are ground truth and a frontier baseline on the same cases. Both are open, and <a href="https://github.com/ahkamboh/stepmold/blob/main/docs/BENCHMARKS.md">the benchmarks page says so</a> rather than hiding it.</p>
     </div>
 
     <div class="honest rv">
       <h3>It can act, and nothing here acts yet</h3>
       <p>Tool steps are built and tested: a workflow can name an action, the host decides per run whether to allow it, and the call is recorded before it is committed so a resumed run replays it. <b>One shipped example workflow uses one: <code>examples/refund_desk</code>.</b> It looks an order up through a host-registered action, decides, and either issues the refund through a second action or routes to a human. The other six decide without acting.</p>
       <p>The confidence gate is built and tested the same way, and reaches less far than it looks. <b>It has no workflow-file surface:</b> the two keys that turn it on are not keys a <code>graph.yaml</code> accepts, and a file carrying them is refused when the pack loads. Today the gate is reachable from Python only. The unsure edge validates and routes, but nothing in a workflow file can make a step unsure, so from a file that edge cannot be taken.</p>
-      <p><b>And nobody has measured what agreement buys.</b> There is no number here for how much a gate raises accuracy inside the automated bucket, or how much of the escalated bucket it moves, against a real model. The mechanism is tested; its worth on a real workflow is an open question, and <a href="https://github.com/ahkamboh/jig/blob/main/docs/confidence.md">the confidence page</a> says how to answer it on yours rather than guessing here.</p>
+      <p><b>And nobody has measured what agreement buys.</b> There is no number here for how much a gate raises accuracy inside the automated bucket, or how much of the escalated bucket it moves, against a real model. The mechanism is tested; its worth on a real workflow is an open question, and <a href="https://github.com/ahkamboh/stepmold/blob/main/docs/confidence.md">the confidence page</a> says how to answer it on yours rather than guessing here.</p>
     </div>
   </div>
 </section>
@@ -403,7 +403,7 @@
 <footer>
   <div class="wrap footrow">
     <span>MIT licensed · built by <a href="https://github.com/ahkamboh">Ali Hamza Kamboh</a></span>
-    <span><a href="https://github.com/ahkamboh/jig">github.com/ahkamboh/jig</a></span>
+    <span><a href="https://github.com/ahkamboh/stepmold">github.com/ahkamboh/stepmold</a></span>
   </div>
 </footer>
 

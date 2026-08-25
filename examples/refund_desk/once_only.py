@@ -10,7 +10,7 @@ has one entry both times.
 
 Committed state cannot answer "did the money move?" — it records what a call *returned*,
 never that it *happened*, so a resumed run that trusted state alone would call again. What
-stops it is a row the walker writes before the commit (`jig/graph.py`, the `tool` branch:
+stops it is a row the walker writes before the commit (`stepmold/graph.py`, the `tool` branch:
 "Written down before the commit and before the edge, with `next_node` still this node
 because the walk has not left it"), carrying the node, the tool, the arguments it was
 given, and the result. The resume lands back on the node, finds the row, and replays it.
@@ -28,10 +28,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
 sys.path.insert(0, HERE)
 
-from jig.cli import resolve_model                # noqa: E402
-from jig.graph import run                        # noqa: E402
-from jig.pack import load_pack                   # noqa: E402
-from jig.state import Store, resume              # noqa: E402
+from stepmold.cli import resolve_model                # noqa: E402
+from stepmold.graph import run                        # noqa: E402
+from stepmold.pack import load_pack                   # noqa: E402
+from stepmold.state import Store, resume              # noqa: E402
 
 from tools import RefundDesk                     # noqa: E402
 
@@ -40,7 +40,7 @@ MESSAGE = {"message": "The mug arrived smashed in three pieces.", "order_id": OR
 
 
 class Crash(Exception):
-    """Not a jig error. The worker died; it did not fail, and nothing catches this."""
+    """Not a stepmold error. The worker died; it did not fail, and nothing catches this."""
 
 
 class DyingStore(Store):

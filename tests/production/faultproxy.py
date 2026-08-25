@@ -2,14 +2,14 @@
 
 Production is not the happy path. Rate limits, 5xx, dead sockets, truncated bodies and
 models that ignore their grammar are the *normal* condition, and until today every one of
-jig's failure paths had only ever met a mock that behaved exactly as the mock's author
+stepmold's failure paths had only ever met a mock that behaved exactly as the mock's author
 expected.
 
-This sits between jig and a real upstream (or answers by itself) and misbehaves on
+This sits between stepmold and a real upstream (or answers by itself) and misbehaves on
 purpose. Start it, point `--model openai:http://127.0.0.1:PORT/v1#...` at it, and watch
 what the runtime actually does.
 
-stdlib only, like everything else in jig.
+stdlib only, like everything else in stepmold.
 
     proxy = FaultProxy(upstream="https://api.cerebras.ai/v1", api_key=KEY)
     proxy.start()
@@ -219,7 +219,7 @@ class FaultProxy:
 
     def _forward(self, payload):
         body = json.dumps(payload).encode("utf-8")
-        headers = {"Content-Type": "application/json", "User-Agent": "jig-faultproxy/1"}
+        headers = {"Content-Type": "application/json", "User-Agent": "stepmold-faultproxy/1"}
         if self.api_key:
             headers["Authorization"] = "Bearer %s" % self.api_key
         request = urllib.request.Request(

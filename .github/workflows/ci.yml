@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # jig claims 3.9+ in pyproject.toml. This matrix is what makes that claim true
+        # stepmold claims 3.9+ in pyproject.toml. This matrix is what makes that claim true
         # rather than aspirational — the code is written 3.9-compatible on purpose, and
         # nothing but a real interpreter proves it.
         python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
@@ -33,7 +33,7 @@ jobs:
 
       - name: No dependencies are installed, on purpose
         run: |
-          echo "jig must run on a bare interpreter. Nothing is pip-installed here."
+          echo "stepmold must run on a bare interpreter. Nothing is pip-installed here."
           python -c "import sys; print(sys.version)"
 
       - name: Test suite
@@ -41,8 +41,8 @@ jobs:
 
       - name: Example pack runs offline
         run: |
-          python -m jig validate examples/support_triage
-          python -m jig eval examples/support_triage
+          python -m stepmold validate examples/support_triage
+          python -m stepmold eval examples/support_triage
 
       - name: Load-bearing invariants
         run: python -m unittest tests.test_invariants -v
@@ -66,13 +66,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Every import in jig/ is standard library
+      - name: Every import in stepmold/ is standard library
         run: |
           python - <<'PY'
           import ast, pathlib, sys
           std = set(sys.stdlib_module_names)
           bad = []
-          for path in sorted(pathlib.Path("jig").rglob("*.py")):
+          for path in sorted(pathlib.Path("stepmold").rglob("*.py")):
               tree = ast.parse(path.read_text())
               for node in ast.walk(tree):
                   if isinstance(node, ast.Import):
@@ -82,14 +82,14 @@ jobs:
                               bad.append("%s: import %s" % (path, alias.name))
                   elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                       root = node.module.split(".")[0]
-                      if root not in std | {"jig"}:
+                      if root not in std | {"stepmold"}:
                           bad.append("%s: from %s" % (path, node.module))
           if bad:
               print("THIRD-PARTY IMPORTS FOUND — zero-dep is a load-bearing property:")
               for line in bad:
                   print("  " + line)
               raise SystemExit(1)
-          print("clean: jig/ imports nothing outside the standard library")
+          print("clean: stepmold/ imports nothing outside the standard library")
           PY
 
       - name: pyproject declares no dependencies
@@ -133,8 +133,8 @@ jobs:
 
       - name: No credential-shaped strings
         run: |
-          # Matches the same key shapes jig redacts in its own logs, and takes both
-          # separators for the same reason jig/log.py:KEY_SHAPED does: Groq writes gsk_
+          # Matches the same key shapes stepmold redacts in its own logs, and takes both
+          # separators for the same reason stepmold/log.py:KEY_SHAPED does: Groq writes gsk_
           # and GitHub writes ghp_, so a hyphen-only guard was blind to the two shapes
           # most likely to be pasted in by accident.
           #
@@ -197,15 +197,15 @@ jobs:
           python -m venv /tmp/fresh
           /tmp/fresh/bin/pip install dist/*.whl
           cd /tmp                       # prove it does not need the source tree
-          /tmp/fresh/bin/jig --version
-          /tmp/fresh/bin/jig --help
-          /tmp/fresh/bin/python -c "import jig; print('import jig ok', jig.__version__)"
+          /tmp/fresh/bin/stepmold --version
+          /tmp/fresh/bin/stepmold --help
+          /tmp/fresh/bin/python -c "import stepmold; print('import stepmold ok', stepmold.__version__)"
 
       - name: The installed wheel pulled in nothing else
         run: |
-          /tmp/fresh/bin/pip list --format=freeze | grep -v "^jig==" | grep -v "^pip==" \
+          /tmp/fresh/bin/pip list --format=freeze | grep -v "^stepmold==" | grep -v "^pip==" \
             | grep -v "^setuptools==" | grep -v "^wheel==" > /tmp/extra.txt || true
           if [ -s /tmp/extra.txt ]; then
-            echo "installing jig pulled in dependencies:"; cat /tmp/extra.txt; exit 1
+            echo "installing stepmold pulled in dependencies:"; cat /tmp/extra.txt; exit 1
           fi
-          echo "clean: installing jig pulled in nothing"
+          echo "clean: installing stepmold pulled in nothing"

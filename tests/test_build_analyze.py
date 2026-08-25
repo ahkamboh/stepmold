@@ -1,4 +1,4 @@
-"""`jig build` stage 1 — schema induction, and the enum rule it turns on.
+"""`stepmold build` stage 1 — schema induction, and the enum rule it turns on.
 
 The last two classes are the ones that matter. `TestAgainstTheShippedPacks` runs `analyze`
 over the evalsets of all six packs in `examples/` and holds the result against the
@@ -14,7 +14,7 @@ import json
 import os
 import unittest
 
-from jig.build.analyze import (
+from stepmold.build.analyze import (
     MAX_ENUM_VALUES,
     MAX_LABEL_LENGTH,
     MIN_ENUM_OBSERVATIONS,
@@ -23,7 +23,7 @@ from jig.build.analyze import (
     TRANSCRIBED_QUARTERS,
     analyze,
 )
-from jig.build.spec import BuildError
+from stepmold.build.spec import BuildError
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXAMPLES = os.path.join(ROOT, "examples")
@@ -62,7 +62,7 @@ def field_of(values, name="f", description="d", pack="p"):
 
 class TestTypes(unittest.TestCase):
     def test_a_bool_is_not_an_integer(self):
-        # Python says isinstance(True, int); JSON does not. jig/grammar.py checks bool
+        # Python says isinstance(True, int); JSON does not. stepmold/grammar.py checks bool
         # first for the same reason, and a disagreement here would emit a grammar that
         # accepts 1 where the pack means true.
         self.assertEqual(field_of([True, False, True, False]).type, "boolean")
@@ -444,10 +444,10 @@ class TestTheSpecItCarries(unittest.TestCase):
     def test_the_stage_never_imports_the_runtime(self):
         # The compiler does not ship. Nothing here may pull in the walker, the pack
         # loader or a backend, or the separation stops being real.
-        import jig.build.analyze as module
+        import stepmold.build.analyze as module
         source = open(module.__file__).read()
-        for banned in ("jig.graph", "jig.pack", "jig.eval", "jig.backends",
-                       "from ..", "import jig"):
+        for banned in ("stepmold.graph", "stepmold.pack", "stepmold.eval", "stepmold.backends",
+                       "from ..", "import stepmold"):
             self.assertNotIn(banned, source)
 
 
@@ -499,7 +499,7 @@ KNOWN_SHY = {("incident_triage", "defect"), ("lead_qualify", "industry")}
 
 
 def compiles_to_generate_nodes(pack):
-    """Whether `jig build` could have produced this pack — i.e. it has no tool nodes.
+    """Whether `stepmold build` could have produced this pack — i.e. it has no tool nodes.
 
     `build/assemble.py` emits `type: generate` and `type: end` and nothing else, so a
     pack with a `type: tool` node is outside what stage 1 is measured against. It is also

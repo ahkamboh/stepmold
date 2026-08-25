@@ -2,10 +2,10 @@
 
 Everything here is offline and deterministic: the pack's model is the scripted stand-in
 the compiler itself emits, so a green run of this file proves the whole write → load →
-`jig eval` loop with no GPU, no network and no API key.
+`stepmold eval` loop with no GPU, no network and no API key.
 
 The cases worth writing are the ones where a plausible emitter is quietly wrong: a value
-jig's YAML subset resolves to something other than a string, a field that is null in half
+stepmold's YAML subset resolves to something other than a string, a field that is null in half
 the examples, a plan that writes a field twice or not at all, and a pack whose gold cases
 do not pass — which the compiler must report rather than repair.
 """
@@ -16,10 +16,10 @@ import shutil
 import tempfile
 import unittest
 
-from jig.build.assemble import compile_report, verify_pack, write_pack
-from jig.build.spec import BuildError, FieldSpec, GraphPlan, NodePlan, TaskSpec
-from jig.pack import load_pack
-from jig.yamlish import parse as parse_yaml
+from stepmold.build.assemble import compile_report, verify_pack, write_pack
+from stepmold.build.spec import BuildError, FieldSpec, GraphPlan, NodePlan, TaskSpec
+from stepmold.pack import load_pack
+from stepmold.yamlish import parse as parse_yaml
 
 
 # --------------------------------------------------------------------------- fixtures
@@ -166,7 +166,7 @@ class TestEndToEnd(PackCase):
     def test_write_pack_returns_the_directory_it_wrote(self):
         self.assertEqual(self.compile(), self.directory)
 
-    def test_the_think_template_lands_where_jig_looks_for_it(self):
+    def test_the_think_template_lands_where_stepmold_looks_for_it(self):
         self.compile()
         pack = load_pack(self.directory)
         self.assertTrue(pack.nodes["detail"].two_stage)
@@ -176,7 +176,7 @@ class TestEndToEnd(PackCase):
         self.assertIsNone(pack.nodes["label"].think_prompt)
 
     def test_two_stage_is_written_bare_because_a_quoted_false_is_true(self):
-        # `two_stage` is the one node key jig does not shape-check: bool("false") is
+        # `two_stage` is the one node key stepmold does not shape-check: bool("false") is
         # True, so quoting the value would silently double the node's model calls.
         self.compile()
         self.assertIn("two_stage: true", self.read("graph.yaml"))
@@ -232,7 +232,7 @@ class TestGrammars(PackCase):
         # And the pack still scores: case 2 and 3 answer null for that field.
         self.assertTrue(verify_pack(self.directory).passed_all)
 
-    def test_the_emitted_grammar_is_one_jig_accepts(self):
+    def test_the_emitted_grammar_is_one_stepmold_accepts(self):
         # load_pack runs check_schema, so an unsupported keyword would fail here.
         self.compile()
         self.assertEqual(
@@ -268,7 +268,7 @@ class TestYamlSubset(PackCase):
         self.assertEqual(edge.when, {"kind": "no"})
 
     def test_a_value_that_looks_like_a_number_stays_a_string(self):
-        """`007` resolves to 7 in jig's subset, and `1.0` to a float."""
+        """`007` resolves to 7 in stepmold's subset, and `1.0` to a float."""
         plan = graph_plan(
             endings=["done", "dropped"],
             edges=[
@@ -459,7 +459,7 @@ class TestPlanRefusals(PackCase):
         self.assertIn("detail", str(caught.exception))
 
     def test_a_think_template_for_a_single_stage_node_is_refused(self):
-        """jig would never read it, so accepting it would be accepting a silent no-op."""
+        """stepmold would never read it, so accepting it would be accepting a silent no-op."""
         prompts = dict(PROMPTS, **{"label.think": "thinking"})
         with self.assertRaises(BuildError) as caught:
             self.compile(prompts=prompts)

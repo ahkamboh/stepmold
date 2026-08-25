@@ -34,7 +34,7 @@ Everything written tonight is kept 3.9-compatible in syntax so the version choic
 
 ## 2026-08-24 — T1: Model protocol + FakeModel
 
-**Files changed:** `jig/__init__.py`, `jig/model.py`, `tests/test_model.py`
+**Files changed:** `stepmold/__init__.py`, `stepmold/model.py`, `tests/test_model.py`
 
 **Tests:** 18 passing total (15 new).
 
@@ -61,14 +61,14 @@ script runs dry.
 
 ## 2026-08-24 — T2: Pack format (load + validate)
 
-**Files changed:** `jig/yamlish.py`, `jig/pack.py`, `tests/test_yamlish.py`,
+**Files changed:** `stepmold/yamlish.py`, `stepmold/pack.py`, `tests/test_yamlish.py`,
 `tests/test_pack.py`, `tests/fixtures/` (1 valid pack + 8 malformed).
 
 **Tests:** 67 passing total (49 new: 27 yamlish, 22 pack).
 
 **The big decision: I wrote a YAML parser.** `TASKS.md` specifies `manifest.yaml` and
 `graph.yaml`, the stdlib has no YAML parser, and `pip install` is forbidden. Per the
-standing rule (*implement the minimal piece yourself in stdlib*), `jig/yamlish.py` is a
+standing rule (*implement the minimal piece yourself in stdlib*), `stepmold/yamlish.py` is a
 ~330-line subset parser: block mappings, block sequences, nesting, comments, single-line
 flow collections (`[a, b]`, `{k: v}`), quoted/plain scalars, null/bool/int/float/str.
 Anchors, aliases, tags, block scalars (`|`, `>`) and multi-document files each raise a
@@ -99,8 +99,8 @@ sort of thing that fails quietly.
 4. **`model:` in the manifest is a URI-ish string** (`fake:fakes/script.json`,
    `openai:http://host:8000|model`), doubling as the "model hint" T2 asks for and the
    default the T9 CLI resolves when `--model` is not given. That is what will let
-   `jig eval examples/support_triage` run offline in CI (T10).
-5. **`evalset.jsonl` is optional at load time** but strictly validated when present; `jig
+   `stepmold eval examples/support_triage` run offline in CI (T10).
+5. **`evalset.jsonl` is optional at load time** but strictly validated when present; `stepmold
    eval` will be the thing that insists on it.
 6. **Extra validations beyond the five TASKS.md asks for**: unknown node/edge keys,
    `end` nodes with outgoing edges, non-end nodes with no outgoing edge, `on_fail`
@@ -112,14 +112,14 @@ recorded. Code stays 3.9-compatible so this keeps not mattering.
 
 **Process note — where I am pushing.** The instruction says "push to origin main", but
 this session's harness pins development to the branch
-`claude/autonomous-jig-build-62hlu8` and forbids pushing elsewhere. I am pushing every
+`claude/autonomous-stepmold-build-62hlu8` and forbids pushing elsewhere. I am pushing every
 commit there. The branch is a straight-line continuation of `main`, so
-`git merge --ff-only claude/autonomous-jig-build-62hlu8` on main will fast-forward it
+`git merge --ff-only claude/autonomous-stepmold-build-62hlu8` on main will fast-forward it
 with no conflicts.
 
 ## 2026-08-24 — T3: Schema/grammar layer
 
-**Files changed:** `jig/grammar.py`, `tests/test_grammar.py`, `jig/pack.py` (wiring),
+**Files changed:** `stepmold/grammar.py`, `tests/test_grammar.py`, `stepmold/pack.py` (wiring),
 `tests/test_pack.py`, `tests/fixtures/bad_grammar_schema/`.
 
 **Tests:** 89 passing total (22 new).
@@ -136,9 +136,9 @@ attribute, not just in the message, so T8 can attribute a failure without regex-
 1. **Unknown schema keywords are an error, not ignored.** `{"requried": [...]}` raises
    `SchemaError`. A silently-ignored constraint is a constraint you think you have and
    don't — and this is a verification system.
-2. **Grammars are schema-checked at pack load time** (`jig/pack.py` now calls
+2. **Grammars are schema-checked at pack load time** (`stepmold/pack.py` now calls
    `check_schema`, raising a new `GrammarError`). This was not asked for in T2 or T3, but
-   it is the difference between `jig validate` catching a typo and a node failing at run
+   it is the difference between `stepmold validate` catching a typo and a node failing at run
    time. Tenth malformed fixture added for it.
 3. **`items` is in the subset** even though TASKS.md's list stops at
    `additionalProperties`. An array-of-strings field is unavoidable in a real pack (T10's
@@ -146,11 +146,11 @@ attribute, not just in the message, so T8 can attribute a failure without regex-
 4. **Booleans are not integers/numbers**, matching JSON rather than Python — `True` fails
    `{"type": "integer"}`. Python's `isinstance(True, int)` is a genuine trap here.
 5. `ValidationError` subclasses `ValueError` and `SchemaError` does too, so a caller can
-   catch either without importing jig internals.
+   catch either without importing stepmold internals.
 
 ## 2026-08-24 — T4: Graph walker
 
-**Files changed:** `jig/graph.py`, `jig/errors.py`, `jig/render.py`, `jig/expr.py`,
+**Files changed:** `stepmold/graph.py`, `stepmold/errors.py`, `stepmold/render.py`, `stepmold/expr.py`,
 `tests/test_graph.py`, `tests/test_render.py`, `tests/test_expr.py`.
 
 **Tests:** 150 passing total (61 new: 31 graph, 10 render, 20 expr).
@@ -195,7 +195,7 @@ plans" property from ARCHITECTURE.md §3, and it is why a graph is auditable.
 
 ## 2026-08-24 — T5: Two-stage codegen (think -> emit)
 
-**Files changed:** `jig/codegen.py`, `jig/graph.py` (now delegates), `tests/test_codegen.py`.
+**Files changed:** `stepmold/codegen.py`, `stepmold/graph.py` (now delegates), `tests/test_codegen.py`.
 
 **Tests:** 167 passing total (17 new).
 
@@ -225,7 +225,7 @@ later node's prompt.
 
 ## 2026-08-24 — T6: Verify-before-commit + retry ladder
 
-**Files changed:** `jig/verify.py`, `jig/graph.py` (ladder + `Failure` record),
+**Files changed:** `stepmold/verify.py`, `stepmold/graph.py` (ladder + `Failure` record),
 `tests/test_verify.py`, `tests/test_graph.py` (one test updated, see below).
 
 **Tests:** 193 passing total (26 new).
@@ -266,8 +266,8 @@ escalation to a big model would make every cost number in the README a lie.
 
 ## 2026-08-24 — T7: Checkpointing
 
-**Files changed:** `jig/state.py`, `jig/graph.py` (checkpoint hooks + `replay`),
-`jig/errors.py` (`UnknownRun`), `tests/test_state.py`.
+**Files changed:** `stepmold/state.py`, `stepmold/graph.py` (checkpoint hooks + `replay`),
+`stepmold/errors.py` (`UnknownRun`), `tests/test_state.py`.
 
 **Tests:** 216 passing total (23 new).
 
@@ -279,8 +279,8 @@ the resumed run's fresh model receives exactly one call — node three's prompt.
 
 **Decisions I made alone — please review:**
 1. **`Store` and the walker do not import each other.** The walker calls
-   `store.save(run_id=..., step=..., ...)` with keywords and never imports `jig.state`;
-   `state.resume` imports `jig.graph` inside the function. Duck typing here is what keeps
+   `store.save(run_id=..., step=..., ...)` with keywords and never imports `stepmold.state`;
+   `state.resume` imports `stepmold.graph` inside the function. Duck typing here is what keeps
    the dependency acyclic — and it means any object with a `save()` (Postgres later, a
    test spy, an append-only log) is a valid store with no changes to the walker.
 2. **Every node that completes is checkpointed, not only generate nodes.** TASKS.md says
@@ -303,7 +303,7 @@ the resumed run's fresh model receives exactly one call — node three's prompt.
 
 ## 2026-08-24 — T8: Evalset runner
 
-**Files changed:** `jig/eval.py`, `tests/test_eval.py`.
+**Files changed:** `stepmold/eval.py`, `tests/test_eval.py`.
 
 **Tests:** 235 passing total (19 new).
 
@@ -344,19 +344,19 @@ to the node that was executing), and added a second test for a crash in the firs
 
 ## 2026-08-24 — T9: CLI
 
-**Files changed:** `jig/cli.py`, `jig/__main__.py`, `tests/test_cli.py`,
+**Files changed:** `stepmold/cli.py`, `stepmold/__main__.py`, `tests/test_cli.py`,
 `tests/fixtures/cli_pack/` (a coherent 2-node pack with two fake scripts).
 
 **Tests:** 258 passing total (23 new, all through `subprocess`).
 
 ```
-$ python3 -m jig validate tests/fixtures/cli_pack
+$ python3 -m stepmold validate tests/fixtures/cli_pack
 cli_demo v1: 2 nodes, 1 edge, 2 evalset cases, entry 'classify'
 
-$ python3 -m jig run tests/fixtures/cli_pack --input '{"ticket": "I was charged twice"}'
+$ python3 -m stepmold run tests/fixtures/cli_pack --input '{"ticket": "I was charged twice"}'
 {"category": "billing"}
 
-$ python3 -m jig eval tests/fixtures/cli_pack --model fake:fakes/wrong.json
+$ python3 -m stepmold eval tests/fixtures/cli_pack --model fake:fakes/wrong.json
 cli_demo: 1/2 cases passed
   FAIL technical case [classify]
     category: expected 'technical', got 'billing'
@@ -372,19 +372,19 @@ $ echo $?
 2. **`--model` is a scheme string**, defaulting to the manifest's `model:`. Only `fake:`
    exists today — `fake:fakes/script.json` loads a scripted `FakeModel` from JSON, with
    relative paths resolved *inside the pack*. That is what lets a pack ship its own
-   offline model so `jig eval` runs in CI with no network (T10 depends on it). T11 will add
+   offline model so `stepmold eval` runs in CI with no network (T10 depends on it). T11 will add
    the `openai:` scheme to `resolve_model`; an unknown scheme fails with the list of known
    ones, which is the current test.
 3. **`main(argv=None)` returns an exit code and never calls `sys.exit`.** `__main__.py`
    does the exiting. That keeps the CLI callable from a test or another program.
-4. **`jig run` prints the end node's projection; `--state` prints everything.** Default
+4. **`stepmold run` prints the end node's projection; `--state` prints everything.** Default
    output is what the pack declares it produces; the escape hatch is one flag away.
 5. **Extra flags beyond the three commands:** `--run-id`, `--store`, `--resume` (T7 is
    useless from the CLI otherwise), `--state`, and `eval --json` for CI. `--resume`
    without `--store` is a clear error rather than a silent fresh run.
-6. **There is no `jig` executable, only `python3 -m jig`.** Installing a console script
+6. **There is no `stepmold` executable, only `python3 -m stepmold`.** Installing a console script
    needs packaging (`pyproject.toml` + pip), which the zero-dependency rule rules out for
-   now. Every doc line uses `python3 -m jig`. ARCHITECTURE.md §7's Typer + Rich are dependencies
+   now. Every doc line uses `python3 -m stepmold`. ARCHITECTURE.md §7's Typer + Rich are dependencies
    too, so help and report text are plain — the report is designed to be readable, and
    `--json` covers machines.
 
@@ -392,12 +392,12 @@ $ echo $?
 
 **Files changed:** `examples/support_triage/` (manifest, graph, 5 prompts, 4 grammars,
 12-case evalset, offline fake script), `tests/test_example.py`, plus a fix to
-`jig/yamlish.py` and `tests/test_yamlish.py` (see below).
+`stepmold/yamlish.py` and `tests/test_yamlish.py` (see below).
 
 **Tests:** 279 passing total (12 new example tests + 9 new yamlish tests).
 
 ```
-$ python3 -m jig eval examples/support_triage
+$ python3 -m stepmold eval examples/support_triage
 support_triage: 12/12 cases passed
 ```
 
@@ -411,7 +411,7 @@ without letting the bad object into state.
 **I fixed the YAML parser mid-task.** Writing the manifest, I reached for a `>-` folded
 description — the most natural thing in the world in a YAML manifest — and T2's parser
 refused it (loudly and correctly, but refused). That is a usability hole in the pack
-format, found by using it. So `jig/yamlish.py` now supports block and folded scalars
+format, found by using it. So `stepmold/yamlish.py` now supports block and folded scalars
 (`|`, `>`, with `-` chomping), 9 new tests cover them, and `|+`/`>+` keep-chomping is
 still refused by name rather than silently mishandled. This was maintenance on a defect
 T10 surfaced, not a new feature I went looking for.
@@ -421,8 +421,8 @@ T10 surfaced, not a new feature I went looking for.
    contiguous substring of the prompt, so no single key can mean "the classify step *and*
    ticket 7" — one script cannot be both per-node and per-ticket. The evalset runs cases in
    order, so per-node lists line up exactly. The cost, now stated in the manifest itself:
-   `jig run` on a ticket other than the first replays case one. That is a property of a
-   scripted stand-in, not of jig — pointing `--model` at a real backend fixes it.
+   `stepmold run` on a ticket other than the first replays case one. That is a property of a
+   scripted stand-in, not of stepmold — pointing `--model` at a real backend fixes it.
 2. **The evalset and the fake script were generated from one table** so the twelve cases
    could not drift between the two files while I typed them. The generator was a throwaway;
    the artifacts are what is committed. A test asserts both files still hold 12 entries per
@@ -438,8 +438,8 @@ T10 surfaced, not a new feature I went looking for.
 
 ## 2026-08-24 — T11: Real backend adapter (code only, never run)
 
-**Files changed:** `jig/backends/__init__.py`, `jig/backends/openai_compat.py`,
-`jig/errors.py` (`BackendError`), `jig/cli.py` (the `openai:` scheme),
+**Files changed:** `stepmold/backends/__init__.py`, `stepmold/backends/openai_compat.py`,
+`stepmold/errors.py` (`BackendError`), `stepmold/cli.py` (the `openai:` scheme),
 `tests/test_backend.py`, `tests/test_cli.py`.
 
 **Tests:** 320 passing total (47 new: 41 backend, 6 CLI model-spec).
@@ -457,13 +457,13 @@ vLLM or SGLang yet. That is the first thing to do when a GPU is available.
 1. **Grammar handling is a four-way flag, not two.** TASKS.md says "`response_format` /
    `grammar` per backend flag". `response_format` (vLLM, SGLang, OpenAI) is the default.
    For llama.cpp-server I used **`json_schema`**, not `grammar`, because llama.cpp's
-   `grammar` field expects **GBNF text**, and jig ships JSON Schema — putting a schema in
+   `grammar` field expects **GBNF text**, and stepmold ships JSON Schema — putting a schema in
    that field would produce a confusing server-side error. Translating JSON Schema to GBNF
    is a real piece of work and is not in any task. The other two modes are `json_object`
    (loose JSON mode, schema appended to the prompt) and `none`.
-2. **`none` is a legitimate mode** because `jig.verify` validates every output anyway.
+2. **`none` is a legitimate mode** because `stepmold.verify` validates every output anyway.
    Constrained decoding is an optimisation in this architecture, not the safety net — which
-   means jig degrades to "slower and retries more", not "unsafe", on a server without
+   means stepmold degrades to "slower and retries more", not "unsafe", on a server without
    grammar support.
 3. **Retries on 408/429/5xx only**, with exponential backoff and an injectable sleeper;
    4xx raises immediately with the response body, because retrying a bad schema is just
@@ -471,7 +471,7 @@ vLLM or SGLang yet. That is the first thing to do when a GPU is available.
 4. **The model spec is `openai:<base_url>#<model>[#<grammar_mode>]`.** The T2 log entry
    guessed `|` as the separator — I changed it to `#` because `|` is a shell pipe and
    `--model openai:http://host|qwen` would break unquoted. `#` mid-word is safe in sh.
-5. **API key resolution: explicit argument, then `JIG_API_KEY`, then `OPENAI_API_KEY`,
+5. **API key resolution: explicit argument, then `STEPMOLD_API_KEY`, then `OPENAI_API_KEY`,
    then none.** Self-hosted servers usually need no key at all, so no key is not an error.
 6. **`base_url` accepts a host, a `/v1`, or the full endpoint** — all three are what people
    paste out of a server's startup log.
@@ -495,7 +495,7 @@ suite goes red. A quickstart that has drifted is worse than no quickstart.
 
 Two commands are excluded, both deliberately and both named in the test: the
 `openai:http://localhost:8000` example (needs a live server) and the one command shown
-failing on purpose — the failing `jig eval`, which has its own test asserting it exits 1,
+failing on purpose — the failing `stepmold eval`, which has its own test asserting it exits 1,
 because "an evalset is a CI gate" is the claim being made there.
 
 **Three tests guard the no-invented-numbers rule:** the benchmark table must contain
@@ -506,12 +506,12 @@ it makes adding a plausible-looking number to that section fail the build.
 **Decisions I made alone — please review:**
 1. **The README carries no numbers anywhere**, not just in the benchmark table. ARCHITECTURE.md
    §0 quotes research figures (error compounding rates, the Shopify result); I compressed
-   those to their qualitative claims instead of restating figures jig has not measured, so
-   no reader can mistake a cited number for a jig result.
+   those to their qualitative claims instead of restating figures stepmold has not measured, so
+   no reader can mistake a cited number for a stepmold result.
 2. **A "What is built" table names the compiler as not started** and the backend adapter
    as unverified against a live server. The temptation in a README is to describe the
    design as though it exists; the honest line is that the runtime is complete and
-   `jig build` is not written.
+   `stepmold build` is not written.
 3. **Install says "Python 3 and nothing else"** and the tests section explains the vendored
    pytest shim, so nobody is surprised by a `pytest/` directory in the repo root.
 4. The failing-eval example uses `tests/fixtures/cli_pack`, not the example pack, so the
@@ -529,35 +529,35 @@ no GPU, no model download, and no dependency outside the standard library.
 $ python3 -m pytest -q
 Ran 329 tests ... OK
 
-$ python3 -m jig eval examples/support_triage
+$ python3 -m stepmold eval examples/support_triage
 support_triage: 12/12 cases passed
 ```
 
 ## What is complete
 
-The **runtime half of jig is finished and tested end to end.** A pack goes in, a verified
+The **runtime half of stepmold is finished and tested end to end.** A pack goes in, a verified
 result comes out, and every claim in this repo has a test behind it.
 
 | Task | Module | What it does |
 | --- | --- | --- |
-| T2 | `jig/pack.py`, `jig/yamlish.py` | Load and validate a pack directory; 10 malformed fixtures each fail specifically |
-| T3 | `jig/grammar.py` | JSON Schema subset, validated by hand, violations carry a dotted path |
-| T4 | `jig/graph.py`, `errors.py`, `render.py`, `expr.py` | The walker: generate/assert/end, conditional edges, step guard, provenance |
-| T5 | `jig/codegen.py` | Two-stage think -> emit; the scratchpad never enters state |
-| T6 | `jig/verify.py` | Verify-before-commit and the cheap-first retry ladder |
-| T7 | `jig/state.py` | SQLite checkpoint after every node; exact resume |
-| T8 | `jig/eval.py` | Score against the evalset, attribute each failure to a node |
-| T9 | `jig/cli.py` | `python3 -m jig run \| eval \| validate`, exit 1 on a failed case |
+| T2 | `stepmold/pack.py`, `stepmold/yamlish.py` | Load and validate a pack directory; 10 malformed fixtures each fail specifically |
+| T3 | `stepmold/grammar.py` | JSON Schema subset, validated by hand, violations carry a dotted path |
+| T4 | `stepmold/graph.py`, `errors.py`, `render.py`, `expr.py` | The walker: generate/assert/end, conditional edges, step guard, provenance |
+| T5 | `stepmold/codegen.py` | Two-stage think -> emit; the scratchpad never enters state |
+| T6 | `stepmold/verify.py` | Verify-before-commit and the cheap-first retry ladder |
+| T7 | `stepmold/state.py` | SQLite checkpoint after every node; exact resume |
+| T8 | `stepmold/eval.py` | Score against the evalset, attribute each failure to a node |
+| T9 | `stepmold/cli.py` | `python3 -m stepmold run \| eval \| validate`, exit 1 on a failed case |
 | T10 | `examples/support_triage/` | A real 4-node workflow scoring 12/12 offline |
-| T11 | `jig/backends/openai_compat.py` | OpenAI-compatible client — **written, never run** |
+| T11 | `stepmold/backends/openai_compat.py` | OpenAI-compatible client — **written, never run** |
 | T12 | `README.md` | Problem statement, executed quickstart, empty benchmark table |
 
-Roughly 2,850 lines of `jig/`, 2,800 lines of tests. No class hierarchies, no frameworks,
+Roughly 2,850 lines of `stepmold/`, 2,800 lines of tests. No class hierarchies, no frameworks,
 no metaprogramming — plain functions and dataclasses throughout, as instructed.
 
 ## Nothing is blocked. Two things are unverified, and you should treat them differently
 
-1. **`jig/backends/openai_compat.py` has never spoken to a real server.** T11 said code
+1. **`stepmold/backends/openai_compat.py` has never spoken to a real server.** T11 said code
    only, so its 41 tests mock the HTTP layer completely. The wire format is written from
    the OpenAI-compatible spec, not from observation. **First thing to do on a machine with
    a GPU or a llama.cpp-server: run the example pack through it for real.** Expect the
@@ -571,14 +571,14 @@ no metaprogramming — plain functions and dataclasses throughout, as instructed
 
 Ordered by how much they would cost to change later.
 
-1. **I wrote a YAML parser** (`jig/yamlish.py`, 421 lines, 36 tests). TASKS.md specifies
+1. **I wrote a YAML parser** (`stepmold/yamlish.py`, 421 lines, 36 tests). TASKS.md specifies
    `manifest.yaml` / `graph.yaml`, the stdlib has no YAML, and pip was forbidden. It
    supports the subset a pack needs and refuses everything else **by name** rather than
    mis-parsing it. If you would rather take a PyYAML dependency, `load_pack` is the only
    caller and the swap is one import — but the zero-dependency property is worth a lot on a
    client box.
 2. **Assert expressions are parsed with `ast` and walked against a whitelist — never
-   `eval()`** (`jig/expr.py`). Packs are compiler-generated data; a pack that can `eval()`
+   `eval()`** (`stepmold/expr.py`). Packs are compiler-generated data; a pack that can `eval()`
    is an RCE hole. The language is deliberately tiny. If a node needs more than it offers,
    that is a signal the logic wants to be a node, not a YAML one-liner.
 3. **A retry re-rolls the emit stage only and reuses the think scratchpad.** Cheap-first,
@@ -596,10 +596,10 @@ Ordered by how much they would cost to change later.
 6. **The model spec is a string** — `fake:fakes/script.json` or
    `openai:http://host:8000#qwen3-8b` — resolved from `--model` or the manifest. The `#`
    separator is deliberate: `|` would break unquoted in a shell.
-7. **I am pushing to `claude/autonomous-jig-build-62hlu8`, not `main`.** You asked for
+7. **I am pushing to `claude/autonomous-stepmold-build-62hlu8`, not `main`.** You asked for
    main; this session's harness pins development to that branch and forbids pushing
    elsewhere. The branch is a straight-line continuation of main, so
-   `git merge --ff-only claude/autonomous-jig-build-62hlu8` fast-forwards with no
+   `git merge --ff-only claude/autonomous-stepmold-build-62hlu8` fast-forwards with no
    conflicts. **This is the one thing I could not do as asked.**
 
 ## What to look at first
@@ -608,8 +608,8 @@ Ordered by how much they would cost to change later.
    be stale.
 2. `examples/support_triage/graph.yaml` — the pack format, judged as a thing a human has
    to write.
-3. `jig/verify.py` — 156 lines, and the reliability argument lives in them.
-4. `jig/expr.py` — the one module where I made a security call on my own.
+3. `stepmold/verify.py` — 156 lines, and the reliability argument lives in them.
+4. `stepmold/expr.py` — the one module where I made a security call on my own.
 5. `NIGHT-LOG.md` T2 and T10 entries — the two places I changed something structural
    (writing the YAML parser, then extending it when the example pack showed it was too
    strict).
@@ -619,7 +619,7 @@ Ordered by how much they would cost to change later.
 Not started, and deliberately not started — all of it is beyond T12:
 
 - **Run T11 against a real server.** Everything else is downstream of that.
-- **`jig build`** — the compiler is the entire other half of the product and does not
+- **`stepmold build`** — the compiler is the entire other half of the product and does not
   exist. ARCHITECTURE.md's M1.
 - **HTTP keep-alive in the backend.** `urllib` opens a connection per request; ARCHITECTURE.md
   §7.2 lists pooling as the first real latency lever. Needs `http.client` and a

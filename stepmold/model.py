@@ -1,6 +1,6 @@
-"""The model interface jig executes against, and the FakeModel every test uses.
+"""The model interface stepmold executes against, and the FakeModel every test uses.
 
-jig never calls a model directly from the graph walker; it calls whatever satisfies
+stepmold never calls a model directly from the graph walker; it calls whatever satisfies
 `Model`. That is what keeps the entire test suite offline — `FakeModel` is a drop-in.
 """
 
@@ -14,7 +14,7 @@ class ModelExhausted(RuntimeError):
 
 @runtime_checkable
 class Model(Protocol):
-    """Anything jig can generate with."""
+    """Anything stepmold can generate with."""
 
     def generate(
         self,

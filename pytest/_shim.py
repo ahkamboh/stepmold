@@ -1,4 +1,4 @@
-"""The tiny subset of the pytest API that jig's suite actually uses."""
+"""The tiny subset of the pytest API that stepmold's suite actually uses."""
 
 import unittest
 

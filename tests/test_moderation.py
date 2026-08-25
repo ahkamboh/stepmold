@@ -11,12 +11,12 @@ import subprocess
 import sys
 import unittest
 
-from jig.cli import resolve_model
-from jig.errors import NodeFailed
-from jig.eval import evaluate
-from jig.graph import run
-from jig.model import FakeModel
-from jig.pack import load_pack
+from stepmold.cli import resolve_model
+from stepmold.errors import NodeFailed
+from stepmold.eval import evaluate
+from stepmold.graph import run
+from stepmold.model import FakeModel
+from stepmold.pack import load_pack
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PACK = os.path.join(ROOT, "examples", "content_moderation")
@@ -70,7 +70,7 @@ class TestTheExampleScores(unittest.TestCase):
 
     def test_the_cli_scores_it_too(self):
         completed = subprocess.run(
-            [sys.executable, "-m", "jig", "eval", PACK],
+            [sys.executable, "-m", "stepmold", "eval", PACK],
             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             universal_newlines=True,
         )
@@ -79,7 +79,7 @@ class TestTheExampleScores(unittest.TestCase):
 
     def test_the_cli_validates_it(self):
         completed = subprocess.run(
-            [sys.executable, "-m", "jig", "validate", PACK],
+            [sys.executable, "-m", "stepmold", "validate", PACK],
             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             universal_newlines=True,
         )

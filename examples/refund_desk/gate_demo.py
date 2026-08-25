@@ -16,14 +16,14 @@ is nothing to undo, because nothing was done.
 
 WHY THIS IS A SCRIPT AND NOT A LINE IN graph.yaml
 -------------------------------------------------
-`samples:` and `agree:` are not in `jig.pack._NODE_KEYS`, so a graph.yaml that names them
-is refused at load — `jig.pack.Node` has no field for them yet. `jig.verify.gate_for`
+`samples:` and `agree:` are not in `stepmold.pack._NODE_KEYS`, so a graph.yaml that names them
+is refused at load — `stepmold.pack.Node` has no field for them yet. `stepmold.verify.gate_for`
 reads them off the node with `getattr`, which is what lets this script attach them from
 Python and get the real, shipped gate. `tests/test_verify.py:GatedNode` does exactly the
 same thing, and for the same stated reason.
 
-`on_unsure:` IS a pack key today (`jig/pack.py:_NODE_KEYS`, and the walker routes it at
-`jig/graph.py`, the `except Unsure` clause), so the edge this demo takes is the one
+`on_unsure:` IS a pack key today (`stepmold/pack.py:_NODE_KEYS`, and the walker routes it at
+`stepmold/graph.py`, the `except Unsure` clause), so the edge this demo takes is the one
 graph.yaml already declares. Only the entrance to the gate is missing.
 """
 
@@ -37,10 +37,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
 sys.path.insert(0, HERE)
 
-from jig.graph import run                       # noqa: E402
-from jig.log import configure                   # noqa: E402
-from jig.model import FakeModel                 # noqa: E402
-from jig.pack import Node, load_pack            # noqa: E402
+from stepmold.graph import run                       # noqa: E402
+from stepmold.log import configure                   # noqa: E402
+from stepmold.model import FakeModel                 # noqa: E402
+from stepmold.pack import Node, load_pack            # noqa: E402
 
 from tools import RefundDesk                    # noqa: E402
 
@@ -49,7 +49,7 @@ ORDER = "R-1001"
 
 @dataclasses.dataclass(frozen=True)
 class GatedNode(Node):
-    """A `Node` carrying the gate's keys, for as long as `jig.pack.Node` does not."""
+    """A `Node` carrying the gate's keys, for as long as `stepmold.pack.Node` does not."""
 
     samples: int = 1
     agree: int = 0
@@ -73,7 +73,7 @@ def model_for(approve_draws):
     })
 
 
-# jig is a library and logs nothing until an application switches it on. This script is
+# stepmold is a library and logs nothing until an application switches it on. This script is
 # the application, and the gate's own lines -- node.agreed, node.unsure, and the
 # node.samples.blind warning below -- are most of what there is to see.
 LOG = io.StringIO()

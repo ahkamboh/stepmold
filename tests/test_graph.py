@@ -10,7 +10,7 @@ import unittest
 from typing import Optional
 from unittest import mock
 
-from jig.errors import (
+from stepmold.errors import (
     AssertFailed,
     DanglingEdge,
     DeadEnd,
@@ -19,17 +19,17 @@ from jig.errors import (
     MissingVariable,
     NodeFailed,
 )
-from jig.model import FakeModel
-from jig.pack import Edge, Node, Pack
-from jig.state import Store, resume
-from jig.tools import (
+from stepmold.model import FakeModel
+from stepmold.pack import Edge, Node, Pack
+from stepmold.state import Store, resume
+from stepmold.tools import (
     ToolContract,
     ToolFailed,
     ToolNotRegistered,
     ToolRegistry,
 )
-from jig.verify import Consensus
-from jig.graph import (
+from stepmold.verify import Consensus
+from stepmold.graph import (
     StateCollision,
     ToolReplayMismatch,
     ToolsNotAvailable,
@@ -661,9 +661,9 @@ class TestAttemptsAreOnTheResult(unittest.TestCase):
 
 @dataclasses.dataclass(frozen=True)
 class _Node(Node):
-    """A node carrying the keys the walker reads and `jig.pack` may not parse yet.
+    """A node carrying the keys the walker reads and `stepmold.pack` may not parse yet.
 
-    `jig/pack.py` owns turning `tool:` and `on_unsure:` in graph.yaml into fields on
+    `stepmold/pack.py` owns turning `tool:` and `on_unsure:` in graph.yaml into fields on
     `Node`; this file owns what the walker does when it meets them. The two land
     independently, so these tests supply the fields themselves rather than waiting: the
     day `Node` carries them, this subclass is an empty wrapper and nothing here changes.
@@ -689,7 +689,7 @@ def no_model():
 
 
 class Crash(Exception):
-    """Not a `JigError`: the worker died, it did not fail. Nothing catches this."""
+    """Not a `StepmoldError`: the worker died, it did not fail. Nothing catches this."""
 
 
 class DyingStore(Store):
@@ -1117,7 +1117,7 @@ class TestASideEffectHappensExactlyOnce(unittest.TestCase):
                      pack_version=None, attempts=None):
                 saved.append(node)
 
-        with self.assertLogs("jig.graph", level="WARNING") as caught:
+        with self.assertLogs("stepmold.graph", level="WARNING") as caught:
             result = run(sending_pack(), no_model(), {"to": "ops@example.com"},
                          run_id="old", store=OlderStore(),
                          tools=sending_registry(self.sent))
@@ -1133,10 +1133,10 @@ class TestASideEffectHappensExactlyOnce(unittest.TestCase):
 
 
 def unsure_signal(node="classify", attempts=3):
-    """jig's unsure outcome, built against the real constructor.
+    """stepmold's unsure outcome, built against the real constructor.
 
     This was written defensively — try one shape, fall back to another — while
-    jig.verify's signal was still settling. That guessing then hid a genuine integration
+    stepmold.verify's signal was still settling. That guessing then hid a genuine integration
     break: the signature became Unsure(node, consensus, value=None), every fallback also
     raised TypeError, and six routing tests errored instead of saying what was wrong.
 
@@ -1177,34 +1177,34 @@ class TestUnsureIsRoutedApartFromFailure(unittest.TestCase):
             edges=[("classify", "done")],
             entry="classify",
         )
-        with mock.patch("jig.graph.run_node", raise_unsure):
+        with mock.patch("stepmold.graph.run_node", raise_unsure):
             result = run(pack, no_model(), {"ticket": "t"})
         self.assertEqual(result.end_node, "desk")
 
     def test_a_node_with_no_on_unsure_falls_back_to_on_fail(self):
-        with mock.patch("jig.graph.run_node", raise_unsure):
+        with mock.patch("stepmold.graph.run_node", raise_unsure):
             result = run(self._pack(on_fail="rescue"), no_model(), {"ticket": "t"})
         self.assertEqual(result.end_node, "rescue")
 
     def test_a_node_with_neither_aborts_rather_than_committing_on_a_coin_flip(self):
-        with mock.patch("jig.graph.run_node", raise_unsure):
+        with mock.patch("stepmold.graph.run_node", raise_unsure):
             with self.assertRaises(Unsure):
                 run(self._pack(), no_model(), {"ticket": "t"})
 
     def test_the_divert_is_recorded_in_failures(self):
-        with mock.patch("jig.graph.run_node", raise_unsure):
+        with mock.patch("stepmold.graph.run_node", raise_unsure):
             result = run(self._pack(on_fail="rescue"), no_model(), {"ticket": "t"})
         self.assertEqual([failure.node for failure in result.failures], ["classify"])
 
     def test_nothing_the_unsure_node_would_have_written_reaches_state(self):
-        with mock.patch("jig.graph.run_node", raise_unsure):
+        with mock.patch("stepmold.graph.run_node", raise_unsure):
             result = run(self._pack(on_fail="rescue"), no_model(), {"ticket": "t"})
         self.assertEqual(result.state, {"ticket": "t"})
 
     def test_the_route_is_checkpointed_like_any_other_divert(self):
         store = Store(":memory:")
         self.addCleanup(store.close)
-        with mock.patch("jig.graph.run_node", raise_unsure):
+        with mock.patch("stepmold.graph.run_node", raise_unsure):
             run(self._pack(on_fail="rescue"), no_model(), {"ticket": "t"},
                 run_id="u", store=store)
         self.assertEqual([point.next_node for point in store.history("u")],

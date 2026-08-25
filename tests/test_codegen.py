@@ -2,11 +2,11 @@
 
 import unittest
 
-from jig.codegen import SCRATCHPAD, Sampling, accepts_sampling, generate_once
-from jig.errors import BackendError
-from jig.graph import run
-from jig.model import FakeModel
-from jig.pack import Edge, Node, Pack
+from stepmold.codegen import SCRATCHPAD, Sampling, accepts_sampling, generate_once
+from stepmold.errors import BackendError
+from stepmold.graph import run
+from stepmold.model import FakeModel
+from stepmold.pack import Edge, Node, Pack
 
 SCHEMA = {"type": "object", "properties": {"category": {"type": "string"}}}
 

@@ -9,7 +9,7 @@ generation never comes back out. Three negatives are tested as hard as the posit
 * rejected model text never appears at INFO, and the safe half still does;
 * a megabyte of user-controlled input never becomes a megabyte of log line.
 
-And one property that is neither: with no flags, jig configures nothing, emits nothing,
+And one property that is neither: with no flags, stepmold configures nothing, emits nothing,
 and costs nothing. `logging.lastResort` makes that non-obvious — a library with no
 handler at all still prints WARNING and above to stderr — so it is tested rather than
 assumed.
@@ -31,20 +31,20 @@ import logging
 import unittest
 import urllib.error
 
-from jig import log
-from jig.backends.openai_compat import OpenAICompatModel
-from jig.errors import NodeFailed
-from jig.graph import run
-from jig.model import FakeModel
-from jig.pack import load_pack
-from jig.state import Store
-from jig.verify import Rejected, run_node
+from stepmold import log
+from stepmold.backends.openai_compat import OpenAICompatModel
+from stepmold.errors import NodeFailed
+from stepmold.graph import run
+from stepmold.model import FakeModel
+from stepmold.pack import load_pack
+from stepmold.state import Store
+from stepmold.verify import Rejected, run_node
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # A key shaped exactly like the real thing, planted so a leak is unambiguous. If this
-# string turns up in a log line, jig wrote a credential to disk.
-CANARY = "sk-jigcanary-4Vb92LmQ0pTz7XkD3nR8"
+# string turns up in a log line, stepmold wrote a credential to disk.
+CANARY = "sk-stepmoldcanary-4Vb92LmQ0pTz7XkD3nR8"
 
 # Model output that must never reach a default-level log line. Distinctive enough that a
 # substring search is proof either way.
@@ -68,7 +68,7 @@ ENUM_SCHEMA = {
 
 
 class Captured(unittest.TestCase):
-    """A TestCase that turns jig's logging on into a buffer, and off again after.
+    """A TestCase that turns stepmold's logging on into a buffer, and off again after.
 
     `configure` is the real entry point the CLI uses, so the formatters — where the
     redaction actually runs — are exercised rather than bypassed.
@@ -197,19 +197,19 @@ def backend(http, **kwargs):
 
 
 class TestTheLibraryDoesNotConfigureItsHost(unittest.TestCase):
-    """Rule 1 of jig/log.py. Importing a library must change nothing about logging."""
+    """Rule 1 of stepmold/log.py. Importing a library must change nothing about logging."""
 
     def test_the_package_logger_carries_a_null_handler(self):
-        handlers = logging.getLogger("jig").handlers
+        handlers = logging.getLogger("stepmold").handlers
         self.assertTrue(
             any(isinstance(handler, logging.NullHandler) for handler in handlers),
-            "without a NullHandler, logging.lastResort prints jig's warnings to stderr",
+            "without a NullHandler, logging.lastResort prints stepmold's warnings to stderr",
         )
 
-    def test_importing_jig_installs_nothing_on_the_root_logger(self):
+    def test_importing_stepmold_installs_nothing_on_the_root_logger(self):
         completed = subprocess.run(
             [sys.executable, "-c",
-             "import logging, jig, jig.graph, jig.state, jig.backends.openai_compat;"
+             "import logging, stepmold, stepmold.graph, stepmold.state, stepmold.backends.openai_compat;"
              "print(len(logging.getLogger().handlers))"],
             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             universal_newlines=True,
@@ -221,12 +221,12 @@ class TestTheLibraryDoesNotConfigureItsHost(unittest.TestCase):
         """`logging.lastResort` is the trap this guards.
 
         A logger with no handler anywhere in its chain still prints WARNING and above to
-        stderr, so an unconfigured jig emitting one rejection would put a line on the
+        stderr, so an unconfigured stepmold emitting one rejection would put a line on the
         terminal of an application that never asked for it.
         """
         completed = subprocess.run(
             [sys.executable, "-c",
-             "from jig.log import WARNING, event, get_logger;"
+             "from stepmold.log import WARNING, event, get_logger;"
              "event(get_logger('graph'), WARNING, 'node.rejected', node='a')"],
             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             universal_newlines=True,
@@ -243,7 +243,7 @@ class TestTheLibraryDoesNotConfigureItsHost(unittest.TestCase):
     def test_reset_removes_the_handler_configure_installed(self):
         log.configure(level="debug", stream=io.StringIO())
         log.reset()
-        kinds = [type(handler) for handler in logging.getLogger("jig").handlers]
+        kinds = [type(handler) for handler in logging.getLogger("stepmold").handlers]
         self.assertEqual(kinds, [logging.NullHandler])
 
     def test_configure_twice_does_not_double_the_output(self):
@@ -276,7 +276,7 @@ class TestDisabledLoggingCostsNothing(unittest.TestCase):
         stream = io.StringIO()
         log.configure(level="warning", stream=stream)
         self.addCleanup(log.reset)
-        logging.getLogger("jig").handlers[-1].setFormatter(Counting())
+        logging.getLogger("stepmold").handlers[-1].setFormatter(Counting())
 
         logger = log.get_logger("graph")
         for _ in range(100):
@@ -296,8 +296,8 @@ class TestDisabledLoggingCostsNothing(unittest.TestCase):
                 seen.append(record)
 
         handler = Collect()
-        logging.getLogger("jig").addHandler(handler)
-        self.addCleanup(logging.getLogger("jig").removeHandler, handler)
+        logging.getLogger("stepmold").addHandler(handler)
+        self.addCleanup(logging.getLogger("stepmold").removeHandler, handler)
 
         run(pack, FakeModel(['{"v": "ok"}']), {})
         self.assertEqual(seen, [])
@@ -414,7 +414,7 @@ class TestCheckpointAndResumeEvents(Captured):
         self.assertEqual(self.field("checkpoint.saved", "step"), 1)
 
     def test_a_resume_logs_the_lease_it_took_and_gave_back(self):
-        from jig.state import resume
+        from stepmold.state import resume
 
         run(self.pack, FakeModel(['{"v": "ok"}']), {}, run_id="job-3", store=self.store)
         resume(self.pack, FakeModel(['{"v": "unused"}']), "job-3", self.store)
@@ -423,7 +423,7 @@ class TestCheckpointAndResumeEvents(Captured):
         self.assertIn("resume.replayed", self.events())
 
     def test_an_unfinished_resume_takes_a_lease(self):
-        from jig.state import resume
+        from stepmold.state import resume
 
         graph = (
             "nodes:\n"
@@ -521,7 +521,7 @@ class TestTextFormat(Captured):
                   attempts=2)
         line = self.lines()[0]
         self.assertIn("INFO", line)
-        self.assertIn("jig.graph", line)
+        self.assertIn("stepmold.graph", line)
         self.assertIn("node.ok", line)
         self.assertIn("node=classify", line)
         self.assertIn("attempts=2", line)
@@ -551,7 +551,7 @@ class TestJsonFormat(Captured):
         for key in ("ts", "level", "logger", "event"):
             self.assertIn(key, record)
         self.assertEqual(record["level"], "WARNING")
-        self.assertEqual(record["logger"], "jig.verify")
+        self.assertEqual(record["logger"], "stepmold.verify")
 
     def test_fields_land_at_the_top_level_where_jq_can_reach_them(self):
         log.event(log.get_logger("graph"), log.INFO, "node.ok", node="a", attempts=3)
@@ -631,15 +631,15 @@ class TestNoCredentialEverReachesALogLine(Captured):
         self.assertNotIn(CANARY, self.text)
 
     def test_the_redactor_is_the_one_the_backend_already_used(self):
-        """Reuse, not reinvention: the backend imports the filter back from jig.log."""
-        from jig.backends import openai_compat
+        """Reuse, not reinvention: the backend imports the filter back from stepmold.log."""
+        from stepmold.backends import openai_compat
 
         self.assertIs(openai_compat._redact, log.redact)
         self.assertIs(openai_compat.KEY_SHAPED, log.KEY_SHAPED)
 
 
 class TestRejectedModelTextStaysOutOfTheDefaultPath(unittest.TestCase):
-    """jig's central invariant, extended to the new exfiltration path.
+    """stepmold's central invariant, extended to the new exfiltration path.
 
     `tests/test_invariants.py` proves a rejected generation never reaches the *model*.
     A log is not a model — bytes on disk cannot self-condition anything — but a log an
@@ -694,7 +694,7 @@ class TestRejectedModelTextStaysOutOfTheDefaultPath(unittest.TestCase):
 
     def test_node_failed_carries_both_halves_so_the_walker_can_choose(self):
         """The mechanism behind the test above, pinned at its source."""
-        from jig.pack import Node
+        from stepmold.pack import Node
 
         node = Node(name="a", type="generate", prompt="go", grammar=ENUM_SCHEMA,
                     output="r", retries=0)
@@ -704,7 +704,7 @@ class TestRejectedModelTextStaysOutOfTheDefaultPath(unittest.TestCase):
         self.assertNotIn(POISON, caught.exception.feedback)
 
     def test_a_node_failed_without_a_feedback_half_says_so_rather_than_leaking(self):
-        from jig.graph import _safe_reason
+        from stepmold.graph import _safe_reason
 
         raw = NodeFailed("a", "output was not valid JSON: %s" % POISON, attempts=1)
         self.assertNotIn(POISON, _safe_reason(raw))
@@ -789,9 +789,9 @@ class TestPromptsAndStateNeverAppearVerbatim(Captured):
 # --------------------------------------------------------------------------- the CLI
 
 
-def jig(*argv):
+def stepmold(*argv):
     completed = subprocess.run(
-        [sys.executable, "-m", "jig"] + list(argv), cwd=ROOT,
+        [sys.executable, "-m", "stepmold"] + list(argv), cwd=ROOT,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
     )
     return completed.returncode, completed.stdout, completed.stderr
@@ -804,27 +804,27 @@ PACK = "examples/support_triage"
 class TestTheCliFlags(unittest.TestCase):
     def test_by_default_a_run_prints_nothing_on_stderr(self):
         """The whole compatibility contract in one assertion."""
-        code, out, err = jig("run", PACK, "--input", TICKET)
+        code, out, err = stepmold("run", PACK, "--input", TICKET)
         self.assertEqual(code, 0)
         self.assertEqual(err, "")
         self.assertTrue(out.startswith("{"))
 
     def test_log_level_off_is_the_same_as_no_flag(self):
-        _, plain, _ = jig("run", PACK, "--input", TICKET)
-        code, out, err = jig("run", PACK, "--input", TICKET, "--log-level", "off")
+        _, plain, _ = stepmold("run", PACK, "--input", TICKET)
+        code, out, err = stepmold("run", PACK, "--input", TICKET, "--log-level", "off")
         self.assertEqual(out, plain)
         self.assertEqual(err, "")
 
     def test_log_level_info_writes_events_to_stderr_and_leaves_stdout_alone(self):
-        _, plain, _ = jig("run", PACK, "--input", TICKET)
-        code, out, err = jig("run", PACK, "--input", TICKET, "--log-level", "info")
+        _, plain, _ = stepmold("run", PACK, "--input", TICKET)
+        code, out, err = stepmold("run", PACK, "--input", TICKET, "--log-level", "info")
         self.assertEqual(code, 0)
         self.assertEqual(out, plain, "logging must not touch the result on stdout")
         self.assertIn("run.start", err)
         self.assertIn("run.end", err)
 
     def test_log_format_json_puts_one_parseable_object_per_line_on_stderr(self):
-        code, out, err = jig("run", PACK, "--input", TICKET,
+        code, out, err = stepmold("run", PACK, "--input", TICKET,
                              "--log-level", "info", "--log-format", "json")
         self.assertEqual(code, 0)
         events = [json.loads(line)["event"] for line in err.splitlines() if line.strip()]
@@ -833,18 +833,18 @@ class TestTheCliFlags(unittest.TestCase):
         self.assertIn("run.end", events)
 
     def test_eval_takes_the_same_flags(self):
-        code, out, err = jig("eval", PACK, "--log-level", "info")
+        code, out, err = stepmold("eval", PACK, "--log-level", "info")
         self.assertEqual(code, 0)
         self.assertIn("12/12", out)
         self.assertIn("run.end", err)
 
     def test_validate_takes_the_same_flags(self):
-        code, out, err = jig("validate", PACK, "--log-level", "debug")
+        code, out, err = stepmold("validate", PACK, "--log-level", "debug")
         self.assertEqual(code, 0)
         self.assertIn("support_triage", out)
 
     def test_an_unknown_level_is_a_usage_error_not_a_traceback(self):
-        code, out, err = jig("run", PACK, "--input", TICKET, "--log-level", "chatty")
+        code, out, err = stepmold("run", PACK, "--input", TICKET, "--log-level", "chatty")
         self.assertEqual(code, 2)
         self.assertIn("chatty", err)
 
@@ -889,7 +889,7 @@ class TheSinkFiltersEverythingItEmits(unittest.TestCase):
 
         The surviving prefix was then printed verbatim. Order matters: redact first.
         """
-        from jig.log import _safe
+        from stepmold.log import _safe
 
         key = "csk-CANARYDONOTLOGME123456789"
         for separator in (" ", "=", ": ", '"', "Bearer "):
@@ -902,10 +902,10 @@ class TheSinkFiltersEverythingItEmits(unittest.TestCase):
 
     def test_a_plain_record_message_is_redacted_too(self):
         """A record logged through the ordinary stdlib API reaches the same formatter."""
-        from jig.log import TextFormatter, JsonFormatter
+        from stepmold.log import TextFormatter, JsonFormatter
 
         record = logging.LogRecord(
-            "jig.probe", logging.WARNING, "", 1, "key is %s",
+            "stepmold.probe", logging.WARNING, "", 1, "key is %s",
             ("csk-CANARYDONOTLOG12345",), None,
         )
         for formatter in (TextFormatter(), JsonFormatter()):
@@ -915,11 +915,11 @@ class TheSinkFiltersEverythingItEmits(unittest.TestCase):
 
     def test_control_characters_cannot_reach_the_terminal(self):
         """A raw ESC in upstream text would execute as a terminal command."""
-        from jig.log import TextFormatter
+        from stepmold.log import TextFormatter
 
-        record = logging.LogRecord("jig.probe", logging.WARNING, "", 1, "x", (), None)
-        setattr(record, "jig_event", "probe")
-        setattr(record, "jig_fields", {"b": "\x1b[2J\x1b[31mRED"})
+        record = logging.LogRecord("stepmold.probe", logging.WARNING, "", 1, "x", (), None)
+        setattr(record, "stepmold_event", "probe")
+        setattr(record, "stepmold_fields", {"b": "\x1b[2J\x1b[31mRED"})
         rendered = TextFormatter().format(record)
         self.assertNotIn("\x1b", rendered)
         self.assertIn("RED", rendered)

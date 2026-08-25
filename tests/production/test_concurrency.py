@@ -1,6 +1,6 @@
-"""Many runs, one store file — what jig's SQLite state layer does under real concurrency.
+"""Many runs, one store file — what stepmold's SQLite state layer does under real concurrency.
 
-`jig/state.py` has only ever been driven one run at a time, in-process, with a model that
+`stepmold/state.py` has only ever been driven one run at a time, in-process, with a model that
 answers instantly. Production is the opposite: a pool of workers, one store file, and a
 network in front of every generation, so the window between any two of a run's operations
 is milliseconds wide instead of microseconds. This file walks that window.
@@ -24,7 +24,7 @@ And what used to give way, each now asserted the other way round:
 * A `Store` is safe to share between threads, and says so.
 * `Store.__init__` no longer races itself on first open: `makedirs` is `exist_ok`, and
   the migration asks sqlite for the column rather than reading and then deciding.
-* Contention past the busy timeout arrives as `StoreBusy`, a `JigError`, not as a raw
+* Contention past the busy timeout arrives as `StoreBusy`, a `StepmoldError`, not as a raw
   `sqlite3.OperationalError`.
 * A run's checkpoints cost bytes linear in its length, and `prune`/`vacuum` give an
   operator a retention policy.
@@ -48,11 +48,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-import jig.state
-from jig.errors import JigError, RunIdInUse
-from jig.graph import run
-from jig.pack import Edge, Node, Pack
-from jig.state import ResumeInProgress, Store, StoreBusy, resume
+import stepmold.state
+from stepmold.errors import StepmoldError, RunIdInUse
+from stepmold.graph import run
+from stepmold.pack import Edge, Node, Pack
+from stepmold.state import ResumeInProgress, Store, StoreBusy, resume
 
 
 # How long any thread will wait for its partner before the test fails instead of hanging.
@@ -203,7 +203,7 @@ def _run_all(targets):
 
 
 class ConcurrentRunsShareOneStoreFile(StoreTempDir):
-    """The shape jig is actually deployed in: a worker pool, one store file.
+    """The shape stepmold is actually deployed in: a worker pool, one store file.
 
     Each worker opens its own `Store` (see `SharingOneStoreBetweenThreads` below for why
     it has no choice) and walks its own run id.
@@ -467,7 +467,7 @@ class ConcurrentResumeOfOneRun(StoreTempDir):
         self.assertEqual(spent, 1, "the tail of the run was executed twice")
         for exc in errors.values():
             self.assertIsInstance(exc, ResumeInProgress)
-            self.assertIsInstance(exc, JigError)
+            self.assertIsInstance(exc, StepmoldError)
         self.assertEqual(len(results) + len(errors), 2)
         self.assertGreaterEqual(len(results), 1)
 
@@ -563,8 +563,8 @@ class SharingOneStoreBetweenThreads(StoreTempDir):
 
     `sqlite3.connect` defaults to `check_same_thread=True`, so a `Store` touched from any
     thread but the one that built it used to die on a bare `sqlite3.ProgrammingError`:
-    not a `JigError`, so `except JigError` around a run did not catch it, and a message
-    about thread identities rather than about jig. `Store` now opens its connection with
+    not a `StepmoldError`, so `except StepmoldError` around a run did not catch it, and a message
+    about thread identities rather than about stepmold. `Store` now opens its connection with
     `check_same_thread=False` and serialises every statement on its own lock, which is
     cheaper than a connection per thread on a file this small.
     """
@@ -655,7 +655,7 @@ class SharingOneStoreBetweenThreads(StoreTempDir):
         The old version of this test asserted the opposite — that nothing anywhere said
         `Store` was single-threaded — and named its own deletion as the fix.
         """
-        text = (jig.state.__doc__ or "") + (Store.__doc__ or "") + (
+        text = (stepmold.state.__doc__ or "") + (Store.__doc__ or "") + (
             Store.__init__.__doc__ or ""
         )
         lowered = text.lower()
@@ -669,7 +669,7 @@ class SharingOneStoreBetweenThreads(StoreTempDir):
 class SqliteLockingUnderContention(StoreTempDir):
     """What happens when many writers hit one file, and what it looks like when it hurts.
 
-    At the scale a jig deployment writes — a handful of small rows per run — contention
+    At the scale a stepmold deployment writes — a handful of small rows per run — contention
     is absorbed and nothing is lost. The question this class exists for is the other one:
     what a caller sees when the wait is not enough, and whether they have any way to
     change the wait.
@@ -684,7 +684,7 @@ class SqliteLockingUnderContention(StoreTempDir):
         # fleet and may sit on a slow or networked filesystem. WAL because the rollback
         # journal makes a writer exclude every reader for the length of its transaction,
         # and `history()` over a large store is exactly such a reader.
-        self.assertEqual(timeout_ms, int(jig.state.DEFAULT_TIMEOUT * 1000))
+        self.assertEqual(timeout_ms, int(stepmold.state.DEFAULT_TIMEOUT * 1000))
         self.assertEqual(journal, "wal")
 
         import inspect
@@ -738,8 +738,8 @@ class SqliteLockingUnderContention(StoreTempDir):
                 [c.state["w"] for c in history], [index] * per_writer
             )
 
-    def test_a_write_that_outlasts_the_busy_timeout_raises_a_jig_error(self):
-        """The failure the timeout only postpones, reported as jig\'s rather than sqlite\'s.
+    def test_a_write_that_outlasts_the_busy_timeout_raises_a_stepmold_error(self):
+        """The failure the timeout only postpones, reported as stepmold\'s rather than sqlite\'s.
 
         The timeout is shortened on this one connection so the test costs 100ms instead
         of the store\'s real wait; the wait is the only thing scaled, the outcome is not.
@@ -766,9 +766,9 @@ class SqliteLockingUnderContention(StoreTempDir):
         blocker.rollback()
 
         self.assertLess(waited, 2.0)
-        # A JigError, so `except JigError` around a run catches it, and it names the run,
+        # A StepmoldError, so `except StepmoldError` around a run catches it, and it names the run,
         # the step and the node so an operator knows what to re-drive.
-        self.assertIsInstance(caught.exception, JigError)
+        self.assertIsInstance(caught.exception, StepmoldError)
         self.assertIn("victim", str(caught.exception))
         self.assertIn("one", str(caught.exception))
         self.assertIn("timeout", str(caught.exception))
@@ -795,7 +795,7 @@ def _process_writer(path, worker, count, queue):
     Module level because `spawn` pickles the target by name.
     """
     try:
-        from jig.state import Store as ChildStore
+        from stepmold.state import Store as ChildStore
 
         store = ChildStore(path)
         for step in range(count):
@@ -810,7 +810,7 @@ def _process_writer(path, worker, count, queue):
 class SeparateProcessesWritingOneStore(StoreTempDir):
     """Threads share a GIL; processes share only the file, and the OS locks it for real.
 
-    This is the deployment shape jig will actually meet — several worker processes on one
+    This is the deployment shape stepmold will actually meet — several worker processes on one
     box, one store file — so it is worth proving the file locking holds where the
     in-process serialisation cannot help.
     """
@@ -858,7 +858,7 @@ class OpeningAStoreRacesItself(unittest.TestCase):
     """`Store.__init__` used to do two read-then-write things before it was usable.
 
     Both only matter on a cold start — the first time a fleet of workers opens a store
-    that does not exist yet, or the first time it opens a store file an older jig wrote.
+    that does not exist yet, or the first time it opens a store file an older stepmold wrote.
     That is exactly the moment a deployment restarts every worker at once, so both were
     guaranteed to fire and neither had anything to do with a real fault.
     """
@@ -875,7 +875,7 @@ class OpeningAStoreRacesItself(unittest.TestCase):
         The loser of a two-worker cold start is the process whose look at the directory
         ran before the winner\'s `makedirs` and whose own `makedirs` ran after it.
         Substituting a `makedirs` that creates the directory before delegating reproduces
-        that interleaving with no scheduling luck involved: whatever jig passes has to
+        that interleaving with no scheduling luck involved: whatever stepmold passes has to
         survive the directory already being there.
         """
         real_makedirs = os.makedirs
@@ -885,12 +885,12 @@ class OpeningAStoreRacesItself(unittest.TestCase):
             return real_makedirs(name, *args, **kwargs)  # the loser\'s own call
 
         stale = types.SimpleNamespace(path=os.path, makedirs=racing_makedirs)
-        real_os = jig.state.os
-        jig.state.os = stale
+        real_os = stepmold.state.os
+        stepmold.state.os = stale
         try:
             store = Store(os.path.join(self.directory, "state", "runs.db"))
         finally:
-            jig.state.os = real_os
+            stepmold.state.os = real_os
         store.close()
         self.assertTrue(os.path.isdir(os.path.join(self.directory, "state")))
 
@@ -925,7 +925,7 @@ class OpeningAStoreRacesItself(unittest.TestCase):
         path = os.path.join(self.directory, "delete_mode.db")
         seed = sqlite3.connect(path)
         self.addCleanup(seed.close)
-        seed.executescript(jig.state.SCHEMA)
+        seed.executescript(stepmold.state.SCHEMA)
         seed.commit()
 
         blocker = sqlite3.connect(path)
@@ -953,7 +953,7 @@ class OpeningAStoreRacesItself(unittest.TestCase):
         twice is the test.
         """
         self.assertIn(
-            "pack_version", [name for name, _ in jig.state._ADDED_COLUMNS],
+            "pack_version", [name for name, _ in stepmold.state._ADDED_COLUMNS],
             "the migration this test replays is gone — retarget or delete it",
         )
         path = os.path.join(self.directory, "legacy.db")
@@ -961,8 +961,8 @@ class OpeningAStoreRacesItself(unittest.TestCase):
 
         connection = sqlite3.connect(path)
         self.addCleanup(connection.close)
-        jig.state._add_column(connection, "pack_version", "TEXT")
-        jig.state._add_column(connection, "pack_version", "TEXT")  # the loser
+        stepmold.state._add_column(connection, "pack_version", "TEXT")
+        stepmold.state._add_column(connection, "pack_version", "TEXT")  # the loser
         columns = [row[1] for row in connection.execute(
             "PRAGMA table_info(checkpoints)"
         )]
@@ -974,7 +974,7 @@ class OpeningAStoreRacesItself(unittest.TestCase):
         connection = sqlite3.connect(path)
         self.addCleanup(connection.close)
         with self.assertRaises(sqlite3.OperationalError) as caught:
-            jig.state._add_column(connection, "pack_version", "TEXT")
+            stepmold.state._add_column(connection, "pack_version", "TEXT")
         self.assertIn("no such table", str(caught.exception))
 
     def test_two_openers_of_a_legacy_store_both_migrate_it_cleanly(self):
@@ -1025,7 +1025,7 @@ class OpeningAStoreRacesItself(unittest.TestCase):
 
 
 def _write_legacy_store(path):
-    """The checkpoints table as jig shipped it before a055476 added the version column."""
+    """The checkpoints table as stepmold shipped it before a055476 added the version column."""
     legacy = sqlite3.connect(path)
     legacy.executescript(
         "CREATE TABLE checkpoints ("
@@ -1042,7 +1042,7 @@ def _write_legacy_store(path):
 
 
 class TheStoreGrowsAndNothingPrunesIt(StoreTempDir):
-    """Sustained runs against one store file, which is what a deployed jig does forever.
+    """Sustained runs against one store file, which is what a deployed stepmold does forever.
 
     Two separate growth problems live here: how much one run costs, and what an operator
     can do about a month of them.

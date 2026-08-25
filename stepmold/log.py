@@ -1,6 +1,6 @@
 """Structured logging for the runtime — silent until an operator asks for it.
 
-A jig run used to print its final JSON and nothing else. Every fact an operator needs at
+A stepmold run used to print its final JSON and nothing else. Every fact an operator needs at
 3am already existed inside the runtime — `graph` tracks the path and the attempts,
 `verify` knows every rejection and why, `openai_compat` knows the tokens and the
 milliseconds — and none of it was written down. This module is where it gets written.
@@ -8,22 +8,22 @@ milliseconds — and none of it was written down. This module is where it gets w
 Three rules hold it together, and two of them are about what must *not* come out.
 
 **1. A library does not configure logging for its host.**
-Importing `jig` must not touch the root logger, must not call `basicConfig`, and must not
+Importing `stepmold` must not touch the root logger, must not call `basicConfig`, and must not
 put a byte on stdout or stderr. So the package logger gets a `NullHandler` at import and
 nothing else. That single line does more than swallow records: `logging.lastResort` only
 fires when a record reaches the end of the chain having found *no* handler at all, so
 without the NullHandler a lone `logger.warning(...)` would print to stderr from a library
 that was never switched on. `propagate` is deliberately left alone, so a host that has
-configured logging of its own still sees jig's records; `configure` — which only the CLI
-calls — is the explicit opt-in that installs jig's own handler.
+configured logging of its own still sees stepmold's records; `configure` — which only the CLI
+calls — is the explicit opt-in that installs stepmold's own handler.
 
 **2. Secrets and model text do not go in a log.**
-`redact` is the same key-shaped filter `jig.backends.openai_compat` has always run over
+`redact` is the same key-shaped filter `stepmold.backends.openai_compat` has always run over
 upstream error bodies; it lives here now because "text that is about to be written down"
 is this module's subject, and the backend imports it back. Every formatter runs it over
 every string it emits, so redaction is a property of the *sink* rather than a discipline
 at two hundred call sites. Rejected model output is the other half, and the rule is in
-`jig.verify`: the INFO path carries `Rejected.feedback` (what was wrong), never
+`stepmold.verify`: the INFO path carries `Rejected.feedback` (what was wrong), never
 `Rejected.detail` (what the model said). The detail is DEBUG-only — an operator who asks
 for DEBUG is asking to read what came back, and bytes in a log file cannot condition a
 model. Prompts and state never appear at all: sizes and digests instead.
@@ -69,9 +69,9 @@ __all__ = [
     "size_of",
 ]
 
-#: The package logger every jig module hangs off. `logging.getLogger("jig")` in a host
+#: The package logger every stepmold module hangs off. `logging.getLogger("stepmold")` in a host
 #: application reaches the same object, which is the whole point of naming it.
-ROOT = "jig"
+ROOT = "stepmold"
 
 DEBUG = logging.DEBUG
 INFO = logging.INFO
@@ -87,7 +87,7 @@ CLIP = 200
 
 # Credentials, as they appear in text somebody else wrote: a header a gateway echoed back
 # at us, or a key pasted into an upstream error message. These moved here from
-# `jig.backends.openai_compat` when logging arrived — the backend still imports them, and
+# `stepmold.backends.openai_compat` when logging arrived — the backend still imports them, and
 # there is still exactly one of them.
 BEARER = re.compile(r"(?i)(bearer\s+)[^\s\"',]+")
 # The separator is part of the vendor's format, not a detail: Groq issues `gsk_...` and
@@ -100,22 +100,22 @@ KEY_SHAPED = re.compile(
 
 #: LogRecord attributes the formatters read. Prefixed because `extra=` writes straight
 #: onto the record and a collision with a stdlib attribute raises at emit time.
-EVENT_ATTR = "jig_event"
-FIELDS_ATTR = "jig_fields"
+EVENT_ATTR = "stepmold_event"
+FIELDS_ATTR = "stepmold_fields"
 
-_HANDLER_MARK = "_jig_handler"
+_HANDLER_MARK = "_stepmold_handler"
 
 _package_logger = logging.getLogger(ROOT)
-# The one line that makes jig a well-behaved library: no output, and no `lastResort`.
+# The one line that makes stepmold a well-behaved library: no output, and no `lastResort`.
 _package_logger.addHandler(logging.NullHandler())
 
 
 def get_logger(name):
-    """The logger for one jig module — `get_logger("graph")` -> `jig.graph`.
+    """The logger for one stepmold module — `get_logger("graph")` -> `stepmold.graph`.
 
     Named for the module rather than passed `__name__` so the hierarchy stays flat and
-    predictable: an operator filters on `jig.backend` without knowing that it is spelled
-    `jig.backends.openai_compat` on disk.
+    predictable: an operator filters on `stepmold.backend` without knowing that it is spelled
+    `stepmold.backends.openai_compat` on disk.
     """
     return logging.getLogger("%s.%s" % (ROOT, name))
 
@@ -151,7 +151,7 @@ def redact(text):
 
     Unchanged from where it used to live in the backend, and for the same reason: error
     bodies are written by somebody else and read by our logs, and a gateway that echoes
-    the offending request back puts the caller's own `Authorization` header in it. jig is
+    the offending request back puts the caller's own `Authorization` header in it. stepmold is
     not the leaker there, but without this it is the amplifier.
     """
     if not text:
@@ -210,7 +210,7 @@ def _safe(value):
 class TextFormatter(logging.Formatter):
     """One event per line, for a human at a terminal.
 
-        14:02:11.402 INFO  jig.graph node.ok node=classify attempt=1 duration_ms=0.8
+        14:02:11.402 INFO  stepmold.graph node.ok node=classify attempt=1 duration_ms=0.8
 
     Values are printed bare when they are a single word and JSON-quoted when they are
     not, so a field containing a space cannot be misread as two fields.
@@ -259,8 +259,8 @@ class JsonFormatter(logging.Formatter):
 def _event_of(record):
     """The event name, or a plain record's message — redacted either way.
 
-    Only `jig_fields` used to be filtered, so a record logged through the ordinary
-    stdlib API on a `jig.*` logger reached the output unfiltered. Redaction is supposed
+    Only `stepmold_fields` used to be filtered, so a record logged through the ordinary
+    stdlib API on a `stepmold.*` logger reached the output unfiltered. Redaction is supposed
     to be a property of the sink, not a discipline every call site remembers, so the
     message goes through the same filter as the fields.
     """
@@ -311,13 +311,13 @@ def _as_text(value):
 
 
 def configure(level="info", fmt="text", stream=None):
-    """Turn jig's logging on. Only an application — the CLI — may call this.
+    """Turn stepmold's logging on. Only an application — the CLI — may call this.
 
-    Everything lands on **stderr** by default, never stdout: `jig run` prints its result
+    Everything lands on **stderr** by default, never stdout: `stepmold run` prints its result
     as JSON on stdout and a caller pipes it onward, so a log line there would corrupt the
     output rather than describe it.
 
-    `propagate` is switched off once jig owns a handler of its own. A host that had
+    `propagate` is switched off once stepmold owns a handler of its own. A host that had
     already configured the root logger would otherwise get every record twice, which is
     the classic library-logging bug and reads as a runtime that repeats itself.
     """
@@ -338,7 +338,7 @@ def configure(level="info", fmt="text", stream=None):
 def reset():
     """Undo `configure` — back to a library that emits nothing on its own.
 
-    Here for tests and for a host embedding jig that wants its own logging back; the
+    Here for tests and for a host embedding stepmold that wants its own logging back; the
     NullHandler stays, because rule 1 above holds whether or not anyone configured
     anything.
     """

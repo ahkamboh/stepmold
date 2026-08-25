@@ -11,11 +11,11 @@ import subprocess
 import sys
 import unittest
 
-from jig.cli import resolve_model
-from jig.eval import evaluate
-from jig.graph import run
-from jig.model import FakeModel
-from jig.pack import load_pack
+from stepmold.cli import resolve_model
+from stepmold.eval import evaluate
+from stepmold.graph import run
+from stepmold.model import FakeModel
+from stepmold.pack import load_pack
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PACK = os.path.join(ROOT, "examples", "meeting_actions")
@@ -80,7 +80,7 @@ class TestTheExampleScores(unittest.TestCase):
             (["eval", PACK], "12/12"),
         ):
             completed = subprocess.run(
-                [sys.executable, "-m", "jig"] + argv,
+                [sys.executable, "-m", "stepmold"] + argv,
                 cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 universal_newlines=True,
             )

@@ -1,20 +1,20 @@
 """Hostile input, fed through the real pipeline: load_pack -> run -> render -> verify -> commit.
 
-jig has only ever been tested on tidy support tickets written by its own author. Production
+stepmold has only ever been tested on tidy support tickets written by its own author. Production
 tickets are pasted by strangers: they contain braces, JSON, unicode overrides, a megabyte of
 log spew, and text written specifically to talk to whatever model is reading them.
 
-Every test here runs the real code — `jig.pack.load_pack`, `jig.graph.run`, `jig.verify`,
-`jig.state.Store`, `jig.cli.main`, and (for the HTTP hop) the real `OpenAICompatModel`
+Every test here runs the real code — `stepmold.pack.load_pack`, `stepmold.graph.run`, `stepmold.verify`,
+`stepmold.state.Store`, `stepmold.cli.main`, and (for the HTTP hop) the real `OpenAICompatModel`
 against `tests/production/faultproxy.py`. Nothing touches a network or an API key.
 
 Two kinds of test live here, and they are labelled:
 
-* **Invariant tests** prove jig defends itself. Each is written so it would fail if the
+* **Invariant tests** prove stepmold defends itself. Each is written so it would fail if the
   defence were removed — a render test that would pass under `str.format` is not a test.
-* **DEFECT tests** document behaviour that is wrong today. They assert what jig *actually*
+* **DEFECT tests** document behaviour that is wrong today. They assert what stepmold *actually*
   does, with a comment naming what it *should* do, and are paired with an
-  `@unittest.expectedFailure` test that asserts the correct behaviour. When jig is fixed the
+  `@unittest.expectedFailure` test that asserts the correct behaviour. When stepmold is fixed the
   expected failure becomes an unexpected success and the suite goes red — that is the
   reminder to delete the pair.
 """
@@ -29,14 +29,14 @@ import time
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
 
-from jig.backends.openai_compat import OpenAICompatModel
-from jig.cli import main as cli_main
-from jig.errors import JigError, RunError
-from jig.graph import StateCollision, run
-from jig.model import FakeModel
-from jig.pack import Node, PackError, load_pack
-from jig.state import Store
-from jig.verify import Rejected, extract_json, run_node, verify
+from stepmold.backends.openai_compat import OpenAICompatModel
+from stepmold.cli import main as cli_main
+from stepmold.errors import StepmoldError, RunError
+from stepmold.graph import StateCollision, run
+from stepmold.model import FakeModel
+from stepmold.pack import Node, PackError, load_pack
+from stepmold.state import Store
+from stepmold.verify import Rejected, extract_json, run_node, verify
 
 from tests.production.faultproxy import FaultProxy
 
@@ -142,7 +142,7 @@ class TempDirTest(unittest.TestCase):
 class TemplateBracesInInputAreNotReExpanded(TempDirTest):
     """render.py: a `{name}` that arrives *inside* a value must stay literal text.
 
-    This is the highest-value input attack against jig, because `jig.render` substitutes
+    This is the highest-value input attack against stepmold, because `stepmold.render` substitutes
     `{var}` out of run state and run state holds every value the workflow has seen. If a
     substituted value were ever re-scanned, a ticket reading `{card_number}` would print
     another state key into the prompt — input reading state it was never shown.
@@ -153,7 +153,7 @@ class TemplateBracesInInputAreNotReExpanded(TempDirTest):
     """
 
     def test_a_brace_in_a_ticket_does_not_read_another_state_value(self):
-        from jig.render import render
+        from stepmold.render import render
 
         state = {"ticket": "{card_number}", "card_number": POISON}
         rendered = render("Ticket: {ticket}", state)
@@ -163,14 +163,14 @@ class TemplateBracesInInputAreNotReExpanded(TempDirTest):
 
     def test_doubled_braces_in_a_ticket_are_not_unescaped(self):
         """`{{`/`}}` are the template's own escape. Input must not get to use it."""
-        from jig.render import render
+        from stepmold.render import render
 
         state = {"ticket": "{{card_number}}", "card_number": POISON}
         self.assertEqual(render("T: {ticket}", state), "T: {{card_number}}")
 
     def test_an_unknown_placeholder_inside_input_does_not_raise(self):
         """A ticket full of braces is data, not a broken template."""
-        from jig.render import render
+        from stepmold.render import render
 
         self.assertEqual(
             render("T: {ticket}", {"ticket": "{nope} {a.b.c} {}"}),
@@ -178,7 +178,7 @@ class TemplateBracesInInputAreNotReExpanded(TempDirTest):
         )
 
     def test_a_self_referential_ticket_does_not_recurse(self):
-        from jig.render import render
+        from stepmold.render import render
 
         self.assertEqual(render("T: {ticket}", {"ticket": "{ticket}"}), "T: {ticket}")
 
@@ -223,7 +223,7 @@ class TemplateBracesInInputAreNotReExpanded(TempDirTest):
         braces into the prompt, so a second pass would resolve whatever is inside them
         without anyone having to paste a brace anywhere.
         """
-        from jig.render import render
+        from stepmold.render import render
 
         state = {"payload": {"note": "{secret}"}, "secret": POISON}
         rendered = render("P: {payload}", state)
@@ -276,7 +276,7 @@ class TemplateBracesInInputAreNotReExpanded(TempDirTest):
 class RoutingCannotBeSteeredByTicketText(TempDirTest):
     """README §1: the graph decides, not the model — so input cannot decide either.
 
-    jig's structural defence against prompt injection is that no prompt ever asks where to
+    stepmold's structural defence against prompt injection is that no prompt ever asks where to
     go. To prove input cannot steer the walk, the model's answers are pinned (an ordered
     `FakeModel` returns the same script whatever the prompt says) and the ticket is varied
     from benign to maximally hostile. If any route depended on ticket text, the paths would
@@ -372,7 +372,7 @@ class TheShippedOfflineModelIsSteerableByTicketText(unittest.TestCase):
     """
 
     def setUp(self):
-        from jig.cli import resolve_model
+        from stepmold.cli import resolve_model
 
         self.pack = load_pack("examples/support_triage")
         self.model_for = lambda: resolve_model(None, self.pack)
@@ -411,7 +411,7 @@ class TheShippedOfflineModelIsSteerableByTicketText(unittest.TestCase):
 class RejectedOutputNeverReachesTheRetryPrompt(unittest.TestCase):
     """verify.py's load-bearing rule 2, through the two paths that used to break it.
 
-    jig/verify.py: "A rejected generation is never shown to the model again... The retry
+    stepmold/verify.py: "A rejected generation is never shown to the model again... The retry
     prompt may say *what was wrong* but never *what the model said*." That is the whole
     argument for why a small model does not spiral here, and `tests/test_invariants.py`
     guards it — but only for the two paths its author thought of (an enum violation and
@@ -470,7 +470,7 @@ class RejectedOutputNeverReachesTheRetryPrompt(unittest.TestCase):
     def test_the_offending_property_name_is_still_kept_for_the_operator(self):
         bad = json.dumps({"category": "billing", self.SMUGGLED: 1})
         model = FakeModel([bad])
-        with self.assertRaises(JigError) as caught:
+        with self.assertRaises(StepmoldError) as caught:
             run_node(generate_node(retries=0), {"ticket": "x"}, model)
         self.assertIn(self.SMUGGLED, str(caught.exception))
 
@@ -488,8 +488,8 @@ class RejectedOutputNeverReachesTheRetryPrompt(unittest.TestCase):
 
     def test_the_rejected_value_is_still_on_the_error_for_diagnostics(self):
         """Sanitising `str(exc)` must not blind the operator: `detail` keeps everything."""
-        from jig.errors import ExprError
-        from jig.expr import evaluate
+        from stepmold.errors import ExprError
+        from stepmold.expr import evaluate
 
         with self.assertRaises(ExprError) as caught:
             evaluate('queues[category] == "ok"',
@@ -514,7 +514,7 @@ class RejectedOutputNeverReachesTheRetryPrompt(unittest.TestCase):
         """Sanitising the prompt must not blind the failure record."""
         node = generate_node(retries=0)
         model = FakeModel([json.dumps({"category": POISON})])
-        with self.assertRaises(JigError) as caught:
+        with self.assertRaises(StepmoldError) as caught:
             run_node(node, {"ticket": "x"}, model)
         self.assertIn(POISON, str(caught.exception))
 
@@ -582,13 +582,13 @@ class NonFiniteNumbersFromTheModelAreRejected(TempDirTest):
     JSON, not JSON. `verify.extract_json` uses the default parser and `grammar` says a float
     is a number, so `{"amount": NaN}` used to pass verification and commit.
 
-    `jig.state` refuses those values *by name*, with a long comment about why a store file
+    `stepmold.state` refuses those values *by name*, with a long comment about why a store file
     carrying one is unreadable. That check existed one layer too late:
 
-    * with no `--store`, the run succeeded, exit 0, and `jig run` printed `NaN` on stdout —
-      not valid JSON, so whatever consumed the output failed instead of jig;
+    * with no `--store`, the run succeeded, exit 0, and `stepmold run` printed `NaN` on stdout —
+      not valid JSON, so whatever consumed the output failed instead of stepmold;
     * with a `--store`, the run died at checkpoint time with a bare `ValueError` that is not
-      a `JigError`, after the node had already committed, so the node's `on_fail` edge — the
+      a `StepmoldError`, after the node had already committed, so the node's `on_fail` edge — the
       pack's declared answer to a bad generation — never got a chance.
 
     `grammar.validate_against` now refuses a non-finite number where the value enters, so
@@ -659,14 +659,14 @@ class NonFiniteNumbersFromTheModelAreRejected(TempDirTest):
 class DeeplyNestedModelOutputIsRejected(TempDirTest):
     """Nested-past-the-recursion-limit output must fail the node, not kill the run.
 
-    `jig.expr` reasons about exactly this hazard — "a RecursionError from a deeply nested
+    `stepmold.expr` reasons about exactly this hazard — "a RecursionError from a deeply nested
     expression... escapes that handler and kills the whole run" — and defends itself with
-    `_MAX_DEPTH`. `jig.state._check` and `json.dumps` recurse over committed state with no
+    `_MAX_DEPTH`. `stepmold.state._check` and `json.dumps` recurse over committed state with no
     such ceiling, and `json.loads` will happily build the structure that gets them there.
 
     So a node whose schema does not pin the shape (`{"type": "object"}`, which is what a
     compiler emits for a free-form field) could be handed 3000 nested arrays, commit them,
-    and then die inside the checkpoint with a `RecursionError` that is not a `JigError`, is
+    and then die inside the checkpoint with a `RecursionError` that is not a `StepmoldError`, is
     not caught by the CLI's handlers, and does not take the node's `on_fail` edge.
 
     `grammar.validate_against` now walks the candidate with a depth budget before the
@@ -707,12 +707,12 @@ class DeeplyNestedModelOutputIsRejected(TempDirTest):
         self.assertLess(len(str(caught.exception)), 300)
 
     def test_ordinary_nesting_is_untouched(self):
-        """Guard: the ceiling is a refusal threshold, not a shape jig actually expects."""
+        """Guard: the ceiling is a refusal threshold, not a shape stepmold actually expects."""
         node = Node(name="a", type="generate", prompt="p", grammar=OPEN_SCHEMA)
         nested = '{"v": %s}' % ("[" * 20 + "]" * 20)
         self.assertIsInstance(verify(node, nested, {}), dict)
 
-    def test_checkpointing_a_run_that_saw_it_stays_a_jig_error(self):
+    def test_checkpointing_a_run_that_saw_it_stays_a_stepmold_error(self):
         pack = self.pack_with(OPEN_SCHEMA, prompt="go\n")
         store = self.store_at("deep.sqlite")
 
@@ -729,7 +729,7 @@ class DeeplyNestedModelOutputIsRejected(TempDirTest):
 
 
 class AdversarialJsonShapesFromTheModel(TempDirTest):
-    """The rest of the malformed-output family — what jig does get right, pinned down."""
+    """The rest of the malformed-output family — what stepmold does get right, pinned down."""
 
     def test_a_duplicate_key_silently_keeps_the_last_value(self):
         """DEFECT (low): the audit trail and the committed value can disagree.
@@ -751,8 +751,8 @@ class AdversarialJsonShapesFromTheModel(TempDirTest):
 
     def test_a_dunder_key_that_does_land_cannot_be_read_by_an_expression(self):
         """With an open schema the key commits — the expression language still refuses it."""
-        from jig.errors import ExprError
-        from jig.expr import evaluate
+        from stepmold.errors import ExprError
+        from stepmold.expr import evaluate
 
         state = {"r": extract_json('{"__class__": "x"}')}
         with self.assertRaises(ExprError):
@@ -769,9 +769,9 @@ class AdversarialJsonShapesFromTheModel(TempDirTest):
         and the test failed there while CI stayed green, because actions/setup-python
         resolves "3.9" to the newest patch release, which has the cap. Found by audit.
 
-        Skipped rather than removed, because on such an interpreter jig genuinely inherits
-        the exposure: a model that emits a huge integer literal costs parse time jig cannot
-        cap on its behalf. The remedy is CPython's, not jig's — upgrade past 3.9.14.
+        Skipped rather than removed, because on such an interpreter stepmold genuinely inherits
+        the exposure: a model that emits a huge integer literal costs parse time stepmold cannot
+        cap on its behalf. The remedy is CPython's, not stepmold's — upgrade past 3.9.14.
         """
         import sys
         if not hasattr(sys, "set_int_max_str_digits"):
@@ -807,7 +807,7 @@ def _refuse_constant(name):
 class HostileUnicodeSurvivesTheWholePipeline(TempDirTest):
     """Unicode a ticket actually contains, carried through run -> commit -> store -> resume.
 
-    None of this should be sanitised — a ticket is text, and jig is not a renderer — but all
+    None of this should be sanitised — a ticket is text, and stepmold is not a renderer — but all
     of it must round-trip byte for byte. The store is the sharp edge: `state._dump` writes
     JSON into SQLite, and a lone surrogate is not encodable as UTF-8, so a store that wrote
     with `ensure_ascii=False` would raise here.
@@ -842,7 +842,7 @@ class HostileUnicodeSurvivesTheWholePipeline(TempDirTest):
             self.assertIn(ticket, model.calls[0].prompt, name)
 
     def test_a_lone_surrogate_can_still_be_printed_as_json(self):
-        """`jig run` pipes to stdout; an unescaped surrogate would raise there instead."""
+        """`stepmold run` pipes to stdout; an unescaped surrogate would raise there instead."""
         pack = self.pack_with(STR_SCHEMA, graph=LINEAR_GRAPH)
         result = run(pack, FakeModel(['{"v": "ok"}']), {"ticket": "\ud800x"})
         json.dumps(result.state, sort_keys=True).encode("utf-8")
@@ -865,10 +865,10 @@ class HostileUnicodeSurvivesTheWholePipeline(TempDirTest):
 
         A key with a zero-width space renders identically to the real one, so an
         unescaped list said the prompt needs `{ticket}` and state has `ticket` — which an
-        operator reads as a jig bug. The names are repr'd, so it shows as `\\u200b`.
+        operator reads as a stepmold bug. The names are repr'd, so it shows as `\\u200b`.
         """
-        from jig.errors import MissingVariable
-        from jig.render import render
+        from stepmold.errors import MissingVariable
+        from stepmold.render import render
 
         with self.assertRaises(MissingVariable) as caught:
             render("T: {ticket}", {"tick\u200bet": "x"})
@@ -877,8 +877,8 @@ class HostileUnicodeSurvivesTheWholePipeline(TempDirTest):
         self.assertNotIn("\u200b", message)           # not the raw character
 
     def test_a_megabyte_input_key_does_not_become_a_megabyte_message(self):
-        from jig.errors import MissingVariable
-        from jig.render import render
+        from stepmold.errors import MissingVariable
+        from stepmold.render import render
 
         with self.assertRaises(MissingVariable) as caught:
             render("T: {ticket}", {"z" * 200000: "x"})
@@ -888,7 +888,7 @@ class HostileUnicodeSurvivesTheWholePipeline(TempDirTest):
 class EnormousInputIsHandledInBoundedTime(TempDirTest):
     """A one-megabyte ticket — a customer pasting a log file, which happens constantly.
 
-    Nothing here should truncate: jig's job is to hand the model what it was given. What
+    Nothing here should truncate: stepmold's job is to hand the model what it was given. What
     must hold is that it stays linear (a quadratic renderer or a per-retry copy would show
     up immediately at this size) and that the value round-trips through the store.
     """
@@ -975,7 +975,7 @@ class EmptyAndMalformedInputsFailClearly(TempDirTest):
     def test_a_shadowed_input_key_stops_the_run_even_when_the_node_declares_on_fail(self):
         """DEFECT (low): `on_fail` is documented as uniform, and this path skips it.
 
-        jig/graph.py: "everything that stops a node producing a verified output... takes the
+        stepmold/graph.py: "everything that stops a node producing a verified output... takes the
         node's declared `on_fail` edge". A commit refused by `StateCollision` stops the node
         just as thoroughly, arrives after the model call has been paid for, and escapes
         instead. SHOULD BE: either route it to `on_fail` like every other node failure, or
@@ -996,7 +996,7 @@ class ATicketFedWhereAPackPathBelongs(TempDirTest):
     """A YAML document passed as the pack argument — the classic copy-paste-into-the-wrong-arg.
 
     It must not be parsed as a pack, must not read anything off disk, and must fail with a
-    message naming what jig was actually handed.
+    message naming what stepmold was actually handed.
     """
 
     YAML_TICKET = (
@@ -1099,7 +1099,7 @@ class InputCanImpersonateTheModelsOwnScratchpad(TempDirTest):
 
 
 def _run_cli(argv):
-    """Run `jig.cli.main` with stdout/stderr captured. Returns (out, err, exit code)."""
+    """Run `stepmold.cli.main` with stdout/stderr captured. Returns (out, err, exit code)."""
     out, err = io.StringIO(), io.StringIO()
     with redirect_stdout(out), redirect_stderr(err):
         code = cli_main(argv)

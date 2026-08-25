@@ -1,6 +1,6 @@
 import unittest
 
-from jig.model import FakeModel, Model, ModelExhausted
+from stepmold.model import FakeModel, Model, ModelExhausted
 
 
 class TestOrderedMode(unittest.TestCase):

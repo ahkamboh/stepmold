@@ -156,7 +156,7 @@ def _generate(model, prompt, grammar, max_tokens, sampling):
 
     The hint is optional in the protocol, so it cannot be sent unconditionally: a model
     written against the three-argument signature would raise `TypeError` on a keyword it
-    never asked for, and jig would have broken every existing backend to gain a knob most
+    never asked for, and stepmold would have broken every existing backend to gain a knob most
     of them ignore anyway.
     """
     if sampling is None or not accepts_sampling(model):

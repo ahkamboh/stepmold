@@ -20,5 +20,5 @@ description: >-
 
   The model below is a scripted stand-in, so the evalset scores offline with no
   GPU and no network. Unlike the other example packs its script is keyed on the
-  order id rather than on case order, so `jig run` of any single case answers
+  order id rather than on case order, so `stepmold run` of any single case answers
   that case. Point --model at a real backend to run real messages.

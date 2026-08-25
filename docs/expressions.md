@@ -1,18 +1,18 @@
 # Expressions
 
-jig packs carry two kinds of expression string: a node-level `assert:` and an `assert`
-node's `expr:`. Both are parsed and walked by `jig/expr.py`. Neither is ever `eval()`-ed.
+stepmold packs carry two kinds of expression string: a node-level `assert:` and an `assert`
+node's `expr:`. Both are parsed and walked by `stepmold/expr.py`. Neither is ever `eval()`-ed.
 
 An expression is a **deterministic check over run state** — the part of a workflow that a
 model must never be trusted to do in its head. `abs(subtotal + tax_amount - total_amount)
 < 0.01` is arithmetic; `escalate == (priority == "p0")` is a policy invariant. Both are
 free, both are exact, and neither costs a token.
 
-Every command in this document was run. The `jig run` blocks all use the five-file demo
+Every command in this document was run. The `stepmold run` blocks all use the five-file demo
 pack in the next section, or that pack with one line changed — the change is named above
 each block. Build it first and everything below reproduces. The `python3 - <<'PY'` blocks
-are run from the repository root, so `import jig` resolves — and so are the `jig run` and
-`jig validate` blocks. jig is not installed here, so `python3 -m jig` only resolves from
+are run from the repository root, so `import stepmold` resolves — and so are the `stepmold run` and
+`stepmold validate` blocks. stepmold is not installed here, so `python3 -m stepmold` only resolves from
 the clone. Write the demo pack, then `cd` back to the repository before running anything
 below it.
 
@@ -24,8 +24,8 @@ Five files, no GPU, no network: the manifest points at a scripted `fake:` model.
 this whole block.
 
 ```sh
-mkdir -p /tmp/jig-expr-demo/prompts /tmp/jig-expr-demo/grammars /tmp/jig-expr-demo/fakes
-cd /tmp/jig-expr-demo   # written from here; return to the clone before running anything
+mkdir -p /tmp/stepmold-expr-demo/prompts /tmp/stepmold-expr-demo/grammars /tmp/stepmold-expr-demo/fakes
+cd /tmp/stepmold-expr-demo   # written from here; return to the clone before running anything
 
 cat > manifest.yaml <<'EOF'
 name: expr_demo
@@ -113,7 +113,7 @@ EOF
 ```
 
 ```
-$ python3 -m jig validate /tmp/jig-expr-demo
+$ python3 -m stepmold validate /tmp/stepmold-expr-demo
 expr_demo v1: 5 nodes, 2 edges, 0 evalset cases, entry 'triage'
 ```
 
@@ -121,12 +121,12 @@ Three details in those files are not guessable, and each one costs an afternoon:
 
 | Detail | Why it is that way | What happens if you get it wrong |
 | --- | --- | --- |
-| `prompts/triage.txt` writes `{ticket}`, single braces | `jig/render.py` substitutes `{name}`; `{{` and `}}` are escapes for literal braces | `{{ticket}}` renders the literal text `{ticket}`, the fake matches no key, and the run dies with `jig.model.ModelExhausted: FakeModel has no scripted response matching prompt: '...Ticket: {ticket}\n'` (prompt elided) and a raw traceback, not a jig error message |
+| `prompts/triage.txt` writes `{ticket}`, single braces | `stepmold/render.py` substitutes `{name}`; `{{` and `}}` are escapes for literal braces | `{{ticket}}` renders the literal text `{ticket}`, the fake matches no key, and the run dies with `stepmold.model.ModelExhausted: FakeModel has no scripted response matching prompt: '...Ticket: {ticket}\n'` (prompt elided) and a raw traceback, not a stepmold error message |
 | `fakes/script.json` is a **mapping**, not a list | keyed mode: the key must be a substring of the rendered prompt, longest match wins, and each key's list is consumed in order — so different tickets can draw different answers | an ordered list answers calls 1, 2, 3… regardless of ticket, so the three runs below cannot be produced |
-| `"vague"` has three responses | that node's ladder is three attempts (`retries: 2`), and this run burns all of them | `jig.model.ModelExhausted: FakeModel ran out of scripted responses for key 'vague'`, again as a traceback |
+| `"vague"` has three responses | that node's ladder is three attempts (`retries: 2`), and this run burns all of them | `stepmold.model.ModelExhausted: FakeModel ran out of scripted responses for key 'vague'`, again as a traceback |
 
 Everything below runs against this pack. Where a block runs a different path —
-`/tmp/jig-expr-typo`, `/tmp/jig-expr-gate`, `/tmp/jig-expr-nested` and so on — the block
+`/tmp/stepmold-expr-typo`, `/tmp/stepmold-expr-gate`, `/tmp/stepmold-expr-nested` and so on — the block
 makes that copy itself and shows the edit, so every transcript on this page can be run
 exactly as printed. The prose above each one still says what the edit is for.
 
@@ -166,29 +166,29 @@ The demo pack with `triage`'s assert changed to `escalate == (severity == "p0")`
 nothing writes `severity`:
 
 ```
-$ rm -rf /tmp/jig-expr-typo && cp -r /tmp/jig-expr-demo /tmp/jig-expr-typo
+$ rm -rf /tmp/stepmold-expr-typo && cp -r /tmp/stepmold-expr-demo /tmp/stepmold-expr-typo
 $ python3 - <<'PY'
 import pathlib
-p = pathlib.Path("/tmp/jig-expr-typo/graph.yaml"); t = p.read_text()
+p = pathlib.Path("/tmp/stepmold-expr-typo/graph.yaml"); t = p.read_text()
 t = t.replace('assert: escalate == (priority == "p0")',
               'assert: escalate == (severity == "p0")')
 p.write_text(t)
 PY
-$ python3 -m jig run /tmp/jig-expr-typo --input '{"ticket": "vague"}' --log-level info --run-id typo
-17:18:21.633 INFO  jig.graph run.start run_id=typo pack=expr_demo version=1 entry=triage resumed=false max_steps=8 inputs=ticket
-17:18:21.634 WARNING jig.verify node.rejected node=triage attempt=1 cause=verify reason="assert 'escalate == (severity == \"p0\")' could not be evaluated: expression references 'severity', which is not in state" of=3
-17:18:21.634 INFO  jig.verify node.retry node=triage attempt=2 of=3 temperature=0.5 seed=1 reason="assert 'escalate == (severity == \"p0\")' could not be evaluated: expression references 'severity', which is not in state" rethink=false
-17:18:21.634 WARNING jig.verify node.rejected node=triage attempt=2 cause=verify reason="assert 'escalate == (severity == \"p0\")' could not be evaluated: expression references 'severity', which is not in state" of=3
-17:18:21.644 INFO  jig.verify node.retry node=triage attempt=3 of=3 temperature=0.8 seed=2 reason="assert 'escalate == (severity == \"p0\")' could not be evaluated: expression references 'severity', which is not in state" rethink=false
-17:18:21.661 WARNING jig.verify node.rejected node=triage attempt=3 cause=verify reason="assert 'escalate == (severity == \"p0\")' could not be evaluated: expression references 'severity', which is not in state" of=3
-17:18:21.673 WARNING jig.graph node.failed run_id=typo node=triage type=generate attempts=3 error=NodeFailed reason="assert 'escalate == (severity == \"p0\")' could not be evaluated: expression references 'severity', which is not in state" on_fail=needs_human duration_ms=40.1
-17:18:21.674 INFO  jig.graph edge.on_fail run_id=typo node=triage to=needs_human
-17:18:21.674 INFO  jig.graph run.end run_id=typo pack=expr_demo end_node=needs_human steps=2 generations=3 failures=1 output_keys=1 output_bytes=19 duration_ms=40.6
+$ python3 -m stepmold run /tmp/stepmold-expr-typo --input '{"ticket": "vague"}' --log-level info --run-id typo
+17:18:21.633 INFO  stepmold.graph run.start run_id=typo pack=expr_demo version=1 entry=triage resumed=false max_steps=8 inputs=ticket
+17:18:21.634 WARNING stepmold.verify node.rejected node=triage attempt=1 cause=verify reason="assert 'escalate == (severity == \"p0\")' could not be evaluated: expression references 'severity', which is not in state" of=3
+17:18:21.634 INFO  stepmold.verify node.retry node=triage attempt=2 of=3 temperature=0.5 seed=1 reason="assert 'escalate == (severity == \"p0\")' could not be evaluated: expression references 'severity', which is not in state" rethink=false
+17:18:21.634 WARNING stepmold.verify node.rejected node=triage attempt=2 cause=verify reason="assert 'escalate == (severity == \"p0\")' could not be evaluated: expression references 'severity', which is not in state" of=3
+17:18:21.644 INFO  stepmold.verify node.retry node=triage attempt=3 of=3 temperature=0.8 seed=2 reason="assert 'escalate == (severity == \"p0\")' could not be evaluated: expression references 'severity', which is not in state" rethink=false
+17:18:21.661 WARNING stepmold.verify node.rejected node=triage attempt=3 cause=verify reason="assert 'escalate == (severity == \"p0\")' could not be evaluated: expression references 'severity', which is not in state" of=3
+17:18:21.673 WARNING stepmold.graph node.failed run_id=typo node=triage type=generate attempts=3 error=NodeFailed reason="assert 'escalate == (severity == \"p0\")' could not be evaluated: expression references 'severity', which is not in state" on_fail=needs_human duration_ms=40.1
+17:18:21.674 INFO  stepmold.graph edge.on_fail run_id=typo node=triage to=needs_human
+17:18:21.674 INFO  stepmold.graph run.end run_id=typo pack=expr_demo end_node=needs_human steps=2 generations=3 failures=1 output_keys=1 output_bytes=19 duration_ms=40.6
 {"ticket": "vague"}
 ```
 
 Three generations, on a spelling mistake. (Reproduce with
-`cp -r /tmp/jig-expr-demo /tmp/jig-expr-typo` and that one substitution in `graph.yaml`.
+`cp -r /tmp/stepmold-expr-demo /tmp/stepmold-expr-typo` and that one substitution in `graph.yaml`.
 The `vague` ticket is the one whose fake script has three responses to burn.)
 
 The mirror-image trap on an `assert` node is worse, because it is silent. An expression
@@ -196,19 +196,19 @@ that cannot be evaluated is routed **exactly like one that was false**. The demo
 `gate`'s `expr:` changed to `severity == "high"`:
 
 ```
-$ rm -rf /tmp/jig-expr-gate && cp -r /tmp/jig-expr-demo /tmp/jig-expr-gate
+$ rm -rf /tmp/stepmold-expr-gate && cp -r /tmp/stepmold-expr-demo /tmp/stepmold-expr-gate
 $ python3 - <<'PY'
 import pathlib
-p = pathlib.Path("/tmp/jig-expr-gate/graph.yaml"); t = p.read_text()
+p = pathlib.Path("/tmp/stepmold-expr-gate/graph.yaml"); t = p.read_text()
 t = t.replace('expr: escalate and priority == "p0"',
               'expr: severity == "high"')
 p.write_text(t)
 PY
-$ python3 -m jig run /tmp/jig-expr-gate --input '{"ticket": "how do I export a CSV"}' --log-level info --run-id gate
-17:18:28.198 INFO  jig.graph run.start run_id=gate pack=expr_demo version=1 entry=triage resumed=false max_steps=8 inputs=ticket
-17:18:28.198 INFO  jig.graph node.ok run_id=gate node=triage type=generate attempts=1 output=merge duration_ms=0.1
-17:18:28.198 INFO  jig.graph node.assert run_id=gate node=gate type=assert passed=false expr="severity == \"high\"" to=done duration_ms=0.0
-17:18:28.198 INFO  jig.graph run.end run_id=gate pack=expr_demo end_node=done steps=3 generations=1 failures=0 output_keys=2 output_bytes=37 duration_ms=0.6
+$ python3 -m stepmold run /tmp/stepmold-expr-gate --input '{"ticket": "how do I export a CSV"}' --log-level info --run-id gate
+17:18:28.198 INFO  stepmold.graph run.start run_id=gate pack=expr_demo version=1 entry=triage resumed=false max_steps=8 inputs=ticket
+17:18:28.198 INFO  stepmold.graph node.ok run_id=gate node=triage type=generate attempts=1 output=merge duration_ms=0.1
+17:18:28.198 INFO  stepmold.graph node.assert run_id=gate node=gate type=assert passed=false expr="severity == \"high\"" to=done duration_ms=0.0
+17:18:28.198 INFO  stepmold.graph run.end run_id=gate pack=expr_demo end_node=done steps=3 generations=1 failures=0 output_keys=2 output_bytes=37 duration_ms=0.6
 {"escalate": false, "priority": "p2"}
 ```
 
@@ -220,17 +220,17 @@ anywhere records that the expression was unanswerable rather than false.
 Drop the `on_fail` from `gate` and the truth comes out:
 
 ```
-$ rm -rf /tmp/jig-expr-gate-loud && cp -r /tmp/jig-expr-demo /tmp/jig-expr-gate-loud
+$ rm -rf /tmp/stepmold-expr-gate-loud && cp -r /tmp/stepmold-expr-demo /tmp/stepmold-expr-gate-loud
 $ python3 - <<'PY'
 import pathlib
-p = pathlib.Path("/tmp/jig-expr-gate-loud/graph.yaml"); t = p.read_text()
+p = pathlib.Path("/tmp/stepmold-expr-gate-loud/graph.yaml"); t = p.read_text()
 t = t.replace('expr: escalate and priority == "p0"',
               'expr: severity == "high"')
 t = t.replace("    on_fail: done\n", "", 1)
 p.write_text(t)
 PY
-$ python3 -m jig run /tmp/jig-expr-gate-loud --input '{"ticket": "how do I export a CSV"}'
-jig: ExprError: expression references 'severity', which is not in state
+$ python3 -m stepmold run /tmp/stepmold-expr-gate-loud --input '{"ticket": "how do I export a CSV"}'
+stepmold: ExprError: expression references 'severity', which is not in state
 exit=1
 ```
 
@@ -245,15 +245,15 @@ A false expression on an `assert` node with no `on_fail` stops the run too, with
 different exception:
 
 ```
-$ rm -rf /tmp/jig-expr-loudfalse && cp -r /tmp/jig-expr-demo /tmp/jig-expr-loudfalse
+$ rm -rf /tmp/stepmold-expr-loudfalse && cp -r /tmp/stepmold-expr-demo /tmp/stepmold-expr-loudfalse
 $ python3 - <<'PY'
 import pathlib
-p = pathlib.Path("/tmp/jig-expr-loudfalse/graph.yaml"); t = p.read_text()
+p = pathlib.Path("/tmp/stepmold-expr-loudfalse/graph.yaml"); t = p.read_text()
 t = t.replace("    on_fail: done\n", "", 1)
 p.write_text(t)
 PY
-$ python3 -m jig run /tmp/jig-expr-loudfalse --input '{"ticket": "how do I export a CSV"}'
-jig: AssertFailed: assert node 'gate' failed: escalate and priority == "p0"
+$ python3 -m stepmold run /tmp/stepmold-expr-loudfalse --input '{"ticket": "how do I export a CSV"}'
+stepmold: AssertFailed: assert node 'gate' failed: escalate and priority == "p0"
 exit=1
 ```
 
@@ -306,8 +306,8 @@ The trial scope is exactly `dict(state)` plus the candidate, so it can be built 
 
 ```
 $ python3 - <<'PY'
-from jig.expr import evaluate
-from jig.errors import ExprError
+from stepmold.expr import evaluate
+from stepmold.errors import ExprError
 
 state = {"ticket": "card declined", "priority": "p2"}
 candidate = {"priority": "p0", "escalate": True}
@@ -350,10 +350,10 @@ do not expect a think stage's notes in scope.
 Always an `ExprError` — never `None`, never false. What happens next is the placement
 difference in the table above. The message names the identifier but **not** the available
 keys: in merge mode the state keys *are* the rejected candidate's field names, and putting
-those in front of the model on the next rung is the self-conditioning spiral jig exists to
+those in front of the model on the next rung is the self-conditioning spiral stepmold exists to
 prevent.
 
-The key list exists, on `exc.detail` (`expr.py:_error`) — but **nothing in jig ever reads
+The key list exists, on `exc.detail` (`expr.py:_error`) — but **nothing in stepmold ever reads
 it.** `verify.py` builds its `Rejected` from `str(exc)`, `graph.py` re-raises or discards
 the `ExprError`, and no log line at any level carries `detail`. (The `node.rejected.detail`
 and `node.failed.detail` lines at `--log-level debug` are a different attribute,
@@ -362,8 +362,8 @@ in the logs for the missing key list. It is reachable from Python only:
 
 ```
 $ python3 - <<'PY'
-from jig.expr import evaluate
-from jig.errors import ExprError
+from stepmold.expr import evaluate
+from stepmold.errors import ExprError
 
 state = {
   "priority": "p0", "escalate": True,
@@ -391,14 +391,14 @@ even here.
 
 ## Grammar
 
-Everything below is derived from the whitelist in `jig/expr.py`. Anything not listed is
+Everything below is derived from the whitelist in `stepmold/expr.py`. Anything not listed is
 refused by node-type name.
 
 ### Literals
 
 | Form | Notes |
 | --- | --- |
-| `true` / `false` / `null` / `none` | jig's own spellings (`_LITERALS`) |
+| `true` / `false` / `null` / `none` | stepmold's own spellings (`_LITERALS`) |
 | `True` / `False` / `None` | also work — Python constants reach `ast.Constant` |
 | `1`, `-2`, `3.14`, `"text"`, `'text'` | numbers and strings |
 | `[a, b]`, `(a, b)`, `{a, b}` | **all three produce a list.** `(1, 2)` evaluates to `[1, 2]` |
@@ -422,7 +422,7 @@ refused by node-type name.
 
 The complete set, and the only callables that exist. Positional arguments only —
 `node.keywords` is refused outright, so `round(1.55, ndigits=1)` is
-`ExprError: jig expression helpers take positional arguments only`.
+`ExprError: stepmold expression helpers take positional arguments only`.
 
 | Helper | Behaviour |
 | --- | --- |
@@ -435,7 +435,7 @@ The complete set, and the only callables that exist. Positional arguments only �
 The error message lists them for you:
 
 ```
-open("/etc/passwd") -> ExprError: 'open' is not a jig expression helper (allowed: abs, all,
+open("/etc/passwd") -> ExprError: 'open' is not a stepmold expression helper (allowed: abs, all,
 any, bool, contains, endswith, float, int, len, lower, max, min, round, sorted, startswith,
 str, strip, sum, upper)
 ```
@@ -452,7 +452,7 @@ consequence worth knowing:
 | # | Checked | Consequence |
 | --- | --- | --- |
 | 1 | `_LITERALS`: `true`, `false`, `null`, `none` | a state key with one of those four names is **unreachable** |
-| 2 | names starting with `__` | refused: `name '__x' is not allowed in a jig expression` |
+| 2 | names starting with `__` | refused: `name '__x' is not allowed in a stepmold expression` |
 | 3 | `state` | a state key shadows a helper of the same name |
 | 4 | `_HELPERS` | a bare helper name evaluates to **the function object**, which is truthy |
 | — | otherwise | `ExprError: expression references 'x', which is not in state` |
@@ -462,7 +462,7 @@ called `len` shadows the bare name but not the call:
 
 ```
 $ python3 - <<'PY'
-from jig.expr import evaluate, is_true
+from stepmold.expr import evaluate, is_true
 
 print("state {'len': 5}: bare `len`   ->", evaluate("len", {"len": 5, "tags": ["a", "b"]}))
 print("state {'len': 5}: `len(tags)`  ->", evaluate("len(tags)", {"len": 5, "tags": ["a", "b"]}))
@@ -499,17 +499,17 @@ The demo pack with `gate`'s `expr:` replaced by the single word `all`, run on th
 that produced `passed=false` earlier:
 
 ```
-$ rm -rf /tmp/jig-expr-barename && cp -r /tmp/jig-expr-demo /tmp/jig-expr-barename
+$ rm -rf /tmp/stepmold-expr-barename && cp -r /tmp/stepmold-expr-demo /tmp/stepmold-expr-barename
 $ python3 - <<'PY'
 import pathlib
-p = pathlib.Path("/tmp/jig-expr-barename/graph.yaml"); t = p.read_text()
+p = pathlib.Path("/tmp/stepmold-expr-barename/graph.yaml"); t = p.read_text()
 t = t.replace('expr: escalate and priority == "p0"', 'expr: all')
 p.write_text(t)
 PY
-$ python3 -m jig run /tmp/jig-expr-barename --input '{"ticket": "how do I export a CSV"}' --log-level info --run-id barename
-17:21:18.883 INFO  jig.graph run.start run_id=barename pack=expr_demo version=1 entry=triage resumed=false max_steps=8 inputs=ticket
-17:21:18.884 INFO  jig.graph node.ok run_id=barename node=triage type=generate attempts=1 output=merge duration_ms=0.1
-17:21:18.884 INFO  jig.graph run.end run_id=barename pack=expr_demo end_node=escalated steps=3 generations=1 failures=0 output_keys=2 output_bytes=37 duration_ms=0.5
+$ python3 -m stepmold run /tmp/stepmold-expr-barename --input '{"ticket": "how do I export a CSV"}' --log-level info --run-id barename
+17:21:18.883 INFO  stepmold.graph run.start run_id=barename pack=expr_demo version=1 entry=triage resumed=false max_steps=8 inputs=ticket
+17:21:18.884 INFO  stepmold.graph node.ok run_id=barename node=triage type=generate attempts=1 output=merge duration_ms=0.1
+17:21:18.884 INFO  stepmold.graph run.end run_id=barename pack=expr_demo end_node=escalated steps=3 generations=1 failures=0 output_keys=2 output_bytes=37 duration_ms=0.5
 {"escalate": false, "priority": "p2"}
 ```
 
@@ -529,17 +529,17 @@ whitelists and refuses by name.
 
 | Written | Result |
 | --- | --- |
-| `[x for x in tags]` | `Comprehension is not allowed in a jig expression (in '[x for x in tags]')` |
-| `lambda x: x` | `Lambda is not allowed in a jig expression (in 'lambda x: x')` |
-| `__import__("os")` | `'__import__' is not a jig expression helper (allowed: ...)` |
-| `open("/etc/passwd")` | `'open' is not a jig expression helper (allowed: ...)` |
-| `priority.upper()` | `'priority.upper' is not a jig expression helper (allowed: ...)` |
-| `n ** 2` | `Pow is not allowed in a jig expression (in 'n ** 2')` |
-| `n & 1` | `BitAnd is not allowed in a jig expression (in 'n & 1')` |
-| `tags[0:1]` | `Slice is not allowed in a jig expression (in 'tags[0:1]')` |
-| `{**other}` | `** unpacking is not allowed in a jig expression (in '{**other}')` |
+| `[x for x in tags]` | `Comprehension is not allowed in a stepmold expression (in '[x for x in tags]')` |
+| `lambda x: x` | `Lambda is not allowed in a stepmold expression (in 'lambda x: x')` |
+| `__import__("os")` | `'__import__' is not a stepmold expression helper (allowed: ...)` |
+| `open("/etc/passwd")` | `'open' is not a stepmold expression helper (allowed: ...)` |
+| `priority.upper()` | `'priority.upper' is not a stepmold expression helper (allowed: ...)` |
+| `n ** 2` | `Pow is not allowed in a stepmold expression (in 'n ** 2')` |
+| `n & 1` | `BitAnd is not allowed in a stepmold expression (in 'n & 1')` |
+| `tags[0:1]` | `Slice is not allowed in a stepmold expression (in 'tags[0:1]')` |
+| `{**other}` | `** unpacking is not allowed in a stepmold expression (in '{**other}')` |
 | `x = 1` | `could not parse expression 'x = 1' (invalid syntax)` |
-| any name starting with `__` | `name '__x' is not allowed in a jig expression` |
+| any name starting with `__` | `name '__x' is not allowed in a stepmold expression` |
 
 The quoted text in those messages is always the source string you passed, interpolated
 by the walker (`%r % source`), never a canonical form. Write `{**d}` and the message says
@@ -548,7 +548,7 @@ by the walker (`%r % source`), never a canonical form. Write `{**d}` and the mes
 There is no import, no assignment, no attribute access on anything but a mapping, no
 function definition, no `eval`, no `exec`, no walrus, no f-string, no starred unpacking.
 
-**Every** failure arrives as `jig.errors.ExprError`. That is load-bearing, not tidiness:
+**Every** failure arrives as `stepmold.errors.ExprError`. That is load-bearing, not tidiness:
 `verify._check_assert` and the graph walker each catch exactly `ExprError`. A raw
 `TypeError`, `RecursionError` or `MemoryError` would sail past both handlers and kill the
 run instead of failing the node — which is why the budgets below exist.
@@ -628,7 +628,7 @@ The depth message quotes the whole expression, so it is as long as the expressio
 (middle elided here):
 
 ```
-expression 'not not not not ... not not true' is nested more than 100 levels deep, which jig refuses to evaluate
+expression 'not not not not ... not not true' is nested more than 100 levels deep, which stepmold refuses to evaluate
 ```
 
 ### Parentheses are not free
@@ -699,7 +699,7 @@ If neither fits, the check wants to be a node in the graph, not a one-liner in Y
 
 ## Writing them in `graph.yaml`
 
-jig parses its own YAML subset (`jig/yamlish.py`). Behaviour that matters here, all
+stepmold parses its own YAML subset (`stepmold/yamlish.py`). Behaviour that matters here, all
 verified against `yamlish.parse`:
 
 | Written | Parsed as |
@@ -724,30 +724,30 @@ For long expressions use a folded scalar, which is what `examples/lead_qualify` 
 `>-` joins the lines with single spaces: `expr: >-\n  a == 1\n  and b == 2` becomes
 `'a == 1 and b == 2'`.
 
-### `jig validate` does not check your expression
+### `stepmold validate` does not check your expression
 
 Nothing parses expression text at load time. A pack with syntactically broken expressions
 validates clean and fails at run time, one rung at a time. The demo pack with `triage`'s
 assert replaced by `assert: "escalate ==== broken("`:
 
 ```
-$ rm -rf /tmp/jig-expr-broken && cp -r /tmp/jig-expr-demo /tmp/jig-expr-broken
+$ rm -rf /tmp/stepmold-expr-broken && cp -r /tmp/stepmold-expr-demo /tmp/stepmold-expr-broken
 $ python3 - <<'PY'
 import pathlib
-p = pathlib.Path("/tmp/jig-expr-broken/graph.yaml"); t = p.read_text()
+p = pathlib.Path("/tmp/stepmold-expr-broken/graph.yaml"); t = p.read_text()
 t = t.replace('assert: escalate == (priority == "p0")',
               'assert: "escalate ==== broken("')
 p.write_text(t)
 PY
-$ python3 -m jig validate /tmp/jig-expr-broken
+$ python3 -m stepmold validate /tmp/stepmold-expr-broken
 expr_demo v1: 5 nodes, 2 edges, 0 evalset cases, entry 'triage'
 validate exit=0
 
-$ python3 -m jig run /tmp/jig-expr-broken --input '{"ticket": "vague"}' --log-level warning --run-id broken
-17:19:23.708 WARNING jig.verify node.rejected node=triage attempt=1 cause=verify reason="assert 'escalate ==== broken(' could not be evaluated: could not parse expression 'escalate ==== broken(' (invalid syntax)" of=3
-17:19:23.708 WARNING jig.verify node.rejected node=triage attempt=2 cause=verify reason="assert 'escalate ==== broken(' could not be evaluated: could not parse expression 'escalate ==== broken(' (invalid syntax)" of=3
-17:19:23.708 WARNING jig.verify node.rejected node=triage attempt=3 cause=verify reason="assert 'escalate ==== broken(' could not be evaluated: could not parse expression 'escalate ==== broken(' (invalid syntax)" of=3
-17:19:23.708 WARNING jig.graph node.failed run_id=broken node=triage type=generate attempts=3 error=NodeFailed reason="assert 'escalate ==== broken(' could not be evaluated: could not parse expression 'escalate ==== broken(' (invalid syntax)" on_fail=needs_human duration_ms=0.8
+$ python3 -m stepmold run /tmp/stepmold-expr-broken --input '{"ticket": "vague"}' --log-level warning --run-id broken
+17:19:23.708 WARNING stepmold.verify node.rejected node=triage attempt=1 cause=verify reason="assert 'escalate ==== broken(' could not be evaluated: could not parse expression 'escalate ==== broken(' (invalid syntax)" of=3
+17:19:23.708 WARNING stepmold.verify node.rejected node=triage attempt=2 cause=verify reason="assert 'escalate ==== broken(' could not be evaluated: could not parse expression 'escalate ==== broken(' (invalid syntax)" of=3
+17:19:23.708 WARNING stepmold.verify node.rejected node=triage attempt=3 cause=verify reason="assert 'escalate ==== broken(' could not be evaluated: could not parse expression 'escalate ==== broken(' (invalid syntax)" of=3
+17:19:23.708 WARNING stepmold.graph node.failed run_id=broken node=triage type=generate attempts=3 error=NodeFailed reason="assert 'escalate ==== broken(' could not be evaluated: could not parse expression 'escalate ==== broken(' (invalid syntax)" on_fail=needs_human duration_ms=0.8
 {"ticket": "vague"}
 run exit=0
 ```
@@ -757,7 +757,7 @@ Check an expression yourself before shipping it:
 
 ```
 $ python3 -c "
-from jig.expr import evaluate
+from stepmold.expr import evaluate
 print(evaluate('escalate == (priority == \"p0\")', {'priority': 'p0', 'escalate': True}))
 "
 True
@@ -769,7 +769,7 @@ True
 
 Edges route on `when:`, which is **a mapping of dotted path to expected value, compared
 with `!=`, and nothing more** (`graph.py:_matches`, `graph.py:_lookup`). It is not an
-expression, it has no operators, and it does not go through `jig/expr.py`.
+expression, it has no operators, and it does not go through `stepmold/expr.py`.
 
 ```yaml
   - from: emit
@@ -800,7 +800,7 @@ graph and route on its `on_fail`. `pack.py` refuses a `when:` that is not a mapp
 
 ## Worked expressions
 
-Every row below was run through `jig.expr.evaluate` against this state:
+Every row below was run through `stepmold.expr.evaluate` against this state:
 
 ```python
 {
@@ -835,7 +835,7 @@ Every row below was run through `jig.expr.evaluate` against this state:
 | `int("p0")` | `ExprError: helper int() failed in 'int("p0")'` |
 | `1 / 0` | `ExprError: cannot evaluate '1 / 0' against these values` |
 | `priority > 1` | `ExprError: cannot compare these values in 'priority > 1'` |
-| `[x for x in tags]` | `ExprError: Comprehension is not allowed in a jig expression (in '[x for x in tags]')` |
+| `[x for x in tags]` | `ExprError: Comprehension is not allowed in a stepmold expression (in '[x for x in tags]')` |
 
 Note what the error strings do **and do not** say. `tags[9]` does not print `9`, and
 `int("p0")` does not print `p0` — those live on `exc.detail` (`expr.py:_error`), because
@@ -854,12 +854,12 @@ The demo pack from the top of this document, run three times. Both placements fi
 ladder re-samples.
 
 ```
-$ python3 -m jig run /tmp/jig-expr-demo --input '{"ticket": "card declined twice"}' --log-level info
-17:17:59.419 INFO  jig.graph run.start run_id=e4a436ebd2934e12acd5ec4b59761b3a pack=expr_demo version=1 entry=triage resumed=false max_steps=8 inputs=ticket
-17:17:59.420 WARNING jig.verify node.rejected node=triage attempt=1 cause=verify reason="assert failed: escalate == (priority == \"p0\")" of=3
-17:17:59.420 INFO  jig.verify node.retry node=triage attempt=2 of=3 temperature=0.5 seed=1 reason="assert failed: escalate == (priority == \"p0\")" rethink=false
-17:17:59.420 INFO  jig.graph node.ok run_id=e4a436ebd2934e12acd5ec4b59761b3a node=triage type=generate attempts=2 output=merge duration_ms=0.2
-17:17:59.420 INFO  jig.graph run.end run_id=e4a436ebd2934e12acd5ec4b59761b3a pack=expr_demo end_node=escalated steps=3 generations=2 failures=0 output_keys=2 output_bytes=36 duration_ms=0.6
+$ python3 -m stepmold run /tmp/stepmold-expr-demo --input '{"ticket": "card declined twice"}' --log-level info
+17:17:59.419 INFO  stepmold.graph run.start run_id=e4a436ebd2934e12acd5ec4b59761b3a pack=expr_demo version=1 entry=triage resumed=false max_steps=8 inputs=ticket
+17:17:59.420 WARNING stepmold.verify node.rejected node=triage attempt=1 cause=verify reason="assert failed: escalate == (priority == \"p0\")" of=3
+17:17:59.420 INFO  stepmold.verify node.retry node=triage attempt=2 of=3 temperature=0.5 seed=1 reason="assert failed: escalate == (priority == \"p0\")" rethink=false
+17:17:59.420 INFO  stepmold.graph node.ok run_id=e4a436ebd2934e12acd5ec4b59761b3a node=triage type=generate attempts=2 output=merge duration_ms=0.2
+17:17:59.420 INFO  stepmold.graph run.end run_id=e4a436ebd2934e12acd5ec4b59761b3a pack=expr_demo end_node=escalated steps=3 generations=2 failures=0 output_keys=2 output_bytes=36 duration_ms=0.6
 {"escalate": true, "priority": "p0"}
 ```
 
@@ -869,11 +869,11 @@ is pack-authored and therefore safe. It is never the rejected output.
 **Run 2 — a clean p2 ticket. The `assert` node is false and routes, costing nothing.**
 
 ```
-$ python3 -m jig run /tmp/jig-expr-demo --input '{"ticket": "how do I export a CSV"}' --log-level info
-17:18:07.330 INFO  jig.graph run.start run_id=e61122a6f69949788b45aaac520189bc pack=expr_demo version=1 entry=triage resumed=false max_steps=8 inputs=ticket
-17:18:07.331 INFO  jig.graph node.ok run_id=e61122a6f69949788b45aaac520189bc node=triage type=generate attempts=1 output=merge duration_ms=0.1
-17:18:07.331 INFO  jig.graph node.assert run_id=e61122a6f69949788b45aaac520189bc node=gate type=assert passed=false expr="escalate and priority == \"p0\"" to=done duration_ms=0.0
-17:18:07.331 INFO  jig.graph run.end run_id=e61122a6f69949788b45aaac520189bc pack=expr_demo end_node=done steps=3 generations=1 failures=0 output_keys=2 output_bytes=37 duration_ms=0.6
+$ python3 -m stepmold run /tmp/stepmold-expr-demo --input '{"ticket": "how do I export a CSV"}' --log-level info
+17:18:07.330 INFO  stepmold.graph run.start run_id=e61122a6f69949788b45aaac520189bc pack=expr_demo version=1 entry=triage resumed=false max_steps=8 inputs=ticket
+17:18:07.331 INFO  stepmold.graph node.ok run_id=e61122a6f69949788b45aaac520189bc node=triage type=generate attempts=1 output=merge duration_ms=0.1
+17:18:07.331 INFO  stepmold.graph node.assert run_id=e61122a6f69949788b45aaac520189bc node=gate type=assert passed=false expr="escalate and priority == \"p0\"" to=done duration_ms=0.0
+17:18:07.331 INFO  stepmold.graph run.end run_id=e61122a6f69949788b45aaac520189bc pack=expr_demo end_node=done steps=3 generations=1 failures=0 output_keys=2 output_bytes=37 duration_ms=0.6
 {"escalate": false, "priority": "p2"}
 ```
 
@@ -882,16 +882,16 @@ $ python3 -m jig run /tmp/jig-expr-demo --input '{"ticket": "how do I export a C
 **Run 3 — the model never satisfies the invariant. The ladder is spent, then `on_fail`.**
 
 ```
-$ python3 -m jig run /tmp/jig-expr-demo --input '{"ticket": "vague"}' --log-level info
-17:18:07.397 INFO  jig.graph run.start run_id=c4c52b9024e1471e838fcc0e40c6c09e pack=expr_demo version=1 entry=triage resumed=false max_steps=8 inputs=ticket
-17:18:07.398 WARNING jig.verify node.rejected node=triage attempt=1 cause=verify reason="assert failed: escalate == (priority == \"p0\")" of=3
-17:18:07.398 INFO  jig.verify node.retry node=triage attempt=2 of=3 temperature=0.5 seed=1 reason="assert failed: escalate == (priority == \"p0\")" rethink=false
-17:18:07.398 WARNING jig.verify node.rejected node=triage attempt=2 cause=verify reason="assert failed: escalate == (priority == \"p0\")" of=3
-17:18:07.398 INFO  jig.verify node.retry node=triage attempt=3 of=3 temperature=0.8 seed=2 reason="assert failed: escalate == (priority == \"p0\")" rethink=false
-17:18:07.398 WARNING jig.verify node.rejected node=triage attempt=3 cause=verify reason="assert failed: escalate == (priority == \"p0\")" of=3
-17:18:07.398 WARNING jig.graph node.failed run_id=c4c52b9024e1471e838fcc0e40c6c09e node=triage type=generate attempts=3 error=NodeFailed reason="assert failed: escalate == (priority == \"p0\")" on_fail=needs_human duration_ms=0.4
-17:18:07.398 INFO  jig.graph edge.on_fail run_id=c4c52b9024e1471e838fcc0e40c6c09e node=triage to=needs_human
-17:18:07.398 INFO  jig.graph run.end run_id=c4c52b9024e1471e838fcc0e40c6c09e pack=expr_demo end_node=needs_human steps=2 generations=3 failures=1 output_keys=1 output_bytes=19 duration_ms=0.8
+$ python3 -m stepmold run /tmp/stepmold-expr-demo --input '{"ticket": "vague"}' --log-level info
+17:18:07.397 INFO  stepmold.graph run.start run_id=c4c52b9024e1471e838fcc0e40c6c09e pack=expr_demo version=1 entry=triage resumed=false max_steps=8 inputs=ticket
+17:18:07.398 WARNING stepmold.verify node.rejected node=triage attempt=1 cause=verify reason="assert failed: escalate == (priority == \"p0\")" of=3
+17:18:07.398 INFO  stepmold.verify node.retry node=triage attempt=2 of=3 temperature=0.5 seed=1 reason="assert failed: escalate == (priority == \"p0\")" rethink=false
+17:18:07.398 WARNING stepmold.verify node.rejected node=triage attempt=2 cause=verify reason="assert failed: escalate == (priority == \"p0\")" of=3
+17:18:07.398 INFO  stepmold.verify node.retry node=triage attempt=3 of=3 temperature=0.8 seed=2 reason="assert failed: escalate == (priority == \"p0\")" rethink=false
+17:18:07.398 WARNING stepmold.verify node.rejected node=triage attempt=3 cause=verify reason="assert failed: escalate == (priority == \"p0\")" of=3
+17:18:07.398 WARNING stepmold.graph node.failed run_id=c4c52b9024e1471e838fcc0e40c6c09e node=triage type=generate attempts=3 error=NodeFailed reason="assert failed: escalate == (priority == \"p0\")" on_fail=needs_human duration_ms=0.4
+17:18:07.398 INFO  stepmold.graph edge.on_fail run_id=c4c52b9024e1471e838fcc0e40c6c09e node=triage to=needs_human
+17:18:07.398 INFO  stepmold.graph run.end run_id=c4c52b9024e1471e838fcc0e40c6c09e pack=expr_demo end_node=needs_human steps=2 generations=3 failures=1 output_keys=1 output_bytes=19 duration_ms=0.8
 {"ticket": "vague"}
 ```
 
@@ -900,8 +900,8 @@ That is the whole point of the language.
 
 ### The same pack with `output: triage`
 
-The nested scope, end to end. Copy the pack (`cp -r /tmp/jig-expr-demo
-/tmp/jig-expr-nested`) and edit `graph.yaml`: add `output: triage` to the `triage` node,
+The nested scope, end to end. Copy the pack (`cp -r /tmp/stepmold-expr-demo
+/tmp/stepmold-expr-nested`) and edit `graph.yaml`: add `output: triage` to the `triage` node,
 rewrite both expressions against the nested path, and change the `escalated` and `done`
 projections to `[triage]`, since `priority` and `escalate` are no longer top-level keys.
 
@@ -929,10 +929,10 @@ projections to `[triage]`, since `priority` and `escalate` are no longer top-lev
 ```
 
 ```
-$ rm -rf /tmp/jig-expr-nested && cp -r /tmp/jig-expr-demo /tmp/jig-expr-nested
+$ rm -rf /tmp/stepmold-expr-nested && cp -r /tmp/stepmold-expr-demo /tmp/stepmold-expr-nested
 $ python3 - <<'PY'
 import pathlib
-p = pathlib.Path("/tmp/jig-expr-nested/graph.yaml"); t = p.read_text()
+p = pathlib.Path("/tmp/stepmold-expr-nested/graph.yaml"); t = p.read_text()
 t = t.replace("    retries: 2\n", "    retries: 2\n    output: triage\n", 1)
 t = t.replace('assert: escalate == (priority == "p0")',
               'assert: triage.escalate == (triage.priority == "p0")')
@@ -941,12 +941,12 @@ t = t.replace('expr: escalate and priority == "p0"',
 t = t.replace("output: [priority, escalate]", "output: [triage]")
 p.write_text(t)
 PY
-$ python3 -m jig run /tmp/jig-expr-nested --input '{"ticket": "card declined twice"}' --log-level info --run-id nested
-17:19:18.320 INFO  jig.graph run.start run_id=nested pack=expr_demo version=1 entry=triage resumed=false max_steps=8 inputs=ticket
-17:19:18.321 WARNING jig.verify node.rejected node=triage attempt=1 cause=verify reason="assert failed: triage.escalate == (triage.priority == \"p0\")" of=3
-17:19:18.321 INFO  jig.verify node.retry node=triage attempt=2 of=3 temperature=0.5 seed=1 reason="assert failed: triage.escalate == (triage.priority == \"p0\")" rethink=false
-17:19:18.321 INFO  jig.graph node.ok run_id=nested node=triage type=generate attempts=2 output=triage duration_ms=0.6
-17:19:18.321 INFO  jig.graph run.end run_id=nested pack=expr_demo end_node=escalated steps=3 generations=2 failures=0 output_keys=1 output_bytes=48 duration_ms=1.1
+$ python3 -m stepmold run /tmp/stepmold-expr-nested --input '{"ticket": "card declined twice"}' --log-level info --run-id nested
+17:19:18.320 INFO  stepmold.graph run.start run_id=nested pack=expr_demo version=1 entry=triage resumed=false max_steps=8 inputs=ticket
+17:19:18.321 WARNING stepmold.verify node.rejected node=triage attempt=1 cause=verify reason="assert failed: triage.escalate == (triage.priority == \"p0\")" of=3
+17:19:18.321 INFO  stepmold.verify node.retry node=triage attempt=2 of=3 temperature=0.5 seed=1 reason="assert failed: triage.escalate == (triage.priority == \"p0\")" rethink=false
+17:19:18.321 INFO  stepmold.graph node.ok run_id=nested node=triage type=generate attempts=2 output=triage duration_ms=0.6
+17:19:18.321 INFO  stepmold.graph run.end run_id=nested pack=expr_demo end_node=escalated steps=3 generations=2 failures=0 output_keys=1 output_bytes=48 duration_ms=1.1
 {"triage": {"escalate": true, "priority": "p0"}}
 ```
 

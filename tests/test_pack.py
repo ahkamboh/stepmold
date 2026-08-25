@@ -1,4 +1,4 @@
-"""T2 — a JigPack loads, and every malformed pack fails with a specific error.
+"""T2 — a StepmoldPack loads, and every malformed pack fails with a specific error.
 
 The `tool` half of this file is the same idea one step further out: a tool node is the
 first node type whose mistakes cost a side effect, so every way of wiring one wrongly is
@@ -10,7 +10,7 @@ import shutil
 import tempfile
 import unittest
 
-from jig.pack import (
+from stepmold.pack import (
     NODE_TYPES,
     RESERVED_STATE_NAMES,
     EvalsetError,
@@ -23,7 +23,7 @@ from jig.pack import (
     check_tools,
     load_pack,
 )
-from jig.tools import ToolNotRegistered, ToolRegistry
+from stepmold.tools import ToolNotRegistered, ToolRegistry
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 
@@ -180,7 +180,7 @@ class TestMalformedPacks(unittest.TestCase):
 
 
 class TestReservedStateNames(unittest.TestCase):
-    """`scratchpad` is jig's own binding in a run's scope, so a pack may not commit there.
+    """`scratchpad` is stepmold's own binding in a run's scope, so a pack may not commit there.
 
     `codegen.think` renders the think template with a `scratchpad` of its own, and the
     prompt labels that slot "your notes from thinking this through". A node whose output
@@ -461,7 +461,7 @@ class TestToolRegistration(PackOnDisk):
     """A pack can only call what the host already registered — checked before the run."""
 
     def test_without_a_registry_the_pack_still_loads(self):
-        # `jig validate` on a machine whose tools live in someone else's process must
+        # `stepmold validate` on a machine whose tools live in someone else's process must
         # not be a hard error: a check that cannot run is not a check that failed.
         pack = load_pack(self.pack(TOOL_GRAPH, evalset=ONE_CASE))
         self.assertEqual(pack.nodes["fetch"].tool, "lookup_order")

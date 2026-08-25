@@ -1,7 +1,7 @@
 # Benchmarks
 
 Every number here was produced by a command in this repository, and the command is given.
-Nothing is estimated, extrapolated or rounded in jig's favour. Where a measurement does not
+Nothing is estimated, extrapolated or rounded in stepmold's favour. Where a measurement does not
 support the conclusion a reader might draw from it, that is said explicitly.
 
 ---
@@ -30,7 +30,7 @@ python3 -m tests.production.test_longhorizon
 
 **End-to-end success rate:**
 
-| Nodes | Error/step | jig        | no verification | analytical `(1-p)^N` |
+| Nodes | Error/step | stepmold        | no verification | analytical `(1-p)^N` |
 | ----- | ---------- | ---------- | --------------- | -------------------- |
 | 5     | 2%         | **100.0%** | 88.5%           | 90.4%                |
 | 5     | 10%        | **99.5%**  | 63.5%           | 59.0%                |
@@ -42,7 +42,7 @@ python3 -m tests.production.test_longhorizon
 | 50    | 10%        | **96.5%**  | 2.0%            | 0.5%                 |
 | 50    | 30%        | **40.0%**  | 0.0%            | 0.0%                 |
 
-**Reading it.** jig beats the analytical curve by 9.6 points at N=5/p=0.02 and by 96.0
+**Reading it.** stepmold beats the analytical curve by 9.6 points at N=5/p=0.02 and by 96.0
 points at N=50/p=0.10. The margin *grows with N*, which is the specific signature of
 attacking compounding rather than attacking individual errors — a defence that only made
 each step more accurate would show a constant margin.
@@ -50,7 +50,7 @@ each step more accurate would show a constant margin.
 Expressed as effective per-step error (the *p* that would explain the measured end-to-end
 rate) at N=50:
 
-| Nominal p | jig    | no verification | ratio  |
+| Nominal p | stepmold    | no verification | ratio  |
 | --------- | ------ | --------------- | ------ |
 | 0.02      | 0.0000 | 0.0146          | —      |
 | 0.10      | 0.0007 | 0.0753          | ~106×  |
@@ -59,7 +59,7 @@ rate) at N=50:
 **Cost of the reliability.** Generations per *successful* run, over the ideal N: 1.02× at
 p=0.02, 1.09× at p=0.10, 1.32× at p=0.30.
 
-**Silently-wrong answers.** Across all 2,400 jig runs: zero. The unverified arm returns a
+**Silently-wrong answers.** Across all 2,400 stepmold runs: zero. The unverified arm returns a
 confidently wrong answer in 34% of runs at N=20/p=0.10 — more often than it returns a
 correct one.
 
@@ -81,7 +81,7 @@ is the point of decomposing it.
 $0.75/1M output), running `examples/support_triage` — a 7-node pack, 12 evalset cases.
 
 ```bash
-JIG_API_KEY=... python3 -m jig eval examples/support_triage \
+STEPMOLD_API_KEY=... python3 -m stepmold eval examples/support_triage \
   --model 'openai:https://api.cerebras.ai/v1#gpt-oss-120b#response_format#600'
 ```
 

@@ -15,7 +15,7 @@ compiler is tempted to cut:
 
 * **The evalset is never edited.** It is the contract. A compiler that adjusts the test
   until it passes has done nothing except launder its own failure.
-* **A failed attempt teaches the next one.** `jig eval` already names which node caused
+* **A failed attempt teaches the next one.** `stepmold eval` already names which node caused
   each failure, so the retry says "node `extract` produced sentiment=calm where the gold
   says frustrated" rather than "try again". That per-node attribution is the whole reason
   the loop can converge at all.
@@ -162,7 +162,7 @@ def compile_pack(directory, description, cases, model, name=None,
     for number in range(1, attempts + 1):
         attempt = Attempt(number=number)
         installed = False
-        scratch = tempfile.mkdtemp(prefix="jig-build-")
+        scratch = tempfile.mkdtemp(prefix="stepmold-build-")
         try:
             say("attempt %d: planning" % number)
             plan = induce(task, _guided(model, feedback))

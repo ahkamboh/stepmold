@@ -1,6 +1,6 @@
 # Overnight cloud build — how to run it
 
-Open **claude.ai/code** → new session → connect to repo **`ahkamboh/jig`**, branch `main`.
+Open **claude.ai/code** → new session → connect to repo **`ahkamboh/stepmold`**, branch `main`.
 Then copy everything in the block below and paste it as the first message.
 
 Once it's running, the laptop can be off — it runs on Anthropic's infrastructure.
@@ -10,7 +10,7 @@ Once it's running, the laptop can be off — it runs on Anthropic's infrastructu
 ## The prompt (copy from here)
 
 ```
-You are building `jig` autonomously overnight. I am asleep and cannot answer questions — make reasonable decisions yourself and record them in NIGHT-LOG.md.
+You are building `stepmold` autonomously overnight. I am asleep and cannot answer questions — make reasonable decisions yourself and record them in NIGHT-LOG.md.
 
 START: read TASKS.md (the ordered build queue) and docs/ARCHITECTURE.md (the architecture) in full before writing any code. T1 is already complete — begin at T2.
 
@@ -41,7 +41,7 @@ FINISH: when every task is [x] or [!], append a SUMMARY to NIGHT-LOG.md: what's 
 
 ## Checking progress from your phone
 
-GitHub app → `ahkamboh/jig` → Commits.
+GitHub app → `ahkamboh/stepmold` → Commits.
 Each commit = one task finished with green tests. **4 commits at handoff**, up to ~15 by morning.
 Tap `NIGHT-LOG.md` to read what it did and any decisions it made.
 
@@ -51,7 +51,7 @@ bigger than others. Forty quiet minutes does not mean it is stuck.
 ## In the morning
 
 ```bash
-cd ~/Documents/GitHub/jig && git pull && cat NIGHT-LOG.md && python3 -m pytest -q
+cd ~/Documents/GitHub/stepmold && git pull && cat NIGHT-LOG.md && python3 -m pytest -q
 ```
 
 Read the log first, then verify the tests yourself rather than trusting the log's claim.

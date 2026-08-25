@@ -4,7 +4,7 @@ Every test here was written against a deliberately sabotaged copy of the module 
 guards, and confirmed to fail, before the fix landed. That is the whole point: the
 original suite named these invariants and could not catch their violation.
 
-If you change one of these, you are changing a claim jig makes in docs/ARCHITECTURE.md or
+If you change one of these, you are changing a claim stepmold makes in docs/ARCHITECTURE.md or
 README.md. Change the doc in the same commit.
 """
 
@@ -15,11 +15,11 @@ import sqlite3
 import tempfile
 import unittest
 
-from jig.graph import run
-from jig.model import FakeModel
-from jig.pack import Node, PackError, load_pack
-from jig.state import Store, resume
-from jig.verify import Rejected, run_node, verify
+from stepmold.graph import run
+from stepmold.model import FakeModel
+from stepmold.pack import Node, PackError, load_pack
+from stepmold.state import Store, resume
+from stepmold.verify import Rejected, run_node, verify
 
 
 ENUM_SCHEMA = {
@@ -245,7 +245,7 @@ class AReusedRunIdIsRefused(unittest.TestCase):
 
 
 class APackCannotChooseTheInferenceEndpoint(unittest.TestCase):
-    """A pack must not be able to point jig's credentialed client at a host it names.
+    """A pack must not be able to point stepmold's credentialed client at a host it names.
 
     `resolve_model` falls back to the manifest when --model is absent. A network
     endpoint chosen by the pack receives whatever the prompt renders to *and* the
@@ -259,7 +259,7 @@ class APackCannotChooseTheInferenceEndpoint(unittest.TestCase):
             self.path = path
 
     def test_a_manifest_supplied_network_endpoint_is_refused_by_default(self):
-        from jig.cli import resolve_model
+        from stepmold.cli import resolve_model
 
         pack = self._Pack("openai:http://attacker.example#qwen3-8b")
         with self.assertRaises(ValueError) as caught:
@@ -267,14 +267,14 @@ class APackCannotChooseTheInferenceEndpoint(unittest.TestCase):
         self.assertIn("--model", str(caught.exception))
 
     def test_an_explicit_cli_model_still_wins(self):
-        from jig.cli import resolve_model
+        from stepmold.cli import resolve_model
 
         pack = self._Pack("openai:http://attacker.example#qwen3-8b")
         model = resolve_model("openai:http://localhost:8000#qwen3-8b", pack)
         self.assertEqual(model.base_url, "http://localhost:8000")
 
     def test_an_explicit_opt_in_allows_the_manifest_endpoint(self):
-        from jig.cli import resolve_model
+        from stepmold.cli import resolve_model
 
         pack = self._Pack("openai:http://chosen.example#qwen3-8b")
         model = resolve_model(None, pack, allow_pack_model=True)
@@ -282,7 +282,7 @@ class APackCannotChooseTheInferenceEndpoint(unittest.TestCase):
 
     def test_a_manifest_supplied_fake_model_is_still_allowed(self):
         """The offline path must keep working — examples/support_triage depends on it."""
-        from jig.cli import resolve_model
+        from stepmold.cli import resolve_model
 
         root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
@@ -292,7 +292,7 @@ class APackCannotChooseTheInferenceEndpoint(unittest.TestCase):
         self.assertIsNotNone(resolve_model(None, pack))
 
     def test_a_fake_script_cannot_escape_the_pack(self):
-        from jig.cli import resolve_model
+        from stepmold.cli import resolve_model
 
         root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
@@ -380,7 +380,7 @@ class TheScratchpadIsNeverCommitted(unittest.TestCase):
 
 
 class NothingIsCommittedWithoutVerification(unittest.TestCase):
-    """grammar.py §10 / README §3: jig never trusts output it has not checked."""
+    """grammar.py §10 / README §3: stepmold never trusts output it has not checked."""
 
     def setUp(self):
         self.root = tempfile.mkdtemp()
@@ -407,7 +407,7 @@ class NothingIsCommittedWithoutVerification(unittest.TestCase):
             run(self.pack, model, {})
 
     def test_every_committed_value_satisfies_its_node_schema(self):
-        from jig.grammar import validate_against
+        from stepmold.grammar import validate_against
         model = FakeModel(['{"v": "ok"}'])
         result = run(self.pack, model, {})
         validate_against(self.pack.nodes["a"].grammar, result.state["r"])
@@ -570,7 +570,7 @@ class AResumeIsRefusedIfThePackMoved(unittest.TestCase):
 
     Resuming under a graph that has since changed silently skips newly inserted nodes
     and trusts changed ones. The version is the cheap half of that guard, and it only
-    works if the walker actually hands the pack over — jig/graph.py:_checkpoint used to
+    works if the walker actually hands the pack over — stepmold/graph.py:_checkpoint used to
     pass `pack.name`, which threw the version away before it reached the store.
     """
 
@@ -671,7 +671,7 @@ class TheShapeCheckRunsEvenWithoutASchema(unittest.TestCase):
 
 
 class ValidateReportsTheToolCheck(unittest.TestCase):
-    """`jig validate --tools` must say that it checked, not just check.
+    """`stepmold validate --tools` must say that it checked, not just check.
 
     A check whose success is indistinguishable from its absence is a check nobody trusts:
     the flag printed exactly what omitting it printed, so neither a reader nor a CI log
@@ -682,7 +682,7 @@ class ValidateReportsTheToolCheck(unittest.TestCase):
         import subprocess, sys, pathlib
         root = pathlib.Path(__file__).resolve().parent.parent
         proc = subprocess.run(
-            [sys.executable, "-m", "jig", "validate", "examples/refund_desk"] + list(extra),
+            [sys.executable, "-m", "stepmold", "validate", "examples/refund_desk"] + list(extra),
             capture_output=True, text=True, cwd=str(root))
         return (proc.stdout + proc.stderr).strip()
 
@@ -697,7 +697,7 @@ class ValidateReportsTheToolCheck(unittest.TestCase):
         import subprocess, sys, pathlib
         root = pathlib.Path(__file__).resolve().parent.parent
         proc = subprocess.run(
-            [sys.executable, "-m", "jig", "validate", "examples/support_triage",
+            [sys.executable, "-m", "stepmold", "validate", "examples/support_triage",
              "--tools", "examples/refund_desk/tools.py:registry"],
             capture_output=True, text=True, cwd=str(root))
         self.assertIn("0 tools checked", proc.stdout + proc.stderr)
@@ -727,7 +727,7 @@ class RedactorCoversTheSeparatorsVendorsActuallyUse(unittest.TestCase):
     ]
 
     def test_no_vendor_key_shape_survives_redaction(self):
-        from jig.log import redact
+        from stepmold.log import redact
         leaked = []
         for vendor, key in self.LIVE_SHAPES:
             if key in redact("upstream rejected %s, retrying" % key):
@@ -735,12 +735,12 @@ class RedactorCoversTheSeparatorsVendorsActuallyUse(unittest.TestCase):
         self.assertEqual([], leaked, "these key shapes reached the log: %s" % leaked)
 
     def test_it_does_not_redact_ordinary_text(self):
-        from jig.log import redact
+        from stepmold.log import redact
         line = "node classify took 12ms, kind=complaint, order_id=A-1001"
         self.assertEqual(line, redact(line))
 
     def test_a_key_inside_a_larger_message_is_still_caught(self):
-        from jig.log import redact
+        from stepmold.log import redact
         out = redact('{"error":{"message":"Incorrect key: gsk_NOTAREALKEY8Zt4Qn1Rb7Wm2Kd"}}')
         self.assertNotIn("gsk_NOTAREALKEY", out)
         self.assertIn("<redacted>", out)
@@ -761,7 +761,7 @@ class CompileRefusesAnOccupiedDestinationBeforeSpendingAnything(unittest.TestCas
 
     def setUp(self):
         import tempfile, pathlib
-        self.root = pathlib.Path(tempfile.mkdtemp(prefix="jig-install-test-"))
+        self.root = pathlib.Path(tempfile.mkdtemp(prefix="stepmold-install-test-"))
         (self.root / "out").mkdir()
         (self.root / "out" / "keep.txt").write_text("a hand-tuned pack lives here\n")
 
@@ -776,8 +776,8 @@ class CompileRefusesAnOccupiedDestinationBeforeSpendingAnything(unittest.TestCas
         return model
 
     def test_it_refuses_before_the_model_is_consulted(self):
-        from jig.build.compile import compile_pack
-        from jig.build.spec import BuildError
+        from stepmold.build.compile import compile_pack
+        from stepmold.build.spec import BuildError
         cases = [{"input": {"text": "hi"}, "expect": {"verdict": "allow"}}]
         with self.assertRaises(BuildError) as caught:
             compile_pack(str(self.root / "out"), "Moderate content.", cases,
@@ -785,8 +785,8 @@ class CompileRefusesAnOccupiedDestinationBeforeSpendingAnything(unittest.TestCas
         self.assertIn("--overwrite", str(caught.exception))
 
     def test_the_existing_pack_is_left_alone(self):
-        from jig.build.compile import compile_pack
-        from jig.build.spec import BuildError
+        from stepmold.build.compile import compile_pack
+        from stepmold.build.spec import BuildError
         cases = [{"input": {"text": "hi"}, "expect": {"verdict": "allow"}}]
         try:
             compile_pack(str(self.root / "out"), "Moderate content.", cases,
@@ -800,7 +800,7 @@ class CompileRefusesAnOccupiedDestinationBeforeSpendingAnything(unittest.TestCas
 class ShippedBackendMarksAContentLessTwoHundredAsABadDraw(unittest.TestCase):
     """A 200 with no text must spend a rung, not abort the run.
 
-    `verify.EmptyCompletion` documents the contract and names `jig.backends.openai_compat`
+    `verify.EmptyCompletion` documents the contract and names `stepmold.backends.openai_compat`
     as marking its errors with `empty_content` — which that module did not do. So the only
     shipped backend raised a plain `BackendError` on the first content-less answer,
     `graph.run` did not catch it, and a node with an `on_fail` edge aborted instead of
@@ -816,8 +816,8 @@ class ShippedBackendMarksAContentLessTwoHundredAsABadDraw(unittest.TestCase):
         return response
 
     def test_a_choice_with_no_text_is_marked(self):
-        from jig.backends.openai_compat import _content
-        from jig.errors import BackendError
+        from stepmold.backends.openai_compat import _content
+        from stepmold.errors import BackendError
         with self.assertRaises(BackendError) as caught:
             _content(self._no_content_response())
         self.assertTrue(getattr(caught.exception, "empty_content", False),
@@ -825,15 +825,15 @@ class ShippedBackendMarksAContentLessTwoHundredAsABadDraw(unittest.TestCase):
                         "will abort the run instead of spending a rung")
 
     def test_a_response_with_no_choices_at_all_is_marked(self):
-        from jig.backends.openai_compat import _content
-        from jig.errors import BackendError
+        from stepmold.backends.openai_compat import _content
+        from stepmold.errors import BackendError
         with self.assertRaises(BackendError) as caught:
             _content({"choices": []})
         self.assertTrue(getattr(caught.exception, "empty_content", False))
 
     def test_the_reasoning_model_diagnostic_survives_the_marking(self):
-        from jig.backends.openai_compat import _content
-        from jig.errors import BackendError
+        from stepmold.backends.openai_compat import _content
+        from stepmold.errors import BackendError
         response = self._no_content_response(
             usage={"completion_tokens_details": {"reasoning_tokens": 31}})
         with self.assertRaises(BackendError) as caught:
@@ -842,10 +842,10 @@ class ShippedBackendMarksAContentLessTwoHundredAsABadDraw(unittest.TestCase):
         self.assertTrue(getattr(caught.exception, "empty_content", False))
 
     def test_it_spends_a_rung_and_takes_on_fail(self):
-        from jig.backends.openai_compat import _content
-        from jig.errors import BackendError
-        from jig.graph import run
-        from jig.pack import Edge, Node, Pack
+        from stepmold.backends.openai_compat import _content
+        from stepmold.errors import BackendError
+        from stepmold.graph import run
+        from stepmold.pack import Edge, Node, Pack
 
         calls = []
 
@@ -885,8 +885,8 @@ class TheCliNeverShowsARawTracebackForAValueJsonCannotHold(unittest.TestCase):
     `Tool._checked` validates the KEYS a tool returns and not the value types, which is a
     deliberate choice — a tool's values are the host's business. But the value then travels
     to the store or to stdout, where `json` refuses it with a `TypeError`, and `cli.main`
-    named PackError, JigError, ValidationError and ValueError while omitting TypeError. So
-    a `datetime.date` in a tool's return produced a multi-frame traceback through jig
+    named PackError, StepmoldError, ValidationError and ValueError while omitting TypeError. So
+    a `datetime.date` in a tool's return produced a multi-frame traceback through stepmold
     internals. A NaN took the ValueError branch and printed cleanly, which made the split
     arbitrary as well as ugly. Found by audit.
     """
@@ -894,7 +894,7 @@ class TheCliNeverShowsARawTracebackForAValueJsonCannotHold(unittest.TestCase):
     def _run(self, tool):
         import subprocess, sys, pathlib, tempfile, textwrap, os
         root = pathlib.Path(__file__).resolve().parent.parent
-        work = pathlib.Path(tempfile.mkdtemp(prefix="jig-cli-json-"))
+        work = pathlib.Path(tempfile.mkdtemp(prefix="stepmold-cli-json-"))
         pack = work / "p"
         (pack / "prompts").mkdir(parents=True)
         (pack / "grammars").mkdir()
@@ -916,7 +916,7 @@ class TheCliNeverShowsARawTracebackForAValueJsonCannotHold(unittest.TestCase):
             "name: p\nversion: 1\nentry: t\ninputs: [x]\n")
         (work / "tools.py").write_text(textwrap.dedent("""\
             import datetime
-            from jig.tools import ToolRegistry
+            from stepmold.tools import ToolRegistry
             registry = ToolRegistry()
 
             @registry.register("datetool", reads=["x"], writes=["y"])
@@ -928,7 +928,7 @@ class TheCliNeverShowsARawTracebackForAValueJsonCannotHold(unittest.TestCase):
                 return {"y": float("nan")}
             """))
         proc = subprocess.run(
-            [sys.executable, "-m", "jig", "run", str(pack),
+            [sys.executable, "-m", "stepmold", "run", str(pack),
              "--tools", str(work / "tools.py"),
              "--model", "fake:fakes/script.json", "--input", '{"x": 1}'],
             capture_output=True, text=True, cwd=str(root),
@@ -937,10 +937,10 @@ class TheCliNeverShowsARawTracebackForAValueJsonCannotHold(unittest.TestCase):
         shutil.rmtree(work, ignore_errors=True)
         return proc
 
-    def test_a_date_is_a_jig_error_not_a_traceback(self):
+    def test_a_date_is_a_stepmold_error_not_a_traceback(self):
         proc = self._run("datetool")
         self.assertNotIn("Traceback", proc.stdout + proc.stderr)
-        self.assertIn("jig:", proc.stderr)
+        self.assertIn("stepmold:", proc.stderr)
         self.assertEqual(1, proc.returncode)
 
     def test_the_message_says_what_to_return_instead(self):
@@ -967,12 +967,12 @@ class CompilerLintReachesTheReader(unittest.TestCase):
             "whole ladder; the plan says nothing about on_fail")
 
     def test_the_note_is_printed_with_the_score(self):
-        from jig.build.compile import Attempt
+        from stepmold.build.compile import Attempt
         rendered = str(Attempt(number=1, passed=11, total=12, lint=[self.NOTE]))
         self.assertIn("11/12", rendered)
         self.assertIn("rescued", rendered)
 
     def test_an_attempt_with_no_lint_is_unchanged(self):
-        from jig.build.compile import Attempt
+        from stepmold.build.compile import Attempt
         rendered = str(Attempt(number=2, passed=12, total=12))
         self.assertEqual("attempt 2: 12/12 cases", rendered)

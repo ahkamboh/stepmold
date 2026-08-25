@@ -1,15 +1,15 @@
 """The host half of the refund desk: an order store, and the two actions a pack may take.
 
-A pack is text and cannot contain code (`jig/tools.py`), so everything the desk can
+A pack is text and cannot contain code (`stepmold/tools.py`), so everything the desk can
 actually *do* lives here, in the host's own module, and is handed to the runtime per run:
 
-    python3 -m jig eval examples/refund_desk --tools examples/refund_desk/tools.py
+    python3 -m stepmold eval examples/refund_desk --tools examples/refund_desk/tools.py
 
-`jig/cli.py:_load_registry` imports this file and looks for an attribute named `registry`
+`stepmold/cli.py:_load_registry` imports this file and looks for an attribute named `registry`
 or `REGISTRY`. Nothing in graph.yaml points here — the pack names `fetch_order` and
 `issue_refund` and the operator decides, on the command line, what those two names resolve
 to. That is the whole allowlist: a name this module never registered cannot be reached by
-any pack, and `jig.pack.check_tools` refuses the pack at load rather than at step four.
+any pack, and `stepmold.pack.check_tools` refuses the pack at load rather than at step four.
 
 The two tools are deliberately not the same kind of thing, because that difference is what
 the `idempotent=` flag is for:
@@ -26,13 +26,13 @@ returned, never that it happened, so counting the entries is the only way to pro
 exactly-once from the outside.
 """
 
-from jig.tools import ToolRegistry
+from stepmold.tools import ToolRegistry
 
 
 class OrderNotFound(LookupError):
     """No such order. Raised out of `fetch_order`, so the tool node's `on_fail` gets it.
 
-    A plain exception, not a jig one: `Tool.invoke` wraps whatever the host's function
+    A plain exception, not a stepmold one: `Tool.invoke` wraps whatever the host's function
     raises in `ToolFailed`, and the walker routes that like any other node failure.
     """
 
@@ -42,7 +42,7 @@ class AlreadyRefunded(RuntimeError):
 
     Here so that "the refund went out twice" is a loud failure rather than a quiet second
     row in the ledger. Nothing in the shipped evalset or in tests/test_example_refund.py
-    ever triggers it — that is the point. If jig's exactly-once record ever stopped
+    ever triggers it — that is the point. If stepmold's exactly-once record ever stopped
     working, this is what a resumed run would hit.
     """
 
@@ -127,8 +127,8 @@ class RefundDesk:
 
         `reads` is the tool's whole argument list — a tool is called with exactly the
         state it declared and nothing else — and `writes` is the contract the graph is
-        built around, checked on the way back out (`jig/tools.py:Tool._checked`). Both are
-        declared rather than inferred here so `jig validate --tools ...` can catch a tool
+        built around, checked on the way back out (`stepmold/tools.py:Tool._checked`). Both are
+        declared rather than inferred here so `stepmold validate --tools ...` can catch a tool
         wired to a field this graph never produces, before a run has done half a job.
         """
         registry = ToolRegistry()

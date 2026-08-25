@@ -103,7 +103,7 @@ def _error(safe, detail=None):
     `verify._check_assert` turns `str(exc)` into the `Rejected` a retry prompt is built
     from, and an assert reads exactly the values that were just rejected — so a message
     quoting one would carry the rejected generation into the next prompt, which is the
-    self-conditioning spiral jig is designed around (docs/ARCHITECTURE.md §3). `str(exc)` is
+    self-conditioning spiral stepmold is designed around (docs/ARCHITECTURE.md §3). `str(exc)` is
     therefore pack-authored text only; `exc.detail` keeps the whole story for the
     operator, because bytes in a log cannot condition anything.
     """
@@ -151,7 +151,7 @@ def _eval(node, state, source, depth):
     """Walk one AST node. `depth` is how many levels of expression are already open."""
     if depth > _MAX_DEPTH:
         raise _error(
-            "expression %r is nested more than %d levels deep, which jig refuses to "
+            "expression %r is nested more than %d levels deep, which stepmold refuses to "
             "evaluate" % (source, _MAX_DEPTH)
         )
     inner = depth + 1
@@ -188,14 +188,14 @@ def _refuse(node, source):
     name = type(node).__name__
     if name in ("ListComp", "SetComp", "DictComp", "GeneratorExp"):
         name = "Comprehension"
-    return "%s is not allowed in a jig expression (in %r)" % (name, source)
+    return "%s is not allowed in a stepmold expression (in %r)" % (name, source)
 
 
 def _name(identifier, state):
     if identifier in _LITERALS:
         return _LITERALS[identifier]
     if identifier.startswith("__"):
-        raise _error("name %r is not allowed in a jig expression" % identifier)
+        raise _error("name %r is not allowed in a stepmold expression" % identifier)
     if identifier in state:
         return state[identifier]
     if identifier in _HELPERS:
@@ -226,7 +226,7 @@ def _attribute(node, state, source):
     if path is None:
         raise _error(_refuse(node, source))
     if path.startswith("__") or ".__" in path:
-        raise _error("name %r is not allowed in a jig expression" % path)
+        raise _error("name %r is not allowed in a stepmold expression" % path)
     parts = path.split(".")
     current = _name(parts[0], state)
     for part in parts[1:]:
@@ -259,7 +259,7 @@ def _dict(node, state, source, depth):
             # `{**other}`. ast puts a None key there; refuse it by name rather than let
             # the walker report the placeholder's type.
             raise _error(
-                "** unpacking is not allowed in a jig expression (in %r)" % source
+                "** unpacking is not allowed in a stepmold expression (in %r)" % source
             )
         key = _eval(key_node, state, source, depth)
         value = _eval(value_node, state, source, depth)
@@ -370,11 +370,11 @@ def _call(node, state, source, depth):
     if not isinstance(node.func, ast.Name) or node.func.id not in _HELPERS:
         called = getattr(node.func, "id", None) or _path(node.func) or "<expression>"
         raise _error(
-            "%r is not a jig expression helper (allowed: %s)"
+            "%r is not a stepmold expression helper (allowed: %s)"
             % (called, ", ".join(sorted(_HELPERS)))
         )
     if node.keywords:
-        raise _error("jig expression helpers take positional arguments only")
+        raise _error("stepmold expression helpers take positional arguments only")
     arguments = [_eval(argument, state, source, depth) for argument in node.args]
     try:
         return _HELPERS[node.func.id](*arguments)

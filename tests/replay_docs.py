@@ -18,11 +18,11 @@ because none of them can reproduce.
 
 What it cannot check, and why:
 
-  * The project's own test suite. The sandbox reaches jig and tests through symlinks, so a
+  * The project's own test suite. The sandbox reaches stepmold and tests through symlinks, so a
     relative path inside a test resolves somewhere else and the run fails for reasons that
     have nothing to do with the page. Those commands are skipped and named in the output,
     never silently passed.
-  * `jig` on PATH, as docs/building.md uses, and the compile transcript on that page, which
+  * `stepmold` on PATH, as docs/building.md uses, and the compile transcript on that page, which
     was recorded against a live model and cannot be reproduced without one.
 
 It does handle `echo $?` — the exit code of the previous command is remembered rather than
@@ -34,15 +34,15 @@ Exit status is the number of commands that did not reproduce, so this is usable 
 import subprocess, sys, pathlib, os, re, tempfile, shutil
 
 doc = pathlib.Path(sys.argv[1]).resolve()
-root = pathlib.Path(os.environ.get("JIGROOT",
+root = pathlib.Path(os.environ.get("STEPMOLDROOT",
                     pathlib.Path(__file__).resolve().parent.parent)).resolve()
 lines = doc.read_text().split("\n")
 
 # Run in a scratch directory. A page writes packs and probe scripts as it goes, and those
 # belong nowhere near the tree being checked — a harness that dirties the repo it guards
 # gets switched off.
-work = pathlib.Path(tempfile.mkdtemp(prefix="jig-doc-"))
-for name in ("examples", "tests", "jig"):
+work = pathlib.Path(tempfile.mkdtemp(prefix="stepmold-doc-"))
+for name in ("examples", "tests", "stepmold"):
     try:
         (work / name).symlink_to(root / name)
     except OSError:
@@ -145,7 +145,7 @@ for ri, (lang, block, named) in enumerate(regions):
                 block[i].strip() != "" or not rest_has_cmd):
             expected.append(block[i]); i += 1
         # Some commands cannot mean anything from a scratch directory. Running the
-        # project's own suite is the clear case: the sandbox reaches jig and tests
+        # project's own suite is the clear case: the sandbox reaches stepmold and tests
         # through symlinks, so a relative path inside a test resolves somewhere else and
         # the run fails for reasons that have nothing to do with the page. Say so and
         # count it, rather than reporting a mismatch the reader cannot act on.

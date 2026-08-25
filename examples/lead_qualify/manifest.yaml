@@ -10,5 +10,5 @@ description: >-
 
   The model below is a scripted stand-in, so the evalset scores offline with no
   GPU and no network. Each node replays its answers in the order the evalset
-  visits that node, so a `jig run` of some other lead answers the first case.
+  visits that node, so a `stepmold run` of some other lead answers the first case.
   Point --model at a real backend to qualify real leads.

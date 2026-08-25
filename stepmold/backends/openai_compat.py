@@ -1,6 +1,6 @@
 """An OpenAI-compatible `/v1/chat/completions` client, in `urllib`.
 
-This is the adapter that points jig at a real small model. The same wire format is
+This is the adapter that points stepmold at a real small model. The same wire format is
 spoken by llama.cpp-server, vLLM and SGLang, which is exactly the point: ARCHITECTURE.md §2's
 "one base model, many packs" only works if swapping the server is a URL change.
 
@@ -16,8 +16,8 @@ Grammar handling differs per backend, so it is a flag rather than a guess:
                       loose JSON mode          schema appended to the prompt as text
     none              no server-side constraint at all
 
-Even with `none`, jig still validates every output before committing it (see
-`jig.verify`) — constrained decoding is an optimisation here, not the safety net.
+Even with `none`, stepmold still validates every output before committing it (see
+`stepmold.verify`) — constrained decoding is an optimisation here, not the safety net.
 """
 
 import datetime
@@ -47,14 +47,14 @@ __all__ = [
 _log = get_logger("backend")
 
 GRAMMAR_MODES = ("response_format", "json_schema", "json_object", "none")
-API_KEY_VARIABLES = ("JIG_API_KEY", "OPENAI_API_KEY")
+API_KEY_VARIABLES = ("STEPMOLD_API_KEY", "OPENAI_API_KEY")
 RETRY_STATUSES = (408, 429, 500, 502, 503, 504)
 DEFAULT_PORTS = {"http": 80, "https": 443}
 
 # The payload fields each grammar mode writes itself. `extra_body` is merged last, so a
 # key in here coming from a caller would delete the constraint the mode just applied and
 # say nothing about it — "a constraint you think you have and don't", which is the exact
-# failure jig/grammar.py exists to prevent. Refused at construction instead.
+# failure stepmold/grammar.py exists to prevent. Refused at construction instead.
 GRAMMAR_FIELDS = {
     "response_format": ("messages", "response_format"),
     "json_schema": ("messages", "json_schema"),
@@ -68,7 +68,7 @@ RETRY_AFTER_CEILING = 60.0
 
 # Credentials, as they appear in text somebody else wrote: a header a gateway echoed back
 # at us, or a key pasted into an upstream error message. The patterns and the filter moved
-# to `jig.log` when logging arrived — the same text now goes to two places, and one filter
+# to `stepmold.log` when logging arrived — the same text now goes to two places, and one filter
 # in front of both is the only version of this that stays true. Re-exported here because
 # this module is where the redaction rule was written and where readers look for it.
 _redact = redact
@@ -127,7 +127,7 @@ class OpenAICompatModel:
     """A `Model` backed by an OpenAI-compatible chat completions endpoint.
 
     `opener` and `sleeper` exist so the HTTP layer can be replaced in a test. Nothing
-    else in jig should ever need them. The default opener is not bare `urlopen`: it
+    else in stepmold should ever need them. The default opener is not bare `urlopen`: it
     refuses cross-origin redirects so the API key cannot be walked off the chosen host
     (see `NoCrossOriginRedirect`).
     """
@@ -140,12 +140,12 @@ class OpenAICompatModel:
     # walking locals, so the credential is hidden at the field as well as at the method.
     api_key: Optional[str] = field(default=None, repr=False)
     grammar_mode: str = "response_format"
-    user_agent: str = "jig/%s" % __import__("jig").__version__
+    user_agent: str = "stepmold/%s" % __import__("stepmold").__version__
     reasoning_reserve: int = 0
     temperature: float = 0.0
     timeout: float = 60.0
     max_retries: int = 2
-    schema_name: str = "jig_node"
+    schema_name: str = "stepmold_node"
     extra_body: Dict[str, Any] = field(default_factory=dict)
     opener: Callable = DEFAULT_OPENER.open
     sleeper: Callable = time.sleep
@@ -287,9 +287,9 @@ class OpenAICompatModel:
             except (OSError, http.client.HTTPException) as exc:
                 # urllib wraps only what HTTPConnection.request() raises. Everything from
                 # getresponse() and response.read() — a peer that hangs up, a truncated
-                # body, a read that outlives the timeout — used to escape jig raw: not a
-                # JigError, never retried, and a bare traceback out of `jig run`. These
-                # are the most transient failures jig can meet, so they ride the same
+                # body, a read that outlives the timeout — used to escape stepmold raw: not a
+                # StepmoldError, never retried, and a bare traceback out of `stepmold run`. These
+                # are the most transient failures stepmold can meet, so they ride the same
                 # ladder as a 503.
                 last = _transport_error(self.url, self.timeout, exc)
                 event(_log, WARNING, "backend.transport_error", model=self.model,
@@ -354,7 +354,7 @@ def _fingerprint(key):
 def _refuse_grammar_collisions(grammar_mode, extra_body):
     """Refuse an `extra_body` key that the chosen grammar mode owns.
 
-    `extra_body` is merged last so an operator can reach a server knob jig has no field
+    `extra_body` is merged last so an operator can reach a server knob stepmold has no field
     for. Merged last also means it wins, and the fields the grammar mode writes are
     exactly the ones that must not be quietly lost: the request still succeeds, the model
     answers unconstrained, and nothing anywhere says the node lost its grammar. Refusing
@@ -379,8 +379,8 @@ def _strict_ready(schema):
 
     Strict mode is not a superset of JSON Schema: every object must set
     `additionalProperties: false` and name every declared property in `required`.
-    `jig.grammar.check_schema` requires neither — optional properties are a deliberate
-    part of jig's subset — so a pack that validates, evals green against a FakeModel and
+    `stepmold.grammar.check_schema` requires neither — optional properties are a deliberate
+    part of stepmold's subset — so a pack that validates, evals green against a FakeModel and
     ships could still be refused with an HTTP 400 that no ladder absorbs (400 is not
     retryable, and `BackendError` is not `NodeFailed`, so `on_fail` never fires either).
 
@@ -390,7 +390,7 @@ def _strict_ready(schema):
     model must emit), and doing it safely would mean copying the pack's grammar dict on
     every call to avoid editing it in place. Nothing is lost by not claiming it — the
     schema still goes on the wire, servers that constrain decoding still use it, and
-    `jig.verify` checks the output against the pack's schema either way.
+    `stepmold.verify` checks the output against the pack's schema either way.
     """
     if not isinstance(schema, dict):
         return True
@@ -412,7 +412,7 @@ def _strict_ready(schema):
 def _retry_after(exc):
     """How long the provider asked us to wait, in seconds, or 0.0 if it did not.
 
-    A 429 backing off on jig's own schedule is a provider instruction being ignored: the
+    A 429 backing off on stepmold's own schedule is a provider instruction being ignored: the
     first retry goes out at 0.5s when the header said 1s, and a `Retry-After: 60` still
     gets three requests inside 1.5 seconds — which is how an account gets banned rather
     than rate limited.
@@ -479,7 +479,7 @@ def _content_type(response):
 
 
 def _schema_of(grammar):
-    """Unwrap `jig.grammar.schema_to_grammar`'s struct, or take a bare schema."""
+    """Unwrap `stepmold.grammar.schema_to_grammar`'s struct, or take a bare schema."""
     if grammar is None:
         return None
     if isinstance(grammar, dict) and "schema" in grammar:

@@ -2,8 +2,8 @@
 
 import unittest
 
-from jig.errors import MissingVariable
-from jig.render import render
+from stepmold.errors import MissingVariable
+from stepmold.render import render
 
 
 class TestRender(unittest.TestCase):

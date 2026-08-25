@@ -1,6 +1,6 @@
-"""The thesis test: does jig actually remove error compounding over a long horizon?
+"""The thesis test: does stepmold actually remove error compounding over a long horizon?
 
-docs/ARCHITECTURE.md §0 sells jig on one number — *"2%/step = 33% failure at 20 steps"* — and §3
+docs/ARCHITECTURE.md §0 sells stepmold on one number — *"2%/step = 33% failure at 20 steps"* — and §3
 claims the fix is structural: bounded steps, a grammar per node, verify-before-commit,
 and a rejected generation that never re-enters context. Every other test in this repo
 checks a mechanism. This one checks the *claim*, end to end, at N = 5, 20 and 50, against
@@ -13,7 +13,7 @@ values observed when it was written — they are exact, because every draw is a 
 
     python3 -m tests.production.test_longhorizon     # prints the full tables
 
-What it found, in one paragraph. jig's ladder+verification is worth an enormous amount
+What it found, in one paragraph. stepmold's ladder+verification is worth an enormous amount
 when the model's re-samples are *independent* draws — at N=50, p=0.10 it turns a 0.5%
 analytical survival rate into 96.5%, an effective per-step error of 0.07% against a real
 one of 10%. Three things broke that, and two of them have since been fixed here. A model
@@ -34,13 +34,13 @@ import tempfile
 import unittest
 from dataclasses import dataclass
 
-from jig.codegen import accepts_sampling
-from jig.errors import RunError
-from jig.graph import run
-from jig.model import FakeModel
-from jig.pack import Node
-from jig.state import Store
-from jig.verify import Rejected, extract_json, run_node, sampling_for, verify
+from stepmold.codegen import accepts_sampling
+from stepmold.errors import RunError
+from stepmold.graph import run
+from stepmold.model import FakeModel
+from stepmold.pack import Node
+from stepmold.state import Store
+from stepmold.verify import Rejected, extract_json, run_node, sampling_for, verify
 
 from tests.production import longpack as L
 
@@ -59,7 +59,7 @@ _CELLS = {}
 
 def setUpModule():
     global _ROOT
-    _ROOT = tempfile.mkdtemp(prefix="jig-longhorizon-")
+    _ROOT = tempfile.mkdtemp(prefix="stepmold-longhorizon-")
 
 
 def tearDownModule():
@@ -99,7 +99,7 @@ class Cell:
     def effective_p(self):
         """The per-step error rate that would explain the measured end-to-end rate.
 
-        This is the number the whole product is about. jig cannot make the model better,
+        This is the number the whole product is about. stepmold cannot make the model better,
         so if the thesis holds, `effective_p` is far below `p` and `naive`'s is not.
         """
         if self.rate <= 0.0:
@@ -125,7 +125,7 @@ class StubbornUnlessAsked(L.FlakyModel):
     """A greedy backend that honours the ladder's per-call sampling hint.
 
     `FlakyModel(stubborn=True)` is a server at temperature 0: ask it the same question
-    twice and it makes the same mistake twice, which is what made jig's first rung dead
+    twice and it makes the same mistake twice, which is what made stepmold's first rung dead
     weight. This one is that same server, with the one difference the fix introduces —
     a request carrying a `Sampling` is a *different* request, so its draw moves with the
     rung. It declares the optional `sampling` keyword, which is how `codegen._generate`
@@ -216,7 +216,7 @@ class TheHarnessMeasuresWhatItClaims(unittest.TestCase):
     def test_arms_share_a_fault_schedule_so_the_comparison_is_paired(self):
         """Node 1 must misbehave identically in every arm at the same seed.
 
-        This is the validity condition for every 'jig vs baseline' number in this file.
+        This is the validity condition for every 'stepmold vs baseline' number in this file.
         A sequential RNG would desynchronise as soon as one arm made a different number
         of calls, and the comparison would be measuring stream drift.
         """
@@ -238,7 +238,7 @@ class TheHarnessMeasuresWhatItClaims(unittest.TestCase):
 
 
 class CompoundingIsRealWithoutVerification(unittest.TestCase):
-    """ARCHITECTURE.md §0's premise. If this does not reproduce, jig is solving nothing.
+    """ARCHITECTURE.md §0's premise. If this does not reproduce, stepmold is solving nothing.
 
     Measured (TRIALS=200), naive arm — success rate vs the analytical (1-p)^N:
 
@@ -283,12 +283,12 @@ class CompoundingIsRealWithoutVerification(unittest.TestCase):
         self.assertGreater(measured.silent_wrong, measured.successes)
 
 
-class JigBeatsTheAnalyticalCurve(unittest.TestCase):
+class StepmoldBeatsTheAnalyticalCurve(unittest.TestCase):
     """The headline. Same seeds, same faults, verification and the ladder switched on.
 
-    Measured (TRIALS=200), jig arm vs naive vs the analytical (1-p)^N:
+    Measured (TRIALS=200), stepmold arm vs naive vs the analytical (1-p)^N:
 
-        N     p      jig     naive   (1-p)^N   jig - analytic
+        N     p      stepmold     naive   (1-p)^N   stepmold - analytic
         5     0.02  100.0%   88.5%    90.4%     +9.6
         5     0.10   99.5%   63.5%    59.0%    +40.5
         5     0.30   90.5%   28.0%    16.8%    +73.7
@@ -300,47 +300,47 @@ class JigBeatsTheAnalyticalCurve(unittest.TestCase):
         50    0.30   40.0%    0.0%     0.0%    +40.0
     """
 
-    def test_jig_finishes_a_fifty_node_run_perfectly_at_the_plan_s_error_rate(self):
-        """N=50 at p=0.02: the analytical model says 36% survive. jig says all of them."""
-        measured = cell(50, 0.02, L.JIG)
+    def test_stepmold_finishes_a_fifty_node_run_perfectly_at_the_plan_s_error_rate(self):
+        """N=50 at p=0.02: the analytical model says 36% survive. stepmold says all of them."""
+        measured = cell(50, 0.02, L.STEPMOLD)
         self.assertEqual(measured.successes, TRIALS)
         self.assertGreater(measured.rate - measured.analytic, 0.55)
 
-    def test_jig_beats_the_curve_by_a_growing_margin_as_the_horizon_grows(self):
-        """The margin has to grow with N, or jig is not attacking *compounding*."""
-        margins = [cell(n, 0.10, L.JIG).rate - cell(n, 0.10, L.JIG).analytic
+    def test_stepmold_beats_the_curve_by_a_growing_margin_as_the_horizon_grows(self):
+        """The margin has to grow with N, or stepmold is not attacking *compounding*."""
+        margins = [cell(n, 0.10, L.STEPMOLD).rate - cell(n, 0.10, L.STEPMOLD).analytic
                    for n in HORIZONS]
         self.assertEqual(margins, sorted(margins),
                          "margin over the analytical curve must grow with N: %s" % margins)
         self.assertGreater(margins[-1], 0.90)     # measured +96.0 points at N=50
 
-    def test_jig_beats_the_naive_baseline_on_every_cell_it_can(self):
+    def test_stepmold_beats_the_naive_baseline_on_every_cell_it_can(self):
         for n in HORIZONS:
             for p in (0.02, 0.10, 0.30):
-                jig, naive = cell(n, p, L.JIG), cell(n, p, L.NAIVE)
+                stepmold, naive = cell(n, p, L.STEPMOLD), cell(n, p, L.NAIVE)
                 self.assertGreater(
-                    jig.rate, naive.rate,
-                    "jig lost to the naive baseline at N=%d p=%.2f (%.3f vs %.3f)"
-                    % (n, p, jig.rate, naive.rate),
+                    stepmold.rate, naive.rate,
+                    "stepmold lost to the naive baseline at N=%d p=%.2f (%.3f vs %.3f)"
+                    % (n, p, stepmold.rate, naive.rate),
                 )
 
-    def test_jig_collapses_the_effective_per_step_error_rate(self):
+    def test_stepmold_collapses_the_effective_per_step_error_rate(self):
         """The mechanism, expressed as the number a buyer would care about.
 
         Measured effective per-step error (the p that would explain the end-to-end rate):
 
-            N=50 p=0.02 -> 0.000  (jig)  vs 0.0146 (naive)
-            N=50 p=0.10 -> 0.0007 (jig)  vs 0.0757 (naive)   ~106x reduction
-            N=50 p=0.30 -> 0.0182 (jig)  vs 1.0    (naive)    ~16x reduction
+            N=50 p=0.02 -> 0.000  (stepmold)  vs 0.0146 (naive)
+            N=50 p=0.10 -> 0.0007 (stepmold)  vs 0.0757 (naive)   ~106x reduction
+            N=50 p=0.30 -> 0.0182 (stepmold)  vs 1.0    (naive)    ~16x reduction
         """
-        jig = cell(50, 0.10, L.JIG)
+        stepmold = cell(50, 0.10, L.STEPMOLD)
         naive = cell(50, 0.10, L.NAIVE)
-        self.assertLess(jig.effective_p, 0.002)
+        self.assertLess(stepmold.effective_p, 0.002)
         self.assertGreater(naive.effective_p, 0.05)
-        self.assertGreater(naive.effective_p / max(jig.effective_p, 1e-9), 50.0)
+        self.assertGreater(naive.effective_p / max(stepmold.effective_p, 1e-9), 50.0)
 
-    def test_jig_never_returns_a_silently_wrong_answer(self):
-        """The claim `naive` cannot make: if jig finishes, the answer is right.
+    def test_stepmold_never_returns_a_silently_wrong_answer(self):
+        """The claim `naive` cannot make: if stepmold finishes, the answer is right.
 
         Verify-before-commit means every committed link satisfied its assert, so a run
         that reaches `done` cannot be carrying a corrupted chain. Across 2,400 runs at
@@ -348,23 +348,23 @@ class JigBeatsTheAnalyticalCurve(unittest.TestCase):
         """
         for n in HORIZONS:
             for p in ERROR_RATES:
-                measured = cell(n, p, L.JIG)
+                measured = cell(n, p, L.STEPMOLD)
                 self.assertEqual(
                     measured.silent_wrong, 0,
-                    "jig finished a run at N=%d p=%.2f with a wrong answer" % (n, p),
+                    "stepmold finished a run at N=%d p=%.2f with a wrong answer" % (n, p),
                 )
 
     def test_the_ladder_costs_little_when_it_is_not_needed(self):
         """Generations per successful run, over the ideal N: 1.02x / 1.09x / 1.32x."""
-        self.assertLess(cell(50, 0.02, L.JIG).call_overhead, 1.05)
-        self.assertLess(cell(50, 0.10, L.JIG).call_overhead, 1.15)
-        self.assertLess(cell(50, 0.30, L.JIG).call_overhead, 1.45)
+        self.assertLess(cell(50, 0.02, L.STEPMOLD).call_overhead, 1.05)
+        self.assertLess(cell(50, 0.10, L.STEPMOLD).call_overhead, 1.15)
+        self.assertLess(cell(50, 0.30, L.STEPMOLD).call_overhead, 1.45)
 
 
-class WhereJigStopsRescuingTheRun(unittest.TestCase):
+class WhereStepmoldStopsRescuingTheRun(unittest.TestCase):
     """The question the brief actually asks: at what (N, p) does it break down?
 
-    Measured (TRIALS=200), jig arm with the default `retries: 2`:
+    Measured (TRIALS=200), stepmold arm with the default `retries: 2`:
 
         p \\ N      5       20      50
         0.02    100.0%  100.0%  100.0%
@@ -378,18 +378,18 @@ class WhereJigStopsRescuingTheRun(unittest.TestCase):
     """
 
     def test_the_knee_is_at_p_0_30(self):
-        self.assertGreater(cell(50, 0.10, L.JIG).rate, 0.90)
-        self.assertLess(cell(50, 0.30, L.JIG).rate, 0.60)
+        self.assertGreater(cell(50, 0.10, L.STEPMOLD).rate, 0.90)
+        self.assertLess(cell(50, 0.30, L.STEPMOLD).rate, 0.60)
 
     def test_the_residual_matches_a_three_attempt_ladder(self):
         """40% at N=50 p=0.30 is (1 - (0.9p)^3)^50 — the ladder's own arithmetic."""
         residual = (0.9 * 0.30) ** 3
         predicted = (1.0 - residual) ** 50
-        self.assertLess(abs(cell(50, 0.30, L.JIG).rate - predicted), 0.10)
+        self.assertLess(abs(cell(50, 0.30, L.STEPMOLD).rate - predicted), 0.10)
 
     def test_a_deeper_ladder_buys_the_run_back(self):
-        two = cell(50, 0.30, L.JIG)
-        five = cell(50, 0.30, L.JIG_LADDER_5)
+        two = cell(50, 0.30, L.STEPMOLD)
+        five = cell(50, 0.30, L.STEPMOLD_LADDER_5)
         self.assertGreater(five.rate - two.rate, 0.50)     # 98.0% vs 40.0%
         self.assertGreater(five.rate, 0.95)
         # And it is not free: the extra rungs are generations.
@@ -406,7 +406,7 @@ class TheLadderNeedsAnIndependentResample(unittest.TestCase):
     line of feedback, because the `Model` protocol carried no sampling parameter and
     `OpenAICompatModel` pins temperature at 0.0. A greedy server answering the same
     question the same way is the *expected* case, not an exotic one — and
-    `FlakyModel(stubborn=True)` is exactly that model. Measured then (TRIALS=150), jig
+    `FlakyModel(stubborn=True)` is exactly that model. Measured then (TRIALS=150), stepmold
     arm, independent draws vs stubborn:
 
         N=20 p=0.10   99.3%  ->  12.7%
@@ -414,8 +414,8 @@ class TheLadderNeedsAnIndependentResample(unittest.TestCase):
         N=50 p=0.10   97.3%  ->   0.7%
         N=50 p=0.30   42.0%  ->   0.0%
 
-    The stubborn column is the naive baseline's curve: every point jig scored over the
-    analytical prediction was bought by an assumption nothing in jig made true.
+    The stubborn column is the naive baseline's curve: every point stepmold scored over the
+    analytical prediction was bought by an assumption nothing in stepmold made true.
 
     The fix is a per-call hint (`codegen.Sampling`) that `verify.sampling_for` climbs
     across the rungs, sent only to a model whose `generate` declares it. Same seeds,
@@ -432,21 +432,21 @@ class TheLadderNeedsAnIndependentResample(unittest.TestCase):
     A backend that honours the hint scores *identically* to a model that re-draws on its
     own, which is the whole claim: the ladder's arithmetic was always right, and what
     was missing was a way to ask. A backend that ignores the hint still gets nothing —
-    that residual is now the backend's property rather than a hole in jig, and it is the
+    that residual is now the backend's property rather than a hole in stepmold, and it is the
     one number in this file an operator can fix by changing a server flag.
     """
 
     def test_a_backend_that_ignores_the_hint_still_gets_nothing(self):
         """`FlakyModel` does not declare `sampling`, so it is called exactly as before."""
-        free = cell(50, 0.10, L.JIG, trials=150)
-        stuck = cell(50, 0.10, L.JIG, trials=150, stubborn=True)
+        free = cell(50, 0.10, L.STEPMOLD, trials=150)
+        stuck = cell(50, 0.10, L.STEPMOLD, trials=150, stubborn=True)
         self.assertGreater(free.rate, 0.90)
         self.assertLess(stuck.rate, 0.05)
 
     def test_honouring_the_hint_restores_the_whole_of_the_ladder(self):
-        hinted = cell(50, 0.10, L.JIG, trials=150, stubborn=True,
+        hinted = cell(50, 0.10, L.STEPMOLD, trials=150, stubborn=True,
                       model_type=StubbornUnlessAsked)
-        free = cell(50, 0.10, L.JIG, trials=150)
+        free = cell(50, 0.10, L.STEPMOLD, trials=150)
         self.assertGreater(hinted.rate, 0.95)             # 97.3%, from 0.7%
         self.assertEqual(hinted.successes, free.successes)
 
@@ -456,8 +456,8 @@ class TheLadderNeedsAnIndependentResample(unittest.TestCase):
         The un-hinted stubborn arm's successes cost exactly N — they are the runs where
         nothing went wrong, never the runs the ladder rescued.
         """
-        stuck = cell(50, 0.02, L.JIG, trials=150, stubborn=True)
-        hinted = cell(50, 0.02, L.JIG, trials=150, stubborn=True,
+        stuck = cell(50, 0.02, L.STEPMOLD, trials=150, stubborn=True)
+        hinted = cell(50, 0.02, L.STEPMOLD, trials=150, stubborn=True,
                       model_type=StubbornUnlessAsked)
         self.assertEqual(stuck.calls_on_success, stuck.successes * 50)
         self.assertGreater(hinted.calls_on_success, hinted.successes * 50)
@@ -465,7 +465,7 @@ class TheLadderNeedsAnIndependentResample(unittest.TestCase):
     def test_the_first_attempt_is_never_perturbed(self):
         """Rung 0 asks for nothing, so a run that never stumbles is byte-identical."""
         self.assertIsNone(sampling_for(0))
-        clean = cell(50, 0.0, L.JIG, trials=20, model_type=StubbornUnlessAsked)
+        clean = cell(50, 0.0, L.STEPMOLD, trials=20, model_type=StubbornUnlessAsked)
         self.assertEqual(clean.successes, 20)
         self.assertEqual(clean.calls, 20 * 50)
 
@@ -506,7 +506,7 @@ class TwoStageRetriesReThinkInsteadOfReEmitting(unittest.TestCase):
     Measured (TRIALS=150), the two_stage arm before and after `run_node` learned to drop
     the scratchpad on a rejection:
 
-        N     p     two_stage (before)   (1-p)^N   two_stage (after)    jig
+        N     p     two_stage (before)   (1-p)^N   two_stage (after)    stepmold
         20    0.02        64.7%           66.8%         100.0%        100.0%
         20    0.10        14.0%           12.2%          96.7%         99.3%
         50    0.02        34.0%           36.4%         100.0%        100.0%
@@ -517,7 +517,7 @@ class TwoStageRetriesReThinkInsteadOfReEmitting(unittest.TestCase):
     node was a naive loop with double the token bill. The after column is a two-stage
     node behaving like a single-stage one, at the two calls per rung it costs.
 
-    It stays a little behind the single-stage `jig` arm, and that is not noise: a
+    It stays a little behind the single-stage `stepmold` arm, and that is not noise: a
     re-thought rung re-rolls two draws instead of one, so it has two chances to go wrong
     per attempt. That is the honest price of a think stage, not a defect in the ladder.
     """
@@ -565,19 +565,19 @@ class TwoStageRetriesReThinkInsteadOfReEmitting(unittest.TestCase):
         self.assertIn("second thoughts", model.calls[3].prompt)
 
     def test_end_to_end_a_two_stage_pack_now_beats_the_analytical_curve(self):
-        measured = cell(50, 0.02, L.JIG_TWO_STAGE, trials=150)
+        measured = cell(50, 0.02, L.STEPMOLD_TWO_STAGE, trials=150)
         self.assertEqual(measured.successes, 150)
         self.assertGreater(measured.rate - measured.analytic, 0.60)
 
     def test_the_ladder_is_what_is_doing_it(self):
         """Successful runs cost more than the 2N calls a retry-free run would."""
-        measured = cell(50, 0.10, L.JIG_TWO_STAGE, trials=150)
+        measured = cell(50, 0.10, L.STEPMOLD_TWO_STAGE, trials=150)
         self.assertGreater(measured.rate, 0.90)           # 96.0%, from 0.0%
         self.assertGreater(measured.calls_on_success, measured.successes * 100)
 
     def test_a_re_thought_rung_costs_two_calls_not_one(self):
         """The price of the fix, stated: ~2.2 generations per node per successful run."""
-        measured = cell(50, 0.10, L.JIG_TWO_STAGE, trials=150)
+        measured = cell(50, 0.10, L.STEPMOLD_TWO_STAGE, trials=150)
         self.assertGreater(measured.call_overhead, 2.0)
         self.assertLess(measured.call_overhead, 2.5)
 
@@ -588,9 +588,9 @@ class TwoStageRetriesReThinkInsteadOfReEmitting(unittest.TestCase):
         scratchpad re-rolls a draw, and a stubborn backend's re-roll is the same draw
         until something asks it to vary.
         """
-        free = cell(50, 0.02, L.JIG_TWO_STAGE, trials=150)
-        stuck = cell(50, 0.02, L.JIG_TWO_STAGE, trials=150, stubborn=True)
-        hinted = cell(50, 0.02, L.JIG_TWO_STAGE, trials=150, stubborn=True,
+        free = cell(50, 0.02, L.STEPMOLD_TWO_STAGE, trials=150)
+        stuck = cell(50, 0.02, L.STEPMOLD_TWO_STAGE, trials=150, stubborn=True)
+        hinted = cell(50, 0.02, L.STEPMOLD_TWO_STAGE, trials=150, stubborn=True,
                       model_type=StubbornUnlessAsked)
         self.assertEqual(free.successes, 150)
         self.assertLess(stuck.rate, 0.40)                 # 34.0% — the analytical curve
@@ -604,7 +604,7 @@ class VerificationWithoutALadderScoresBelowNoVerification(unittest.TestCase):
     Measured (TRIALS=200) success rate by arm — each arm adds one defence, retries off
     until the last:
 
-        N     p     naive  grammar_only  verify_only    jig
+        N     p     naive  grammar_only  verify_only    stepmold
         5     0.30  28.0%     22.5%         22.5%      90.5%
         20    0.10  16.0%     11.5%         11.5%      99.0%
         50    0.02  48.0%     43.0%         43.0%     100.0%
@@ -639,7 +639,7 @@ class VerificationWithoutALadderScoresBelowNoVerification(unittest.TestCase):
     def test_the_semantic_assert_adds_nothing_over_the_grammar_without_a_ladder(self):
         """With retries: 0 the two arms are identical — every rejection is fatal anyway.
 
-        Worth stating because it means a pack author cannot read `verify_only == jig`'s
+        Worth stating because it means a pack author cannot read `verify_only == stepmold`'s
         assert as 'the assert is what saves me'. The assert only pays once there is a
         rung behind it; before that it is just a different way to die.
         """
@@ -671,7 +671,7 @@ class RejectedGenerationsNeverEnterALaterPrompt(unittest.TestCase):
     def test_no_rejected_generation_reaches_a_prompt_across_fifty_nodes(self):
         rejected = 0
         for seed in range(60):
-            _, model, result = trial(50, L.JIG, seed, 0.30)
+            _, model, result = trial(50, L.STEPMOLD, seed, 0.30)
             tags = self._tags(model)
             rejected += len(tags)
             blob = json.dumps(result.state) if hasattr(result, "state") else ""
@@ -714,7 +714,7 @@ class TheHorizonStaysBounded(unittest.TestCase):
     """
 
     def test_prompt_size_does_not_grow_with_the_horizon(self):
-        _, model, _ = trial(50, L.JIG, 5, 0.0)
+        _, model, _ = trial(50, L.STEPMOLD, 5, 0.0)
         lengths = [len(call.prompt) for call in model.calls]
         self.assertEqual(len(lengths), 50)
         # Measured 182 -> 189 bytes across fifty nodes; the growth is the field name
@@ -722,14 +722,14 @@ class TheHorizonStaysBounded(unittest.TestCase):
         self.assertLess(max(lengths) - min(lengths), 20)
 
     def test_a_fifty_node_prompt_is_no_larger_than_a_five_node_one(self):
-        _, short, _ = trial(5, L.JIG, 5, 0.0)
-        _, long_run, _ = trial(50, L.JIG, 5, 0.0)
+        _, short, _ = trial(5, L.STEPMOLD, 5, 0.0)
+        _, long_run, _ = trial(50, L.STEPMOLD, 5, 0.0)
         self.assertLess(max(len(c.prompt) for c in long_run.calls),
                         max(len(c.prompt) for c in short.calls) + 20)
 
     def test_even_a_retry_prompt_stays_bounded(self):
         """The one thing that legitimately grows a prompt is the feedback block."""
-        _, model, _ = trial(50, L.JIG, 11, 0.30)
+        _, model, _ = trial(50, L.STEPMOLD, 11, 0.30)
         lengths = [len(call.prompt) for call in model.calls]
         self.assertLess(max(lengths), 2 * min(lengths))
 
@@ -738,7 +738,7 @@ class OnFailRoutingSurvivesFiftyNodes(unittest.TestCase):
     """A spent node 40 links deep still takes its declared failure edge."""
 
     def test_a_spent_ladder_diverts_instead_of_raising(self):
-        measured = cell(50, 0.30, L.JIG_ON_FAIL, trials=150)
+        measured = cell(50, 0.30, L.STEPMOLD_ON_FAIL, trials=150)
         self.assertEqual(measured.raised, 0)
         self.assertGreater(measured.gave_up, 0)
         self.assertEqual(measured.successes + measured.gave_up, measured.trials)
@@ -746,12 +746,12 @@ class OnFailRoutingSurvivesFiftyNodes(unittest.TestCase):
     def test_routing_does_not_change_the_answer_only_how_the_run_ends(self):
         """Same seeds, same correct-answer count — `on_fail` is presentation, not rescue."""
         for p in (0.10, 0.30):
-            self.assertEqual(cell(50, p, L.JIG_ON_FAIL, trials=150).successes,
-                             cell(50, p, L.JIG, trials=150).successes)
+            self.assertEqual(cell(50, p, L.STEPMOLD_ON_FAIL, trials=150).successes,
+                             cell(50, p, L.STEPMOLD, trials=150).successes)
 
     def test_the_failure_is_attributed_to_the_node_that_spent_its_ladder(self):
         for seed in range(150):
-            outcome, model, result = trial(50, L.JIG_ON_FAIL, seed, 0.30)
+            outcome, model, result = trial(50, L.STEPMOLD_ON_FAIL, seed, 0.30)
             if outcome != "gave_up":
                 continue
             self.assertEqual(len(result.failures), 1)
@@ -789,7 +789,7 @@ class ARescuedRunSaysHowCloseItCame(unittest.TestCase):
 
     def _rescued(self):
         for seed in range(80):
-            outcome, model, result = trial(50, L.JIG, seed, 0.30)
+            outcome, model, result = trial(50, L.STEPMOLD, seed, 0.30)
             if outcome == "success" and model.wasted_calls() >= 5:
                 return model, result
         self.fail("no run needed retries — the test would be vacuous")
@@ -809,12 +809,12 @@ class ARescuedRunSaysHowCloseItCame(unittest.TestCase):
         self.assertEqual(sum(result.attempts.values()), model.call_count)
 
     def test_a_clean_run_is_visibly_clean(self):
-        _, _, result = trial(50, L.JIG, 5, 0.0)
+        _, _, result = trial(50, L.STEPMOLD, 5, 0.0)
         self.assertEqual(sorted(set(result.attempts.values())), [1])
 
     def test_no_node_reports_more_attempts_than_its_ladder_allows(self):
         for seed in range(20):
-            outcome, _, result = trial(50, L.JIG, seed, 0.30)
+            outcome, _, result = trial(50, L.STEPMOLD, seed, 0.30)
             if outcome == "raised":     # a RunError, not a RunResult
                 continue
             self.assertLessEqual(max(result.attempts.values()), 3)
@@ -822,7 +822,7 @@ class ARescuedRunSaysHowCloseItCame(unittest.TestCase):
     def test_a_store_that_records_them_is_offered_them(self):
         """The walker hands the counts to any store whose `save` accepts them.
 
-        `jig.state.Store` predates the field and does not, so it is offered nothing and
+        `stepmold.state.Store` predates the field and does not, so it is offered nothing and
         keeps working — the column is the store's to add, and this is the assertion that
         will notice when it does.
         """
@@ -834,7 +834,7 @@ class ARescuedRunSaysHowCloseItCame(unittest.TestCase):
                      pack_version=None, attempts=None):
                 seen.append(attempts)
 
-        run(pack_for(20, L.JIG), L.FlakyModel(seed=7, p=0.30), inputs={"v0": 7},
+        run(pack_for(20, L.STEPMOLD), L.FlakyModel(seed=7, p=0.30), inputs={"v0": 7},
             run_id="recorded", store=RecordingStore())
 
         self.assertTrue(seen)
@@ -844,7 +844,7 @@ class ARescuedRunSaysHowCloseItCame(unittest.TestCase):
         store = Store(os.path.join(_ROOT, "audit.sqlite"))
         try:
             model = L.FlakyModel(seed=7, p=0.30)
-            run(pack_for(20, L.JIG), model, inputs={"v0": 7}, run_id="audited",
+            run(pack_for(20, L.STEPMOLD), model, inputs={"v0": 7}, run_id="audited",
                 store=store)
             self.assertGreater(model.wasted_calls(), 0)
             self.assertEqual(len(store.history("audited")), 21)
@@ -867,7 +867,7 @@ class CheckpointStorageGrowsWithTheSquareOfTheHorizon(unittest.TestCase):
     def _persisted(self, n):
         store = Store(os.path.join(_ROOT, "growth%d.sqlite" % n))
         try:
-            run(pack_for(n, L.JIG), L.FlakyModel(seed=3, p=0.0),
+            run(pack_for(n, L.STEPMOLD), L.FlakyModel(seed=3, p=0.0),
                 inputs={"v0": 7}, run_id="g%d" % n, store=store)
             return sum(len(json.dumps(cp.state)) for cp in store.history("g%d" % n))
         finally:
@@ -954,11 +954,11 @@ def report():
                 print(row + "%.1f%%" % (100 * (1 - p) ** n))
             print()
 
-        print("== jig vs the analytical curve, and the effective per-step error ==\n")
-        print("  N    p    jig     naive   (1-p)^N  jig-analytic  p_eff(jig)  p_eff(naive)")
+        print("== stepmold vs the analytical curve, and the effective per-step error ==\n")
+        print("  N    p    stepmold     naive   (1-p)^N  stepmold-analytic  p_eff(stepmold)  p_eff(naive)")
         for n in HORIZONS:
             for p in ERROR_RATES[1:]:
-                j, b = cell(n, p, L.JIG), cell(n, p, L.NAIVE)
+                j, b = cell(n, p, L.STEPMOLD), cell(n, p, L.NAIVE)
                 print("%3d  %.2f  %5.1f%%  %5.1f%%  %5.1f%%     %+6.1f       %.4f      %.4f"
                       % (n, p, 100 * j.rate, 100 * b.rate, 100 * j.analytic,
                          100 * (j.rate - j.analytic), j.effective_p, b.effective_p))
@@ -966,12 +966,12 @@ def report():
 
         print("== where it breaks down, and what fixes it ==\n")
         for n, p in ((20, 0.30), (50, 0.10), (50, 0.30)):
-            two = cell(n, p, L.JIG)
-            five = cell(n, p, L.JIG_LADDER_5, trials=150)
-            stuck = cell(n, p, L.JIG, trials=150, stubborn=True)
-            hinted = cell(n, p, L.JIG, trials=150, stubborn=True,
+            two = cell(n, p, L.STEPMOLD)
+            five = cell(n, p, L.STEPMOLD_LADDER_5, trials=150)
+            stuck = cell(n, p, L.STEPMOLD, trials=150, stubborn=True)
+            hinted = cell(n, p, L.STEPMOLD, trials=150, stubborn=True,
                           model_type=StubbornUnlessAsked)
-            stage = cell(n, p, L.JIG_TWO_STAGE, trials=150)
+            stage = cell(n, p, L.STEPMOLD_TWO_STAGE, trials=150)
             print("N=%2d p=%.2f  retries=2 %5.1f%%   retries=5 %5.1f%%   "
                   "stubborn %5.1f%%   stubborn+hint %5.1f%%   two_stage %5.1f%%   "
                   "calls/success %.2fx"

@@ -161,7 +161,7 @@ class ToolRegistry:
 
         `reads` names the state this tool needs and `writes` names what it produces, both
         checked at load time against the graph. Declaring them is not bureaucracy — it is
-        what lets `jig validate` catch a tool wired to a field that does not exist yet,
+        what lets `stepmold validate` catch a tool wired to a field that does not exist yet,
         before a run has done half a job.
         """
 
@@ -172,7 +172,7 @@ class ToolRegistry:
             if not reads_list:
                 # A tool that named nothing gets its parameter list read off the function,
                 # which is right often enough to be worth doing and always visible in
-                # `jig validate` when it is not.
+                # `stepmold validate` when it is not.
                 try:
                     signature = inspect.signature(function)
                     reads_list = [

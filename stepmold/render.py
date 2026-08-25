@@ -62,7 +62,7 @@ def _names(state):
 
     A key holding a zero-width space renders identically to the real one, so a plain
     list says "prompt needs {ticket} but state has ticket" and the operator concludes
-    jig is broken. repr writes such a character as an escape, so the difference shows.
+    stepmold is broken. repr writes such a character as an escape, so the difference shows.
     Keys are caller-supplied, so the list is clipped too: a run input can be as long as
     whoever pasted it.
     """

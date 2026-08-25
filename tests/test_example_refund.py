@@ -10,9 +10,9 @@ decides and then *does*, and holds the two properties that make doing safe:
 
   The qualifier is load-bearing and was added because a reviewer falsified the sentence
   without it. The record lands after the call returns, so a process killed inside that gap
-  — call done, row not yet durable — resumes and calls again. jig cannot close that window
+  — call done, row not yet durable — resumes and calls again. stepmold cannot close that window
   from this side of the boundary: a tool that has already sent an email cannot be un-sent
-  by anything jig writes afterwards. A tool whose repetition is harmless should say so with
+  by anything stepmold writes afterwards. A tool whose repetition is harmless should say so with
   `idempotent=True`; one whose repetition is not should be written to be idempotent on its
   own key.
 * **gated first** — the node that approves the refund is upstream of the node that issues
@@ -31,13 +31,13 @@ import subprocess
 import sys
 import unittest
 
-from jig.cli import resolve_model
-from jig.eval import evaluate
-from jig.graph import run
-from jig.model import FakeModel
-from jig.pack import GraphError, Node, load_pack
-from jig.state import Store, resume
-from jig.tools import ToolNotRegistered
+from stepmold.cli import resolve_model
+from stepmold.eval import evaluate
+from stepmold.graph import run
+from stepmold.model import FakeModel
+from stepmold.pack import GraphError, Node, load_pack
+from stepmold.state import Store, resume
+from stepmold.tools import ToolNotRegistered
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PACK = os.path.join(ROOT, "examples", "refund_desk")
@@ -63,8 +63,8 @@ def fresh_desk():
 def load(desk=None):
     """Load the pack, and check its tool wiring when a desk is supplied.
 
-    `load_pack(path, tools=registry)` is the only way `jig.pack.check_tools` runs; the
-    `jig validate` subcommand takes no `--tools` flag (`jig/cli.py:_add_tools_option`
+    `load_pack(path, tools=registry)` is the only way `stepmold.pack.check_tools` runs; the
+    `stepmold validate` subcommand takes no `--tools` flag (`stepmold/cli.py:_add_tools_option`
     adds it to `run` and `eval` only), so a pack's tool wiring is not checked from the
     command line at all today.
     """
@@ -91,7 +91,7 @@ class TestTheRefundDeskScores(unittest.TestCase):
 
     def test_the_cli_scores_it_with_the_hosts_tools(self):
         completed = subprocess.run(
-            [sys.executable, "-m", "jig", "eval", PACK,
+            [sys.executable, "-m", "stepmold", "eval", PACK,
              "--tools", os.path.join(PACK, "tools.py")],
             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             universal_newlines=True,
@@ -103,10 +103,10 @@ class TestTheRefundDeskScores(unittest.TestCase):
         """The security model, from the operator's side: no flag, no actions.
 
         Documented as a limit in the pack's README because it is the first thing a reader
-        copying `python3 -m jig eval examples/refund_desk` will hit.
+        copying `python3 -m stepmold eval examples/refund_desk` will hit.
         """
         completed = subprocess.run(
-            [sys.executable, "-m", "jig", "eval", PACK],
+            [sys.executable, "-m", "stepmold", "eval", PACK],
             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             universal_newlines=True,
         )
@@ -166,7 +166,7 @@ class TestTheShapeThatMakesItSafe(unittest.TestCase):
 
     def test_a_tool_the_host_never_registered_is_refused_at_load(self):
         """The allowlist, from the pack's side: an empty registry refuses this pack."""
-        from jig.tools import ToolRegistry
+        from stepmold.tools import ToolRegistry
 
         with self.assertRaises(ToolNotRegistered) as caught:
             load_pack(PACK, tools=ToolRegistry())
@@ -177,7 +177,7 @@ class TestTheShapeThatMakesItSafe(unittest.TestCase):
 
 
 class Crash(Exception):
-    """Not a `JigError`: the worker died, it did not fail. Nothing catches this."""
+    """Not a `StepmoldError`: the worker died, it did not fail. Nothing catches this."""
 
 
 class DyingStore(Store):
@@ -289,7 +289,7 @@ class TestTheRefundIsIssuedExactlyOnce(unittest.TestCase):
 
 @dataclasses.dataclass(frozen=True)
 class GatedNode(Node):
-    """A `Node` carrying the gate's keys, for as long as `jig.pack.Node` does not.
+    """A `Node` carrying the gate's keys, for as long as `stepmold.pack.Node` does not.
 
     The same stand-in `tests/test_verify.py` uses, and for the same reason: `verify.
     gate_for` reads `samples`/`agree` with `getattr`, so the runtime gate is real while
@@ -369,8 +369,8 @@ class TestNothingIsIssuedOnACoinFlip(unittest.TestCase):
         self.assertEqual(desk.ledger, [])
 
     def test_an_unsure_case_is_escalated_rather_than_claimed(self):
-        """`jig eval --tiers` would put this case in the escalated bucket, not the auto one."""
-        from jig.eval import evaluate as score
+        """`stepmold eval --tiers` would put this case in the escalated bucket, not the auto one."""
+        from stepmold.eval import evaluate as score
 
         desk = fresh_desk()
         pack = gated_pack(desk)
@@ -443,23 +443,23 @@ class TestTheLimitsTheReadmeClaims(unittest.TestCase):
             "graph.yaml: node 'approve' has unknown key(s): agree, samples",
         )
 
-    def test_the_scripted_model_takes_no_sampling_hint_and_jig_says_so(self):
+    def test_the_scripted_model_takes_no_sampling_hint_and_stepmold_says_so(self):
         """`node.samples.blind` — the warning that stops a gate reporting confidence it
         never measured. It fires here because `FakeModel.generate` has no `sampling`
         keyword, so on a real greedy backend the extra draws would be the first draw
         repeated. This pack's draws differ only because the script says they do."""
-        from jig.codegen import accepts_sampling
+        from stepmold.codegen import accepts_sampling
 
         self.assertFalse(accepts_sampling(gate_model([AGREE])))
 
-        # A handler on jig's own logger rather than `jig.log.configure`, which is the
+        # A handler on stepmold's own logger rather than `stepmold.log.configure`, which is the
         # CLI's switch and has no off: this must not leave logging on for the rest of
         # the suite. `event` is gated on `isEnabledFor(WARNING)`, which is already true
         # by default, so nothing about the run has to change to see this line.
         records = []
         handler = logging.Handler()
         handler.emit = records.append
-        logger = logging.getLogger("jig.verify")
+        logger = logging.getLogger("stepmold.verify")
         logger.addHandler(handler)
         try:
             desk = fresh_desk()
@@ -468,14 +468,14 @@ class TestTheLimitsTheReadmeClaims(unittest.TestCase):
         finally:
             logger.removeHandler(handler)
         blind = [record for record in records
-                 if getattr(record, "jig_event", None) == "node.samples.blind"]
+                 if getattr(record, "stepmold_event", None) == "node.samples.blind"]
         self.assertEqual(len(blind), 1)
-        self.assertEqual(blind[0].jig_fields["node"], "approve")
-        self.assertEqual(blind[0].jig_fields["samples"], 3)
-        self.assertEqual(blind[0].jig_fields["model"], "FakeModel")
+        self.assertEqual(blind[0].stepmold_fields["node"], "approve")
+        self.assertEqual(blind[0].stepmold_fields["samples"], 3)
+        self.assertEqual(blind[0].stepmold_fields["model"], "FakeModel")
 
     def test_the_fake_script_is_keyed_on_the_order_not_on_case_order(self):
-        """Which is what makes `jig run` of any one case answer that case."""
+        """Which is what makes `stepmold run` of any one case answer that case."""
         with open(os.path.join(PACK, "fakes", "script.json")) as handle:
             script = json.load(handle)
         self.assertEqual(len(script), 30)
@@ -510,7 +510,7 @@ class TestTheReadmeSaysWhatTheDirectoryHolds(unittest.TestCase):
 
     def test_it_quotes_the_refusal_the_gate_keys_actually_get(self):
         self.assertIn(
-            "jig: pack error: graph.yaml: node 'approve' has unknown key(s): "
+            "stepmold: pack error: graph.yaml: node 'approve' has unknown key(s): "
             "agree, samples",
             self.readme,
         )

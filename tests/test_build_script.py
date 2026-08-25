@@ -1,4 +1,4 @@
-"""Stage 4 of `jig build` — the scripted offline model, derived from the gold answers.
+"""Stage 4 of `stepmold build` — the scripted offline model, derived from the gold answers.
 
 The interesting cases are all about *reach*: a branching graph calls a node once per case
 that gets there, not once per case, and a two-stage node is called twice on one prompt.
@@ -11,8 +11,8 @@ import shutil
 import tempfile
 import unittest
 
-from jig.build.analyze import analyze
-from jig.build.script import (
+from stepmold.build.analyze import analyze
+from stepmold.build.script import (
     THINK_ANSWER,
     THINK_KEY,
     check_script,
@@ -21,10 +21,10 @@ from jig.build.script import (
     route,
     script_for,
 )
-from jig.build.spec import BuildError, FieldSpec, GraphPlan, NodePlan, TaskSpec
-from jig.eval import evaluate
-from jig.model import FakeModel
-from jig.pack import load_pack
+from stepmold.build.spec import BuildError, FieldSpec, GraphPlan, NodePlan, TaskSpec
+from stepmold.eval import evaluate
+from stepmold.model import FakeModel
+from stepmold.pack import load_pack
 
 EXAMPLES = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples"
@@ -105,7 +105,7 @@ class TestAnswers(unittest.TestCase):
         self.assertEqual(len(script["the classify step"]), 1)
 
     def test_queue_order_is_evalset_order(self):
-        # `jig eval` builds one FakeModel for the whole run, so the queue is consumed
+        # `stepmold eval` builds one FakeModel for the whole run, so the queue is consumed
         # across cases in file order.
         script = script_for(self.task, self.plan)
         self.assertEqual([a["kind"] for a in answers(script, "classify")], ["bug", "ask"])
@@ -363,7 +363,7 @@ class TestTwoStage(unittest.TestCase):
     def test_the_think_key_beats_the_node_key_on_the_think_prompt(self):
         # This is the whole trick: without a think.txt the think prompt is the emit
         # prompt plus a suffix, so both keys match it and the longer one has to win.
-        from jig.codegen import DEFAULT_THINK_SUFFIX
+        from stepmold.codegen import DEFAULT_THINK_SUFFIX
 
         model = FakeModel(script_for(self.task, self.plan))
         emit_prompt = "You are the weigh step. Text: x"
@@ -835,7 +835,7 @@ class TestAgainstSupportTriage(unittest.TestCase):
     """
 
     def setUp(self):
-        self.root = tempfile.mkdtemp(prefix="jig-script-")
+        self.root = tempfile.mkdtemp(prefix="stepmold-script-")
         self.pack_dir = os.path.join(self.root, "support_triage")
         shutil.copytree(EXAMPLE, self.pack_dir)
         os.remove(os.path.join(self.pack_dir, "prompts", "priority.think.txt"))
@@ -886,7 +886,7 @@ class TestAgainstSupportTriageWithItsThinkPrompt(unittest.TestCase):
     """
 
     def setUp(self):
-        self.root = tempfile.mkdtemp(prefix="jig-script-think-")
+        self.root = tempfile.mkdtemp(prefix="stepmold-script-think-")
         self.pack_dir = os.path.join(self.root, "support_triage")
         shutil.copytree(EXAMPLE, self.pack_dir)
         self.addCleanup(shutil.rmtree, self.root)
@@ -1110,7 +1110,7 @@ class ShippedPackCase(unittest.TestCase):
 
     def score(self, script):
         pack_dir, _, _, _, _ = self.compile()
-        root = tempfile.mkdtemp(prefix="jig-pack-")
+        root = tempfile.mkdtemp(prefix="stepmold-pack-")
         self.addCleanup(shutil.rmtree, root)
         dest = os.path.join(root, self.pack)
         shutil.copytree(pack_dir, dest)
@@ -1227,7 +1227,7 @@ class TestContentModerationPack(ShippedPackCase):
     `signal` is the field the pack's first branch reads, and no gold case pins it. Every
     case therefore walks the same branch of the plan, so the queues are built for a
     routing the pack does not have — and `check_script` says exactly that rather than
-    pretending otherwise. Nothing here is fixable from `jig/build/script.py`: the evalset
+    pretending otherwise. Nothing here is fixable from `stepmold/build/script.py`: the evalset
     would have to state the field its own graph branches on.
     """
 

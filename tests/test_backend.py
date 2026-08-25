@@ -14,10 +14,10 @@ import unittest
 import urllib.error
 import urllib.request
 
-from jig.errors import BackendError
-from jig.grammar import schema_to_grammar
-from jig.model import Model
-from jig.backends.openai_compat import (
+from stepmold.errors import BackendError
+from stepmold.grammar import schema_to_grammar
+from stepmold.model import Model
+from stepmold.backends.openai_compat import (
     DEFAULT_OPENER,
     GRAMMAR_MODES,
     RETRY_AFTER_CEILING,
@@ -32,7 +32,7 @@ SCHEMA = {
 }
 
 # The same schema, closed the way OpenAI-family strict structured output demands: every
-# object `additionalProperties: false`, every declared property in `required`. jig's own
+# object `additionalProperties: false`, every declared property in `required`. stepmold's own
 # grammar subset accepts both shapes, which is why `strict` cannot be a constant.
 CLOSED_SCHEMA = dict(SCHEMA, additionalProperties=False)
 
@@ -362,10 +362,10 @@ class TestFailures(unittest.TestCase):
         with self.assertRaises(BackendError):
             model(http).generate("hi")
 
-    def test_a_backend_error_is_a_jig_error_so_the_cli_reports_it(self):
-        from jig.errors import JigError
+    def test_a_backend_error_is_a_stepmold_error_so_the_cli_reports_it(self):
+        from stepmold.errors import StepmoldError
 
-        self.assertTrue(issubclass(BackendError, JigError))
+        self.assertTrue(issubclass(BackendError, StepmoldError))
 
 
 class TestSocketLevelFailuresAreWrapped(unittest.TestCase):
@@ -373,7 +373,7 @@ class TestSocketLevelFailuresAreWrapped(unittest.TestCase):
 
     Everything from `getresponse()` and `response.read()` — a peer that hangs up, a body
     shorter than its `Content-Length`, a read that outlives the timeout — used to escape
-    `_post` untouched: not a `JigError`, so `cli.main` could not report it, and not
+    `_post` untouched: not a `StepmoldError`, so `cli.main` could not report it, and not
     retried, although these are the most transient failures a backend can have.
     `tests/production/test_resilience.py` provokes them over a real socket; here they are
     injected directly, which is the only way to pin the retry count deterministically.
@@ -422,7 +422,7 @@ class TestSocketLevelFailuresAreWrapped(unittest.TestCase):
 class TestRetryAfterIsHonoured(unittest.TestCase):
     """A `Retry-After` is an instruction, not a suggestion.
 
-    Sleeping jig's own 0.5s when the provider said 1s sends the retry out *sooner* than
+    Sleeping stepmold's own 0.5s when the provider said 1s sends the retry out *sooner* than
     it was asked for, and a provider that says `Retry-After: 60` still gets three
     requests inside 1.5 seconds — which is how an account gets banned rather than rate
     limited. The wait is now `max(own backoff, Retry-After)`, capped.
@@ -515,7 +515,7 @@ class TestApiKeyFromEnvironment(unittest.TestCase):
         import os
 
         self.saved = {name: os.environ.pop(name, None)
-                      for name in ("JIG_API_KEY", "OPENAI_API_KEY")}
+                      for name in ("STEPMOLD_API_KEY", "OPENAI_API_KEY")}
 
     def tearDown(self):
         import os
@@ -526,10 +526,10 @@ class TestApiKeyFromEnvironment(unittest.TestCase):
             else:
                 os.environ[name] = value
 
-    def test_jig_api_key_is_picked_up(self):
+    def test_stepmold_api_key_is_picked_up(self):
         import os
 
-        os.environ["JIG_API_KEY"] = "from-env"
+        os.environ["STEPMOLD_API_KEY"] = "from-env"
         self.assertEqual(model().api_key, "from-env")
 
     def test_openai_api_key_is_the_fallback(self):
@@ -541,7 +541,7 @@ class TestApiKeyFromEnvironment(unittest.TestCase):
     def test_an_explicit_key_wins(self):
         import os
 
-        os.environ["JIG_API_KEY"] = "from-env"
+        os.environ["STEPMOLD_API_KEY"] = "from-env"
         self.assertEqual(model(api_key="explicit").api_key, "explicit")
 
     def test_no_key_anywhere_is_fine(self):
@@ -645,7 +645,7 @@ class TheRequestCarriesAnExplicitUserAgent(unittest.TestCase):
     """
 
     def test_a_user_agent_header_is_always_sent(self):
-        from jig.backends.openai_compat import OpenAICompatModel
+        from stepmold.backends.openai_compat import OpenAICompatModel
 
         seen = {}
 
@@ -662,7 +662,7 @@ class TheRequestCarriesAnExplicitUserAgent(unittest.TestCase):
         self.assertIn("user-agent", keys)
 
     def test_the_user_agent_is_not_the_urllib_default(self):
-        from jig.backends.openai_compat import OpenAICompatModel
+        from stepmold.backends.openai_compat import OpenAICompatModel
 
         model = OpenAICompatModel(base_url="http://x", model="m")
         self.assertNotIn("python-urllib", model.user_agent.lower())

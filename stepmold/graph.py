@@ -1,4 +1,4 @@
-"""The graph walker — jig's runtime.
+"""The graph walker — stepmold's runtime.
 
 This is the whole "the small model never plans" idea in one loop (docs/ARCHITECTURE.md §3): the
 walker decides what happens next, the model only ever fills one node's slot. Nothing here
@@ -9,9 +9,9 @@ asks a model where to go; edges are data.
     loop:  execute node -> commit its output to state -> pick the next edge
 
 Four node types. `generate` renders a prompt from state, generates under the node's
-grammar, and commits the result — but only once `jig.verify` has accepted it, so a
+grammar, and commits the result — but only once `stepmold.verify` has accepted it, so a
 rejected output never lands here. `tool` calls one of the actions the host registered
-(`jig.tools`) and commits what it returns by exactly the same rules — no prompt, no
+(`stepmold.tools`) and commits what it returns by exactly the same rules — no prompt, no
 grammar and no retry ladder, because a tool is deterministic: same state in, same call
 out, and a re-sample of a function is just the same call again. `assert` evaluates a
 deterministic expression and either continues or diverts to `on_fail`. `end` stops and
@@ -36,14 +36,14 @@ A node's failure edge is a promise in the pack; the walker keeps it whatever the
 failed on.
 
 One failure is routed apart from the rest, because it is not the same claim. `Unsure` —
-`jig.verify`'s outcome for a node whose independent samples disagreed — means the model
+`stepmold.verify`'s outcome for a node whose independent samples disagreed — means the model
 answered without the engine being able to believe it, which is a different thing from
 the model not answering at all. A node may declare `on_unsure:` to send it somewhere a
 person is waiting; if it does not, it falls back to `on_fail`, and with neither the run
 aborts. Confidence is routed before it is acted on, which is why this landed before tool
 nodes did rather than after.
 
-The walk is also where a run's story gets written down (`jig.log`): `run.start`,
+The walk is also where a run's story gets written down (`stepmold.log`): `run.start`,
 `node.ok` per node with the generations it spent and the milliseconds it took,
 `edge.on_fail` when a node is diverted, `run.end` with the whole run's totals, and
 `run.error` when it stops short. Names and counts only — the caller's data is reported as
@@ -77,11 +77,11 @@ from .verify import run_node
 
 try:
     from .verify import Unsure
-except ImportError:  # pragma: no cover - until jig.verify grows the signal
+except ImportError:  # pragma: no cover - until stepmold.verify grows the signal
     class Unsure(NodeFailed):
         """Independent samples of one node disagreed, so no answer is trustworthy.
 
-        `jig.verify` owns this outcome; the walker owns where it goes. Until the two land
+        `stepmold.verify` owns this outcome; the walker owns where it goes. Until the two land
         together this stands in for it, so `on_unsure` routing is real and tested rather
         than written against a name and hoped for. It subclasses `NodeFailed` because a
         node nobody can believe did not produce a verified output either — a walker that
@@ -109,9 +109,9 @@ class StateCollision(RunError):
     * **Node over a run input** is refused, because nothing records it. The caller's
       value is simply gone, and from then on the prompts and edge conditions that meant
       to read the caller's input read model output instead. Refusing is the same call
-      `jig.verify` makes about a bad generation: nothing lands until it is safe.
+      `stepmold.verify` makes about a bad generation: nothing lands until it is safe.
 
-    This one lives with the walker rather than in `jig.errors` because it is a rule about
+    This one lives with the walker rather than in `stepmold.errors` because it is a rule about
     committing, which is the walker's own job; it still subclasses `RunError`, so every
     caller that already handles run errors handles it.
     """
@@ -120,7 +120,7 @@ class StateCollision(RunError):
 class ToolsNotAvailable(ToolError):
     """A pack reached a `tool` node and this run was handed no registry.
 
-    Lives here rather than in `jig.tools` because it is a fact about the *call* — the
+    Lives here rather than in `stepmold.tools` because it is a fact about the *call* — the
     host started a run without the thing the pack needs — and not about any tool. It is
     raised the moment the node is entered rather than swallowed into `on_fail`: a pack
     that cannot act at all is a wiring mistake in the caller, not a runtime condition the
@@ -183,12 +183,12 @@ def run(pack, model, inputs=None, run_id=None, max_steps=None, store=None,
         resume_from=None, tools=None):
     """Walk `pack` from its entry node until an `end` node, and return a `RunResult`.
 
-    `store` is anything with a `save(...)` method (see `jig.state.Store`); when given, a
+    `store` is anything with a `save(...)` method (see `stepmold.state.Store`); when given, a
     checkpoint is written after every node that completes. `resume_from` is a checkpoint
     to continue from instead of starting at the entry node — that is how `state.resume`
     picks a dead run back up without re-executing what already succeeded.
 
-    `tools` is a `jig.tools.ToolRegistry`: the set of actions this host is willing to let
+    `tools` is a `stepmold.tools.ToolRegistry`: the set of actions this host is willing to let
     this pack take, and the only thing a `tool` node can reach. It is per-run and has no
     default — a pack that can act does so because the caller said so on this call, not
     because a module-level registry happened to exist. A pack with no tool nodes never
@@ -360,7 +360,7 @@ def run(pack, model, inputs=None, run_id=None, max_steps=None, store=None,
                     # Nested rather than a second top-level check, and that is sound
                     # rather than clever: levels are thresholds, so DEBUG being enabled
                     # implies INFO is. The common case — logging off — asks once per
-                    # node instead of twice, and this is the innermost loop jig has.
+                    # node instead of twice, and this is the innermost loop stepmold has.
                     if _log.isEnabledFor(DEBUG):
                         # A fingerprint, not the state: two runs that diverge did so at
                         # the first node whose digest differs, and nobody reading the log
@@ -508,7 +508,7 @@ def run(pack, model, inputs=None, run_id=None, max_steps=None, store=None,
                     passed = is_true(node.expr, state)
                 except ExprError:
                     # An expression that cannot be evaluated is not a true one, and it is
-                    # what `on_fail` is for. `jig.verify` already downgrades the identical
+                    # what `on_fail` is for. `stepmold.verify` already downgrades the identical
                     # call this way for a node's `assert:` (see `verify._check_assert`),
                     # so both call sites route an unevaluable expression to the same
                     # place. With nowhere to divert, the ExprError itself escapes rather
@@ -623,7 +623,7 @@ def _safe_reason(exc):
     a key name out of the pack or the tool's own declaration, never a value.
 
     Everything else here — a dangling edge, a step budget, an unevaluable expression —
-    is jig's own words about the pack's own text, and goes out whole.
+    is stepmold's own words about the pack's own text, and goes out whole.
     """
     if isinstance(exc, NodeFailed):
         return exc.feedback or "rejected (detail at DEBUG)"
@@ -640,7 +640,7 @@ def _failure(node, exc):
     `getattr` rather than more isinstance branches: a failure that carries its own node
     and cost says so — `NodeFailed` and anything built on it — and one that does not is
     attributed to the node the walker was standing on, having spent nothing. That covers
-    an unrenderable prompt, a tool that raised, and any outcome `jig.verify` grows later
+    an unrenderable prompt, a tool that raised, and any outcome `stepmold.verify` grows later
     without this function needing to hear about it.
     """
     if isinstance(exc, NodeFailed):

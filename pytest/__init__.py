@@ -1,6 +1,6 @@
 """Minimal stdlib stand-in for pytest, so `python3 -m pytest -q` works anywhere.
 
-jig has a hard zero-dependency rule (stdlib only), but the project's test oracle is
+stepmold has a hard zero-dependency rule (stdlib only), but the project's test oracle is
 `python3 -m pytest -q`. The whole suite is written as plain `unittest`, so it runs
 identically under the real pytest. This package only exists so the oracle command
 works on a machine with no pytest installed.

@@ -2,8 +2,8 @@
 
 import unittest
 
-from jig.errors import ExprError
-from jig.expr import evaluate, is_true
+from stepmold.errors import ExprError
+from stepmold.expr import evaluate, is_true
 
 STATE = {
     "category": "billing",

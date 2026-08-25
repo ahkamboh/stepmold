@@ -13,10 +13,10 @@ FIXTURES = os.path.join(ROOT, "tests", "fixtures")
 PACK = os.path.join(FIXTURES, "cli_pack")
 
 
-def jig(*args):
-    """Invoke `python3 -m jig ...` and return (exit code, stdout, stderr)."""
+def stepmold(*args):
+    """Invoke `python3 -m stepmold ...` and return (exit code, stdout, stderr)."""
     completed = subprocess.run(
-        [sys.executable, "-m", "jig"] + list(args),
+        [sys.executable, "-m", "stepmold"] + list(args),
         cwd=ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -27,37 +27,37 @@ def jig(*args):
 
 class TestValidate(unittest.TestCase):
     def test_a_good_pack_validates(self):
-        code, out, _ = jig("validate", PACK)
+        code, out, _ = stepmold("validate", PACK)
         self.assertEqual(code, 0)
         self.assertIn("cli_demo", out)
         self.assertIn("2 nodes", out)
         self.assertIn("2 evalset", out)
 
     def test_a_broken_pack_reports_the_reason_and_exits_one(self):
-        code, out, err = jig("validate", os.path.join(FIXTURES, "bad_dangling_edge"))
+        code, out, err = stepmold("validate", os.path.join(FIXTURES, "bad_dangling_edge"))
         self.assertEqual(code, 1)
         self.assertIn("nowhere", err)
         self.assertEqual(out.strip(), "")
 
     def test_a_missing_pack_directory_exits_one(self):
-        code, _, err = jig("validate", os.path.join(FIXTURES, "not_a_pack"))
+        code, _, err = stepmold("validate", os.path.join(FIXTURES, "not_a_pack"))
         self.assertEqual(code, 1)
         self.assertIn("not_a_pack", err)
 
 
 class TestRun(unittest.TestCase):
     def test_running_prints_the_output_as_json(self):
-        code, out, err = jig("run", PACK, "--input", '{"ticket": "I was charged twice"}')
+        code, out, err = stepmold("run", PACK, "--input", '{"ticket": "I was charged twice"}')
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out), {"category": "billing"})
 
     def test_the_model_comes_from_the_manifest_when_not_given(self):
-        code, out, _ = jig("run", PACK, "--input", '{"ticket": "the app crashes"}')
+        code, out, _ = stepmold("run", PACK, "--input", '{"ticket": "the app crashes"}')
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out), {"category": "technical"})
 
     def test_an_explicit_model_overrides_the_manifest(self):
-        code, out, _ = jig(
+        code, out, _ = stepmold(
             "run", PACK,
             "--input", '{"ticket": "the app crashes"}',
             "--model", "fake:fakes/wrong.json",
@@ -66,27 +66,27 @@ class TestRun(unittest.TestCase):
         self.assertEqual(json.loads(out), {"category": "billing"})
 
     def test_malformed_input_json_is_a_usage_error(self):
-        code, _, err = jig("run", PACK, "--input", "{not json")
+        code, _, err = stepmold("run", PACK, "--input", "{not json")
         self.assertEqual(code, 1)
         self.assertIn("--input", err)
 
     def test_a_prompt_variable_the_input_lacks_fails_clearly(self):
-        code, _, err = jig("run", PACK, "--input", "{}")
+        code, _, err = stepmold("run", PACK, "--input", "{}")
         self.assertEqual(code, 1)
         self.assertIn("ticket", err)
 
     def test_input_defaults_to_empty_when_omitted(self):
-        code, _, err = jig("run", PACK)
+        code, _, err = stepmold("run", PACK)
         self.assertEqual(code, 1)
         self.assertIn("ticket", err)
 
     def test_an_unknown_model_scheme_is_reported(self):
-        code, _, err = jig("run", PACK, "--input", "{}", "--model", "wat:nonsense")
+        code, _, err = stepmold("run", PACK, "--input", "{}", "--model", "wat:nonsense")
         self.assertEqual(code, 1)
         self.assertIn("wat", err)
 
     def test_state_flag_prints_the_whole_state_not_just_the_projection(self):
-        code, out, _ = jig(
+        code, out, _ = stepmold(
             "run", PACK, "--input", '{"ticket": "I was charged twice"}', "--state"
         )
         self.assertEqual(code, 0)
@@ -104,7 +104,7 @@ class TestRunWithCheckpoints(unittest.TestCase):
         shutil.rmtree(self.directory, ignore_errors=True)
 
     def test_a_store_records_the_run(self):
-        code, _, err = jig(
+        code, _, err = stepmold(
             "run", PACK,
             "--input", '{"ticket": "I was charged twice"}',
             "--run-id", "cli-1",
@@ -114,45 +114,45 @@ class TestRunWithCheckpoints(unittest.TestCase):
         self.assertTrue(os.path.isfile(self.database))
 
         sys.path.insert(0, ROOT)
-        from jig.state import Store
+        from stepmold.state import Store
 
         store = Store(self.database)
         self.assertEqual([c.node for c in store.history("cli-1")], ["classify", "done"])
         store.close()
 
     def test_resume_of_a_finished_run_reprints_its_output(self):
-        jig("run", PACK, "--input", '{"ticket": "I was charged twice"}',
+        stepmold("run", PACK, "--input", '{"ticket": "I was charged twice"}',
             "--run-id", "cli-2", "--store", self.database)
-        code, out, err = jig("run", PACK, "--resume", "cli-2", "--store", self.database)
+        code, out, err = stepmold("run", PACK, "--resume", "cli-2", "--store", self.database)
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out), {"category": "billing"})
 
     def test_resume_needs_a_store(self):
-        code, _, err = jig("run", PACK, "--resume", "cli-2")
+        code, _, err = stepmold("run", PACK, "--resume", "cli-2")
         self.assertEqual(code, 1)
         self.assertIn("--store", err)
 
     def test_resuming_an_unknown_run_exits_one(self):
-        code, _, err = jig("run", PACK, "--resume", "ghost", "--store", self.database)
+        code, _, err = stepmold("run", PACK, "--resume", "ghost", "--store", self.database)
         self.assertEqual(code, 1)
         self.assertIn("ghost", err)
 
 
 class TestEval(unittest.TestCase):
     def test_a_passing_pack_scores_and_exits_zero(self):
-        code, out, err = jig("eval", PACK)
+        code, out, err = stepmold("eval", PACK)
         self.assertEqual(code, 0, err)
         self.assertIn("2/2", out)
 
     def test_a_failing_pack_exits_one_and_names_the_case_and_node(self):
-        code, out, _ = jig("eval", PACK, "--model", "fake:fakes/wrong.json")
+        code, out, _ = stepmold("eval", PACK, "--model", "fake:fakes/wrong.json")
         self.assertEqual(code, 1)
         self.assertIn("1/2", out)
         self.assertIn("technical case", out)
         self.assertIn("classify", out)
 
     def test_json_output_is_machine_readable(self):
-        code, out, _ = jig("eval", PACK, "--json")
+        code, out, _ = stepmold("eval", PACK, "--json")
         self.assertEqual(code, 0)
         report = json.loads(out)
         self.assertEqual(report["passed"], 2)
@@ -160,13 +160,13 @@ class TestEval(unittest.TestCase):
         self.assertEqual(report["cases"][0]["name"], "billing case")
 
     def test_json_output_on_failure_carries_the_attribution(self):
-        code, out, _ = jig("eval", PACK, "--model", "fake:fakes/wrong.json", "--json")
+        code, out, _ = stepmold("eval", PACK, "--model", "fake:fakes/wrong.json", "--json")
         self.assertEqual(code, 1)
         report = json.loads(out)
         self.assertEqual(report["by_node"], {"classify": 1})
 
     def test_a_pack_without_an_evalset_exits_one(self):
-        code, _, err = jig("eval", os.path.join(FIXTURES, "valid_pack"), "--model", "fake:x")
+        code, _, err = stepmold("eval", os.path.join(FIXTURES, "valid_pack"), "--model", "fake:x")
         self.assertEqual(code, 1)
 
 
@@ -175,8 +175,8 @@ class TestModelSpecs(unittest.TestCase):
 
     def setUp(self):
         sys.path.insert(0, ROOT)
-        from jig.cli import resolve_model
-        from jig.pack import load_pack
+        from stepmold.cli import resolve_model
+        from stepmold.pack import load_pack
 
         self.resolve = resolve_model
         self.pack = load_pack(PACK)
@@ -205,7 +205,7 @@ class TestModelSpecs(unittest.TestCase):
         self.assertIn("model name", str(caught.exception))
 
     def test_a_pack_with_no_model_at_all_is_rejected(self):
-        from jig.pack import load_pack
+        from stepmold.pack import load_pack
 
         pack = load_pack(os.path.join(FIXTURES, "valid_pack"))
         object.__setattr__(pack, "model", None)
@@ -216,18 +216,18 @@ class TestModelSpecs(unittest.TestCase):
 
 class TestUsage(unittest.TestCase):
     def test_no_arguments_prints_usage(self):
-        code, _, err = jig()
+        code, _, err = stepmold()
         self.assertEqual(code, 2)
         self.assertIn("usage", err.lower())
 
     def test_help_lists_every_command(self):
-        code, out, _ = jig("--help")
+        code, out, _ = stepmold("--help")
         self.assertEqual(code, 0)
         for command in ("run", "eval", "validate"):
             self.assertIn(command, out)
 
     def test_version_is_reported(self):
-        code, out, _ = jig("--version")
+        code, out, _ = stepmold("--version")
         self.assertEqual(code, 0)
         self.assertIn(".", out)
 
@@ -260,7 +260,7 @@ class TestOutputShapeIsSurfaced(unittest.TestCase):
 
     def test_validate_reports_an_end_node_whose_output_is_a_string(self):
         self.rewrite_graph("output: [category]", "output: category")
-        code, out, err = jig("validate", self.pack)
+        code, out, err = stepmold("validate", self.pack)
         self.assertEqual(code, 1)
         self.assertIn("done", err)
         self.assertIn("output", err)
@@ -268,27 +268,27 @@ class TestOutputShapeIsSurfaced(unittest.TestCase):
 
     def test_validate_reports_a_generate_node_whose_output_is_a_list(self):
         self.rewrite_graph("    type: generate", "    type: generate\n    output: [category]")
-        code, _, err = jig("validate", self.pack)
+        code, _, err = stepmold("validate", self.pack)
         self.assertEqual(code, 1)
         self.assertIn("classify", err)
 
     def test_run_refuses_the_pack_instead_of_printing_an_empty_object(self):
         self.rewrite_graph("output: [category]", "output: category")
-        code, out, err = jig("run", self.pack, "--input", '{"ticket": "I was charged twice"}')
+        code, out, err = stepmold("run", self.pack, "--input", '{"ticket": "I was charged twice"}')
         self.assertEqual(code, 1)
         self.assertEqual(out.strip(), "")
         self.assertIn("output", err)
 
     def test_eval_refuses_the_pack_too(self):
         self.rewrite_graph("output: [category]", "output: category")
-        code, out, err = jig("eval", self.pack)
+        code, out, err = stepmold("eval", self.pack)
         self.assertEqual(code, 1)
         self.assertIn("output", err)
 
     def test_a_projection_that_selects_nothing_is_not_reported_as_a_result(self):
         """A well-shaped list of keys that simply do not exist is the same silence."""
         self.rewrite_graph("output: [category]", "output: [catgeory]")
-        code, out, err = jig("run", self.pack, "--input", '{"ticket": "I was charged twice"}')
+        code, out, err = stepmold("run", self.pack, "--input", '{"ticket": "I was charged twice"}')
         self.assertEqual(code, 1)
         self.assertEqual(out.strip(), "")
         self.assertIn("--state", err)
@@ -296,13 +296,13 @@ class TestOutputShapeIsSurfaced(unittest.TestCase):
 
     def test_state_still_shows_what_the_run_actually_produced(self):
         self.rewrite_graph("output: [category]", "output: [catgeory]")
-        code, out, err = jig(
+        code, out, err = stepmold(
             "run", self.pack, "--input", '{"ticket": "I was charged twice"}', "--state"
         )
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)["category"], "billing")
 
     def test_an_untouched_pack_is_unaffected(self):
-        code, out, err = jig("validate", self.pack)
+        code, out, err = stepmold("validate", self.pack)
         self.assertEqual(code, 0, err)
         self.assertIn("cli_demo", out)

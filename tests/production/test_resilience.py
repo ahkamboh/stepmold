@@ -1,9 +1,9 @@
-"""Production resilience: jig driven end to end through every fault the proxy injects.
+"""Production resilience: stepmold driven end to end through every fault the proxy injects.
 
 Everything else in `tests/` hands the runtime a `FakeModel` or a fake opener. This file
 does not: it starts `tests/production/faultproxy.py` on a loopback socket, points a real
 `OpenAICompatModel` at it, and walks a real graph through real HTTP. That is the only way
-to reach the code paths that live *between* urllib and jig — a socket that dies mid-body,
+to reach the code paths that live *between* urllib and stepmold — a socket that dies mid-body,
 a `Content-Length` that lies, a read that times out — because none of them can be
 provoked by a fake opener that politely returns bytes.
 
@@ -19,7 +19,7 @@ What the faults are for, and what each one *should* prove:
     truncated, reset, slow          the socket itself failing. The backend's ladder owns
                                     these too, now that it can see them.
 
-This file used to carry five `@unittest.expectedFailure` tests, each asserting what jig
+This file used to carry five `@unittest.expectedFailure` tests, each asserting what stepmold
 *should* do next to a FINDING that said what it did instead. All five are fixed and the
 markers are gone, so every assertion below is load-bearing: the socket-level faults are
 wrapped and retried, `Retry-After` is honoured, and a model's repr no longer prints the
@@ -37,19 +37,19 @@ import traceback
 import unittest
 import urllib.error
 
-from jig.backends.openai_compat import DEFAULT_OPENER, OpenAICompatModel
-from jig.cli import main as cli_main
-from jig.errors import BackendError, NodeFailed
-from jig.graph import run
-from jig.model import FakeModel, Model
-from jig.pack import Edge, Node, Pack
-from jig.state import Store, resume
+from stepmold.backends.openai_compat import DEFAULT_OPENER, OpenAICompatModel
+from stepmold.cli import main as cli_main
+from stepmold.errors import BackendError, NodeFailed
+from stepmold.graph import run
+from stepmold.model import FakeModel, Model
+from stepmold.pack import Edge, Node, Pack
+from stepmold.state import Store, resume
 from tests.production.faultproxy import FAULTS, FaultProxy
 
 
 # A key shaped like a real one, so a grep for it in an error message is unambiguous. It
 # is not a credential for anything: the proxy never checks Authorization.
-FAKE_KEY = "sk-jig-FAKEKEY-DO-NOT-LEAK-1234567890"
+FAKE_KEY = "sk-stepmold-FAKEKEY-DO-NOT-LEAK-1234567890"
 
 SCHEMA = {
     "type": "object",
@@ -228,15 +228,15 @@ def _pack(nodes, edges):
 
 # ------------------------------------------------------- the fault table (completeness)
 
-# What jig actually does with each fault today, as measured: (verdict, HTTP calls made).
+# What stepmold actually does with each fault today, as measured: (verdict, HTTP calls made).
 # This table is the map of the rest of the file. Every fault the proxy knows how to
 # inject has a row, so nobody can add a fourteenth without deciding what the runtime is
 # supposed to do with it.
 #
 #   "answers"  the call returns text; whatever is wrong is now the verifier's problem
-#   "backend"  BackendError — jig's own type, with a message an operator can act on
+#   "backend"  BackendError — stepmold's own type, with a message an operator can act on
 #
-# There used to be a third verdict, "raw": a standard-library exception escaping jig
+# There used to be a third verdict, "raw": a standard-library exception escaping stepmold
 # entirely, which is what truncated/reset/slow did. Nothing produces it any more, and the
 # sweep below would report it if anything started to.
 BEHAVIOUR = {
@@ -300,7 +300,7 @@ class TestOkOverRealSockets(unittest.TestCase):
         self.assertEqual(call["model"], "m")
         self.assertEqual(call["prompt"], "Classify: t")
 
-    def test_the_user_agent_is_jigs_own(self):
+    def test_the_user_agent_is_stepmolds_own(self):
         """Cerebras 403s "Python-urllib/*" before the request reaches a model.
 
         openai_compat.py sets an explicit User-Agent for exactly that reason. Asserting
@@ -310,7 +310,7 @@ class TestOkOverRealSockets(unittest.TestCase):
         started = use("ok")
         generate()
         agent = started.calls[0]["user_agent"]
-        self.assertTrue(agent.startswith("jig/"), agent)
+        self.assertTrue(agent.startswith("stepmold/"), agent)
         self.assertNotIn("urllib", agent)
 
     def test_reasoning_reserve_is_added_to_the_nodes_budget_on_the_wire(self):
@@ -379,9 +379,9 @@ class TestRetryableStatuses(unittest.TestCase):
 
 
 class TestRateLimitBackoff(unittest.TestCase):
-    """`Retry-After` is a provider instruction, and jig now waits at least that long.
+    """`Retry-After` is a provider instruction, and stepmold now waits at least that long.
 
-    The proxy answers 429 with `Retry-After: 1`. jig used to sleep its own fixed 0.5s
+    The proxy answers 429 with `Retry-After: 1`. stepmold used to sleep its own fixed 0.5s
     before the first retry — *sooner* than the provider asked — and 1.0s before the
     second, which is a provider that says `Retry-After: 60` getting three requests inside
     1.5 seconds. The backoff is now `max(own backoff, Retry-After)`, capped by
@@ -439,7 +439,7 @@ class TestBodiesThatAreNotJson(unittest.TestCase):
         self.assertEqual(len(started.calls), 1)
 
     def test_the_message_names_the_endpoint_the_content_type_and_the_body(self):
-        """This used to be the thinnest message jig produced.
+        """This used to be the thinnest message stepmold produced.
 
         "Expecting value: line 1 column 1 (char 0)" names neither the endpoint nor a byte
         of what arrived, so an operator could not tell a proxy's 502 page from a model
@@ -488,11 +488,11 @@ class TestCompletionsWithNoContent(unittest.TestCase):
         This test used to assert the opposite, under the heading "FINDING (documented, not
         endorsed)": one call, no rung spent, and `BackendError` escaping past the failure
         edge the node declared. The finding was real. `verify.EmptyCompletion` documented
-        the intended behaviour and said `jig.backends.openai_compat` marked its errors with
+        the intended behaviour and said `stepmold.backends.openai_compat` marked its errors with
         `empty_content` — and it did not, so the only shipped backend aborted on the first
         content-less answer while every document promised a retry.
 
-        `reasoning` is the fault jig hit on its first contact with a real endpoint, and it
+        `reasoning` is the fault stepmold hit on its first contact with a real endpoint, and it
         would have killed a long checkpointed workflow that had declared a rescue path.
         The backend now marks both shapes, so the ladder spends its rungs and `on_fail` is
         taken like any other exhausted ladder.
@@ -615,7 +615,7 @@ class TestForgivingExtraction(unittest.TestCase):
 
 
 class TestSocketLevelFaults(unittest.TestCase):
-    """Three faults that live below urllib's own error handling, now caught by jig.
+    """Three faults that live below urllib's own error handling, now caught by stepmold.
 
     `_post` converted `HTTPError` and `URLError`, and urllib wraps only what
     `http.client.HTTPConnection.request()` raises. Everything raised by `getresponse()`
@@ -625,10 +625,10 @@ class TestSocketLevelFaults(unittest.TestCase):
         truncated  http.client.IncompleteRead
         slow       builtins.TimeoutError  (socket.timeout, raised on read)
 
-    So the caller got an exception that was not a `JigError`, the retry ladder never
-    engaged for the most obviously transient failures jig can meet (1 HTTP call at
-    max_retries=2, while a strictly less transient 503 got 3), and `jig run` died with a
-    traceback because `cli.main` catches only PackError/JigError/ValidationError/
+    So the caller got an exception that was not a `StepmoldError`, the retry ladder never
+    engaged for the most obviously transient failures stepmold can meet (1 HTTP call at
+    max_retries=2, while a strictly less transient 503 got 3), and `stepmold run` died with a
+    traceback because `cli.main` catches only PackError/StepmoldError/ValidationError/
     ValueError. `_post` now catches `OSError` and `http.client.HTTPException` around both
     the opener call and the read, and puts them on the 503 ladder.
     """
@@ -669,15 +669,15 @@ class TestSocketLevelFaults(unittest.TestCase):
             generate(timeout=SLOW_TIMEOUT)
         self.assertIn("timeout", str(caught.exception))
 
-    def test_all_three_are_jig_errors(self):
-        """The contract every caller was given: what a run raises is a `JigError`."""
-        from jig.errors import JigError
+    def test_all_three_are_stepmold_errors(self):
+        """The contract every caller was given: what a run raises is a `StepmoldError`."""
+        from stepmold.errors import StepmoldError
 
         for fault in ("reset", "truncated", "slow"):
             with self.subTest(fault=fault):
                 _, exc, _ = provoke(fault, timeout=SLOW_TIMEOUT)
                 self.assertIsNotNone(exc)
-                self.assertIsInstance(exc, JigError)
+                self.assertIsInstance(exc, StepmoldError)
 
     def test_all_three_are_retried_like_any_other_transient_failure(self):
         """A connection closed with no response is the textbook retryable failure — and
@@ -698,8 +698,8 @@ class TestSocketLevelFaults(unittest.TestCase):
         self.assertEqual(len(started.calls), 2)
 
     def test_the_cli_reports_a_socket_death_as_a_diagnosed_failure(self):
-        """`cli.main` catches PackError/JigError/ValidationError/ValueError. These are
-        `BackendError` now, so they are `JigError`, so the CLI exits 1 with a `jig: `
+        """`cli.main` catches PackError/StepmoldError/ValidationError/ValueError. These are
+        `BackendError` now, so they are `StepmoldError`, so the CLI exits 1 with a `stepmold: `
         line instead of dumping a traceback out of the top of the process."""
         for fault in ("reset", "truncated"):
             with self.subTest(fault=fault):
@@ -712,7 +712,7 @@ class TestSocketLevelFaults(unittest.TestCase):
                         "--model", "openai:%s#m" % started.base_url,
                     ])
                 self.assertEqual(code, 1)
-                self.assertTrue(stderr.getvalue().startswith("jig: "), stderr.getvalue())
+                self.assertTrue(stderr.getvalue().startswith("stepmold: "), stderr.getvalue())
                 self.assertIn("BackendError", stderr.getvalue())
 
     def test_the_cli_does_report_a_backend_error_cleanly(self):
@@ -726,7 +726,7 @@ class TestSocketLevelFaults(unittest.TestCase):
                 "--model", "openai:%s#m" % started.base_url,
             ])
         self.assertEqual(code, 1)
-        self.assertTrue(stderr.getvalue().startswith("jig: "), stderr.getvalue())
+        self.assertTrue(stderr.getvalue().startswith("stepmold: "), stderr.getvalue())
         self.assertIn("BackendError", stderr.getvalue())
 
     def test_the_timeout_at_least_bounds_the_wait(self):
@@ -818,9 +818,9 @@ class TestTheApiKeyNeverLeaks(unittest.TestCase):
         self.assertEqual(leaks, [])
 
     def test_no_error_mentions_the_key_when_it_came_from_the_environment(self):
-        """A key jig read out of JIG_API_KEY is the same secret as one passed in."""
-        previous = os.environ.get("JIG_API_KEY")
-        os.environ["JIG_API_KEY"] = FAKE_KEY
+        """A key stepmold read out of STEPMOLD_API_KEY is the same secret as one passed in."""
+        previous = os.environ.get("STEPMOLD_API_KEY")
+        os.environ["STEPMOLD_API_KEY"] = FAKE_KEY
         try:
             use("500")
             with self.assertRaises(BackendError) as caught:
@@ -828,9 +828,9 @@ class TestTheApiKeyNeverLeaks(unittest.TestCase):
             self.assertNotIn(FAKE_KEY, str(caught.exception))
         finally:
             if previous is None:
-                del os.environ["JIG_API_KEY"]
+                del os.environ["STEPMOLD_API_KEY"]
             else:
-                os.environ["JIG_API_KEY"] = previous
+                os.environ["STEPMOLD_API_KEY"] = previous
 
     def test_the_key_is_never_put_in_the_request_body(self):
         """It belongs in a header. A body is what every proxy in between logs."""
@@ -874,7 +874,7 @@ class TestTheApiKeyNeverLeaks(unittest.TestCase):
 
     def test_the_repr_redacts_the_key(self):
         """`OpenAICompatModel` was a plain `@dataclass`, so its generated `__repr__`
-        printed every field, `api_key` included. Nothing in jig calls `repr` on a model,
+        printed every field, `api_key` included. Nothing in stepmold calls `repr` on a model,
         which is the only reason it never burned anyone — but a model is an ordinary
         object that ends up in `logging.debug("%r", model)`, in a failing assertion's
         diff, in a `pdb` frame dump, and in any crash reporter that walks locals."""
@@ -885,8 +885,8 @@ class TestTheApiKeyNeverLeaks(unittest.TestCase):
         """`_read_error` used to splice the upstream body in with no filtering at all.
 
         Gateways that echo the offending request back in a debug body — several do — put
-        the caller's `Authorization` header in that body, and jig then put it into an
-        exception that gets logged. jig was not the leaker there, it was the amplifier.
+        the caller's `Authorization` header in that body, and stepmold then put it into an
+        exception that gets logged. stepmold was not the leaker there, it was the amplifier.
         The rest of the body still has to survive: an error nobody can read is its own
         defect.
         """

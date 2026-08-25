@@ -1,6 +1,6 @@
 # Confidence — agreement, not self-report
 
-A node can be drawn more than once and accepted only when the draws match. That is jig's
+A node can be drawn more than once and accepted only when the draws match. That is stepmold's
 confidence gate: `samples:` is how many independent answers to draw, `agree:` is how many
 of them must be the same, and a node whose draws do not agree raises `Unsure` and is
 routed by `on_unsure` instead of committing anything.
@@ -8,15 +8,15 @@ routed by `on_unsure` instead of committing anything.
 This page is about why the gate is shaped that way, what it is worth, and — at some
 length, because it is the part that costs people money — what it is not worth.
 
-Everything below was checked against `jig/verify.py`, `jig/graph.py`, `jig/eval.py`,
-`jig/pack.py` and `jig/backends/openai_compat.py`. Every transcript is pasted output,
+Everything below was checked against `stepmold/verify.py`, `stepmold/graph.py`, `stepmold/eval.py`,
+`stepmold/pack.py` and `stepmold/backends/openai_compat.py`. Every transcript is pasted output,
 unedited.
 
 **How to reproduce anything on this page.**
 
 | | |
 | --- | --- |
-| Where commands run | the root of a jig checkout, where `python3 -m jig` resolves |
+| Where commands run | the root of a stepmold checkout, where `python3 -m stepmold` resolves |
 | Probe scripts | saved at that root, and run with `python3 gate.py` |
 | Demo packs | created by the shell block in the section that uses them |
 | Models | `FakeModel` — scripted, offline. No GPU, no key, no network |
@@ -32,12 +32,12 @@ Five things about the gate look different from how they behave.
 | the gate scores a confidence | it counts matching draws. The comparison is the whole committed object as canonical JSON — not "the fields that matter" | [What "agree" means](#what-agree-means) |
 | `samples: 3` costs three generations | it costs two whenever the first two match, and stops early whenever no group can still reach the threshold | [What it costs](#what-it-costs) |
 | `Unsure` is a failure | it is a sibling of `NodeFailed`, not a subclass. Nothing was wrong with the answers; the model was not consistent | [Unsure is not rejected](#unsure-is-not-rejected) |
-| an escalated case is reported as `unsure` | `RunResult` publishes no `unsure` list yet, so `jig eval` labels the escalation `failed`. The case does leave the auto bucket | [Reading the tier split](#reading-the-tier-split) |
+| an escalated case is reported as `unsure` | `RunResult` publishes no `unsure` list yet, so `stepmold eval` labels the escalation `failed`. The case does leave the auto bucket | [Reading the tier split](#reading-the-tier-split) |
 
 ## Why you cannot simply ask the model how sure it is
 
 The obvious design is to have the node emit a `confidence` field and threshold it. Nothing
-in jig stops you: put `confidence` in the grammar, write `assert: confidence > 0.8`, and
+in stepmold stops you: put `confidence` in the grammar, write `assert: confidence > 0.8`, and
 the expression language will enforce it exactly as written, every time, on a number the
 model invented.
 
@@ -59,7 +59,7 @@ claiming to be sure is evidence about nothing.
 
 ## The signals, ranked
 
-jig has exactly three tiers of signal, and the ranking is not a preference — it is the
+stepmold has exactly three tiers of signal, and the ranking is not a preference — it is the
 order they should be reached for.
 
 | Rank | Signal | What it is | Cost |
@@ -82,10 +82,10 @@ consistent. Save this as `assert_first.py`:
 ```python
 from dataclasses import dataclass
 
-from jig.errors import NodeFailed
-from jig.model import FakeModel
-from jig.pack import Node
-from jig.verify import run_node
+from stepmold.errors import NodeFailed
+from stepmold.model import FakeModel
+from stepmold.pack import Node
+from stepmold.verify import run_node
 
 
 @dataclass(frozen=True)
@@ -128,7 +128,7 @@ nodes, where two readings are both well-formed and only one is right.
 
 ## The gate, in one node
 
-`gate_for` (`jig/verify.py:gate_for`) reads the two keys, defaults them and refuses the
+`gate_for` (`stepmold/verify.py:gate_for`) reads the two keys, defaults them and refuses the
 pairs that cannot mean anything. `agree` left unset is a **strict majority** of `samples`,
 which is the only default that is a rule rather than a number somebody picked.
 
@@ -137,8 +137,8 @@ Save this as `gateerrors.py`:
 ```python
 from dataclasses import dataclass
 
-from jig.pack import Node
-from jig.verify import GateError, gate_for
+from stepmold.pack import Node
+from stepmold.verify import GateError, gate_for
 
 
 @dataclass(frozen=True)
@@ -194,7 +194,7 @@ a broken gate is a lie about confidence.
 ## What "agree" means
 
 Two draws agree when the objects that would be committed are the **same object**, compared
-as canonical JSON — sorted keys, no whitespace (`jig/verify.py:_canonical`). Not the fields
+as canonical JSON — sorted keys, no whitespace (`stepmold/verify.py:_canonical`). Not the fields
 that matter: at this layer nothing knows which fields those are, and a gate that guesses
 wrong here fails in the one direction it must not.
 
@@ -203,9 +203,9 @@ Save as `whole_object.py`:
 ```python
 from dataclasses import dataclass
 
-from jig.model import FakeModel
-from jig.pack import Node
-from jig.verify import Unsure, run_node
+from stepmold.model import FakeModel
+from stepmold.pack import Node
+from stepmold.verify import Unsure, run_node
 
 
 @dataclass(frozen=True)
@@ -261,16 +261,16 @@ than `{'a': 1, 'b': 2}`. The two are the same object; only the insertion order d
 ## What it costs
 
 n samples cost at most n generations, and often fewer: the loop stops the moment the
-answer cannot change (`jig/verify.py:run_node`). Two short-circuits, both visible below.
+answer cannot change (`stepmold/verify.py:run_node`). Two short-circuits, both visible below.
 
 Save as `gate.py`:
 
 ```python
 from dataclasses import dataclass
 
-from jig.model import FakeModel
-from jig.pack import Node
-from jig.verify import Unsure, run_node
+from stepmold.model import FakeModel
+from stepmold.pack import Node
+from stepmold.verify import Unsure, run_node
 
 
 @dataclass(frozen=True)
@@ -349,7 +349,7 @@ means every output was **valid** and the model was not consistent, which no re-s
 fixes. So `Unsure` is raised instead, and it is a sibling of `NodeFailed` rather than a
 subclass of it: a walker that wants to send both to `on_fail` has to say so.
 
-The walker's routing (`jig/graph.py`, the `except Unsure` clause):
+The walker's routing (`stepmold/graph.py`, the `except Unsure` clause):
 
 | Node declares | Where an unsure node goes |
 | --- | --- |
@@ -362,7 +362,7 @@ answer that came closest (the largest group's, ties to the earliest draw) so a h
 can show it — but committing it is a decision the caller has to make deliberately.
 
 `Consensus` is counts only, and that is on purpose: it is logged, checkpointed and printed
-by `jig eval`, and a record that holds no model output is safe in all three without anyone
+by `stepmold eval`, and a record that holds no model output is safe in all three without anyone
 having to remember that it is. `distinct` is the field to watch when tuning — a 2-2 split
 is a node with two defensible readings, four different answers is a node that is guessing.
 
@@ -371,10 +371,10 @@ Save as `route.py`:
 ```python
 from dataclasses import dataclass
 
-from jig.eval import evaluate
-from jig.graph import run
-from jig.model import FakeModel
-from jig.pack import Edge, EvalCase, Node, Pack
+from stepmold.eval import evaluate
+from stepmold.graph import run
+from stepmold.model import FakeModel
+from stepmold.pack import Edge, EvalCase, Node, Pack
 
 
 @dataclass(frozen=True)
@@ -440,8 +440,8 @@ nothing, and it does so silently: identical requests return identical answers, t
 "agree", and the pack reports full confidence it never earned. **A gate that always agrees
 is worse than no gate**, because no gate is at least honest about what it does not know.
 
-jig's half of the bargain is to make every generation after the very first ask for
-something no other generation of that node asked for (`jig/verify.py:sampling_for`). Draw
+stepmold's half of the bargain is to make every generation after the very first ask for
+something no other generation of that node asked for (`stepmold/verify.py:sampling_for`). Draw
 0 rung 0 asks for nothing, so a pack that runs greedily stays byte-for-byte reproducible
 and turning a gate on does not change the answer the node was already giving — the extra
 draws are the check, not the answer.
@@ -453,11 +453,11 @@ import json
 import sys
 from dataclasses import dataclass
 
-from jig.backends.openai_compat import OpenAICompatModel
-from jig.log import configure
-from jig.model import FakeModel
-from jig.pack import Node
-from jig.verify import run_node, sampling_for
+from stepmold.backends.openai_compat import OpenAICompatModel
+from stepmold.log import configure
+from stepmold.model import FakeModel
+from stepmold.pack import Node
+from stepmold.verify import run_node, sampling_for
 
 print("what each draw asks for, before any rejection:")
 for draw in range(3):
@@ -489,11 +489,11 @@ what each draw asks for, before any rejection:
   draw 1, rung 0 -> Sampling(temperature=0.5, seed=65536)
   draw 2, rung 0 -> Sampling(temperature=0.5, seed=131072)
 what goes on the wire for draw 1: {"model": "qwen3-8b", "seed": 65536, "temperature": 0.5}
-11:37:46.693 WARNING jig.verify node.samples.blind node=classify samples=3 model=FakeModel reason="backend takes no sampling hint, so extra draws repeat the first"
+11:37:46.693 WARNING stepmold.verify node.samples.blind node=classify samples=3 model=FakeModel reason="backend takes no sampling hint, so extra draws repeat the first"
 ```
 
-So the request jig sends for an extra draw carries **`temperature` and `seed`**, and only
-those two (`jig/backends/openai_compat.py:build_payload`). The seed rides along because a
+So the request stepmold sends for an extra draw carries **`temperature` and `seed`**, and only
+those two (`stepmold/backends/openai_compat.py:build_payload`). The seed rides along because a
 server pinned to temperature 0 by policy ignores a temperature it was told to ignore, and
 a per-request seed is the only knob left. Every draw gets a seed nothing else in that node
 uses — `DRAW_SEED_STRIDE` is `1 << 16`, which is why draw 1 asks for 65536 — so draw 2's
@@ -503,16 +503,16 @@ The temperature is the same for every draw on purpose. A ramp across draws would
 the ramp rather than the model; a rejection is what makes the ladder climb, and an extra
 draw is not a rejection.
 
-### The half jig cannot check
+### The half stepmold cannot check
 
 That warning fires on a signature, not on behaviour. `accepts_sampling`
-(`jig/codegen.py`) asks whether the **client object's** `generate` declares a `sampling`
+(`stepmold/codegen.py`) asks whether the **client object's** `generate` declares a `sampling`
 keyword. `FakeModel` does not, so the line above appears. `OpenAICompatModel` does — so
 **it never warns**, however the server behind it behaves.
 
 That leaves one gap you have to close yourself:
 
-| Who | Can jig tell? |
+| Who | Can stepmold tell? |
 | --- | --- |
 | a client that cannot carry a sampling hint | yes — `node.samples.blind` at WARNING, once per sampled node |
 | a server that accepts `temperature` and `seed` and ignores them | **no.** The request is well-formed and the response is a valid answer |
@@ -536,11 +536,11 @@ pasted output — there is nothing offline for it to talk to.)
 
 ## Reading the tier split
 
-`jig eval --tiers` classifies every case into three buckets (`jig/eval.py`) rather than
+`stepmold eval --tiers` classifies every case into three buckets (`stepmold/eval.py`) rather than
 reporting one pass rate:
 
 ```console
-$ python3 -m jig eval examples/support_triage --tiers
+$ python3 -m stepmold eval examples/support_triage --tiers
 support_triage: 12/12 cases passed
 support_triage: 12 cases — 12 auto, 0 escalated, 0 failed
   auto       100.0%   accuracy 100.0% (12/12 correct)
@@ -579,8 +579,8 @@ Two details worth knowing before you read a report:
 * **The auto bucket is conservative.** A node that was unsure takes its case out of the
   bucket even if the pack chose not to route it, because the auto bucket is a promise
   about answers nobody checked.
-* **An unsure escalation is currently labelled `failed`.** `jig/eval.py:_unsure` reads
-  `run_result.unsure`, and `RunResult` (`jig/graph.py`) has no such field — the walker
+* **An unsure escalation is currently labelled `failed`.** `stepmold/eval.py:_unsure` reads
+  `run_result.unsure`, and `RunResult` (`stepmold/graph.py`) has no such field — the walker
   records the diversion as an ordinary `Failure` instead. The case is tiered correctly and
   blamed on the right node, as the `route.py` transcript above shows; only the `kind`
   label is wrong. Do not build a report that counts on `kind == "unsure"` yet.
@@ -588,7 +588,7 @@ Two details worth knowing before you read a report:
 ## The gate is not a pack key yet
 
 This is the largest limit on this page. `samples:` and `agree:` are **not** keys a
-`graph.yaml` may carry. `_NODE_KEYS` in `jig/pack.py` does not list them and `Node` has no
+`graph.yaml` may carry. `_NODE_KEYS` in `stepmold/pack.py` does not list them and `Node` has no
 such fields, so a pack that declares a gate is refused at load:
 
 ```bash
@@ -633,8 +633,8 @@ printf '{"input": {"ticket": "charged twice"}, "expect": {"category": "billing"}
 ```
 
 ```console
-$ python3 -m jig validate gated
-jig: pack error: graph.yaml: node 'classify' has unknown key(s): agree, samples
+$ python3 -m stepmold validate gated
+stepmold: pack error: graph.yaml: node 'classify' has unknown key(s): agree, samples
 ```
 
 Delete the two lines and the same pack loads, `on_unsure` and all:
@@ -646,11 +646,11 @@ p = pathlib.Path("gated/graph.yaml")
 p.write_text("".join(l for l in p.read_text().splitlines(True)
                      if l.strip().split(":")[0] not in ("samples", "agree")))
 PY
-$ python3 -m jig validate gated
+$ python3 -m stepmold validate gated
 gated v1: 3 nodes, 1 edge, 1 evalset case, entry 'classify'
 ```
 
-Which is the shape of the gap exactly. `on_unsure:` is a real pack key — `jig/pack.py`
+Which is the shape of the gap exactly. `on_unsure:` is a real pack key — `stepmold/pack.py`
 accepts it, validates its target and routes on it — but from a pack file nothing can make
 a node unsure, so today that edge can never be taken. The gate is a runtime feature with
 no pack surface.
@@ -661,9 +661,9 @@ Until it has one:
 | --- | --- |
 | from Python | subclass `Node` with `samples` / `agree` fields, as every script on this page does. `verify.gate_for` reads them with `getattr`, so any object carrying the attributes works |
 | from a pack file | not yet possible |
-| from `jig build` | not yet possible. The compiler emits neither key |
+| from `stepmold build` | not yet possible. The compiler emits neither key |
 
-`jig/verify.py` reading the keys with `getattr` is what makes the Python route work at all,
+`stepmold/verify.py` reading the keys with `getattr` is what makes the Python route work at all,
 and it is also why a pack written before the gate existed behaves identically — a node
 without the attributes draws once, and the request it sends is byte-for-byte the one it
 always sent.
@@ -672,16 +672,16 @@ always sent.
 
 | Limit | Where it bites |
 | --- | --- |
-| No pack file can turn the gate on | `_NODE_KEYS`, `jig/pack.py`. A `graph.yaml` with `samples:` is refused at load |
+| No pack file can turn the gate on | `_NODE_KEYS`, `stepmold/pack.py`. A `graph.yaml` with `samples:` is refused at load |
 | `on_unsure:` is unreachable from a pack file | it validates and routes, but nothing in a pack can produce an `Unsure` for it to catch |
 | A server that ignores `seed` and `temperature` is undetectable | `accepts_sampling` inspects the client class, never the server's behaviour. Verify it yourself |
-| `RunResult` publishes no `unsure` list | so `jig eval` labels an unsure escalation `kind="failed"` |
+| `RunResult` publishes no `unsure` list | so `stepmold eval` labels an unsure escalation `kind="failed"` |
 | Agreement is whole-object | you cannot ask for agreement on a subset of the fields. Narrow the node instead |
 | No example pack in this repository uses the gate | so there is no worked, end-to-end pack to copy — only the scripts above |
 | **Nobody has measured what agreement buys** | there is no benchmark in this repository for how much a gate raises auto accuracy, or how much of the escalated bucket it moves, against a real model. The mechanism is tested; its value is not quantified |
 
 That last row is the one to hold on to. Everything above says what the gate *does*. How
-much it is worth on your workflow is an empirical question about your model, and jig does
+much it is worth on your workflow is an empirical question about your model, and stepmold does
 not currently answer it — run your evalset with the gate on and off and compare the tier
 splits yourself.
 

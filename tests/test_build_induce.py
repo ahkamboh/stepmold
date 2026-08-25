@@ -9,15 +9,15 @@ that accepts those produces a pack that fails at 3am instead of at build time.
 import json
 import unittest
 
-from jig.build.induce import (
+from stepmold.build.induce import (
     ATTEMPTS,
     MAX_PROMPT_CHARS,
     MAX_WRITES_PER_NODE,
     induce,
     write_prompts,
 )
-from jig.build.spec import BuildError, FieldSpec, GraphPlan, NodePlan, TaskSpec
-from jig.model import FakeModel
+from stepmold.build.spec import BuildError, FieldSpec, GraphPlan, NodePlan, TaskSpec
+from stepmold.model import FakeModel
 
 # --------------------------------------------------------------------------- fixtures
 
@@ -299,7 +299,7 @@ class TestRejectionsThePlannerHasToFix(unittest.TestCase):
         reask = self.reject_then_accept("I'd start by classifying the ticket, then...")
         self.assertIn("not valid JSON", reask)
         # The rejected text is never quoted back: that is the self-conditioning spiral
-        # jig/verify.py exists to prevent, and the compiler holds to its own rule.
+        # stepmold/verify.py exists to prevent, and the compiler holds to its own rule.
         self.assertNotIn("I'd start by classifying", reask)
 
     def test_an_answer_that_is_json_but_not_the_schema(self):
@@ -572,7 +572,7 @@ class TestOnePromptPerNode(unittest.TestCase):
             self.assertEqual(call.grammar["schema"]["required"], ["prompt"])
 
     def test_the_prompts_render_against_the_state_the_node_will_have(self):
-        from jig.render import render
+        from stepmold.render import render
         state = {"ticket": "t", "category": "billing", "sentiment": "angry",
                  "priority": "p0", "scratchpad": "notes"}
         for name, text in self.prompts.items():

@@ -1,15 +1,15 @@
 # graph.yaml — the walk, the edges, the state
 
-`graph.yaml` is the compiled plan: a map of nodes and a list of edges. `jig.graph.run`
+`graph.yaml` is the compiled plan: a map of nodes and a list of edges. `stepmold.graph.run`
 walks it one node at a time, and nothing in it ever asks a model where to go. Everything
-below was checked against `jig/graph.py`, `jig/pack.py`, `jig/verify.py`, `jig/codegen.py`,
-`jig/state.py`, `jig/tools.py`, `jig/yamlish.py` and `jig/cli.py`.
+below was checked against `stepmold/graph.py`, `stepmold/pack.py`, `stepmold/verify.py`, `stepmold/codegen.py`,
+`stepmold/state.py`, `stepmold/tools.py`, `stepmold/yamlish.py` and `stepmold/cli.py`.
 
 **How to reproduce anything on this page.**
 
 | | |
 | --- | --- |
-| Where commands run | the root of a jig checkout, where `python3 -m jig` resolves |
+| Where commands run | the root of a stepmold checkout, where `python3 -m stepmold` resolves |
 | Demo packs | created by the shell block in the section that uses them — paste the block, then paste the command |
 | Probe scripts | saved next to them, in the same directory, and run with `python3 probe_*.py` |
 | Real packs | `examples/` — seven of them, already on disk, no setup |
@@ -82,20 +82,20 @@ EOF
 ```
 
 ```
-$ python3 -m jig validate minimal
+$ python3 -m stepmold validate minimal
 minimal v1: 2 nodes, 1 edge, 0 evalset cases, entry 'summarise'
 
-$ python3 -m jig run minimal --input '{"text": "The build broke on Friday and nobody noticed until Monday."}'
+$ python3 -m stepmold run minimal --input '{"text": "The build broke on Friday and nobody noticed until Monday."}'
 {"summary": "the build broke on Friday"}
 ```
 
 A `generate` node needs no keys beyond `type:` — `prompts/<node>.txt` and
 `grammars/<node>.json` are found by name (`pack._build_node`). The `fake:` model is a
-scripted stand-in (`jig/model.py`), which is what lets every example here run offline.
+scripted stand-in (`stepmold/model.py`), which is what lets every example here run offline.
 
 ## How a run walks
 
-`jig.graph.run` starts at `manifest.yaml`'s `entry` and loops:
+`stepmold.graph.run` starts at `manifest.yaml`'s `entry` and loops:
 
 1. **Count the step.** Entering any node — including the `end` node — costs one step.
 2. **Execute the node.** `generate` renders its prompt, generates, and verifies;
@@ -118,7 +118,7 @@ the default is 100 (`pack.DEFAULT_MAX_STEPS`), it must be a positive integer, an
 the run stops, nothing is returned, and `on_fail` does not catch it:
 
 ```
-jig: MaxStepsExceeded: run exceeded max_steps=6 at node 'tick' — the graph is looping
+stepmold: MaxStepsExceeded: run exceeded max_steps=6 at node 'tick' — the graph is looping
 ```
 
 Budget the whole walk, not the interesting part: a four-node linear pack costs 4 steps,
@@ -168,7 +168,7 @@ before `graph.commit` writes it.
 `assert:` on a generate node is **verification, not routing**. It is evaluated by
 `verify._check_assert` against a *trial* copy of state — the candidate as it would be if
 committed — and a failure is a `Rejected`, which spends a rung of the ladder. It is the
-full expression language of `jig/expr.py`: comparisons, `and`/`or`/`not`, `in`,
+full expression language of `stepmold/expr.py`: comparisons, `and`/`or`/`not`, `in`,
 arithmetic, indexing, and a fixed helper set (`len`, `lower`, `startswith`, `contains`, …).
 
 ```yaml
@@ -242,8 +242,8 @@ EOF
 
 ```python
 # probe_fork.py
-from jig.graph import run
-from jig.pack import load_pack
+from stepmold.graph import run
+from stepmold.pack import load_pack
 
 pack = load_pack("fork")
 for amount in (100, 900):
@@ -286,7 +286,7 @@ spending a generation.
 **A pack never contains an action. It names one.** The functions live on the host's
 side, in a `ToolRegistry` the caller passes per run; the node holds a key into it and
 nothing else — no import, no dotted path, and deliberately no manifest key, so a pack
-you did not write can only reach what you already handed it (`jig/tools.py`). At the
+you did not write can only reach what you already handed it (`stepmold/tools.py`). At the
 command line that is `--tools`, on `run` and `eval` only (`cli._add_tools_option`).
 
 ```bash
@@ -355,7 +355,7 @@ appends to `/tmp/outbox.txt`, which is the side effect every transcript below co
 ```python
 # mailer.py
 """The host's side: the actions this machine is willing to let a pack take."""
-from jig.tools import ToolRegistry
+from stepmold.tools import ToolRegistry
 
 OUTBOX = "/tmp/outbox.txt"
 registry = ToolRegistry()
@@ -371,10 +371,10 @@ def send_email(to, subject):
 ```
 
 ```
-$ python3 -m jig validate notify
+$ python3 -m stepmold validate notify
 notify v1: 4 nodes, 2 edges, 1 evalset case, entry 'draft'
 
-$ python3 -m jig run notify --tools ./mailer.py --input '{"to": "ops@example.com", "incident": "db-3 disk at 100%"}'
+$ python3 -m stepmold run notify --tools ./mailer.py --input '{"to": "ops@example.com", "incident": "db-3 disk at 100%"}'
 {"receipt": "message 1", "subject": "disk full on db-3"}
 
 $ cat /tmp/outbox.txt
@@ -416,8 +416,8 @@ p = pathlib.Path("/tmp/notify-retries/graph.yaml")
 p.write_text(p.read_text().replace("    tool: send_email",
                                    "    tool: send_email\n    retries: 2"))
 PY
-$ python3 -m jig validate /tmp/notify-retries
-jig: pack error: graph.yaml: tool node 'send' carries 'retries'. Those keys belong to a generate or an assert node and nothing would read them here — remove them, or make this a node type that uses them. 'retries': a re-run tool is a side effect done twice; route the failure with `on_fail` instead of re-attempting it.
+$ python3 -m stepmold validate /tmp/notify-retries
+stepmold: pack error: graph.yaml: tool node 'send' carries 'retries'. Those keys belong to a generate or an assert node and nothing would read them here — remove them, or make this a node type that uses them. 'retries': a re-run tool is a side effect done twice; route the failure with `on_fail` instead of re-attempting it.
 
 $ cp -r notify /tmp/notify-toolkey
 $ python3 - <<'PY'
@@ -426,17 +426,17 @@ p = pathlib.Path("/tmp/notify-toolkey/graph.yaml")
 p.write_text(p.read_text().replace("    type: generate",
                                    "    type: generate\n    tool: send_email"))
 PY
-$ python3 -m jig validate /tmp/notify-toolkey
-jig: pack error: graph.yaml: node 'draft' is type 'generate' but carries 'tool: send_email'. Only a tool node names a tool — set 'type: tool', or drop the key.
+$ python3 -m stepmold validate /tmp/notify-toolkey
+stepmold: pack error: graph.yaml: node 'draft' is type 'generate' but carries 'tool: send_email'. Only a tool node names a tool — set 'type: tool', or drop the key.
 ```
 
 Committing, nesting and looping are the `generate` node's rules unchanged:
 
 ```python
 # probe_tool_commit.py — what a tool node commits, and what happens to a tool in a loop.
-from jig.graph import run
-from jig.pack import Edge, Node, Pack
-from jig.tools import ToolRegistry
+from stepmold.graph import run
+from stepmold.pack import Edge, Node, Pack
+from stepmold.tools import ToolRegistry
 
 calls = []
 registry = ToolRegistry()
@@ -486,7 +486,7 @@ generations spent by a tool node: {}
 
 Three limits worth knowing before you wire a real action to a pack:
 
-* **`jig validate` checks nothing about tools.** It takes no `--tools` flag
+* **`stepmold validate` checks nothing about tools.** It takes no `--tools` flag
   (`cli._add_tools_option` adds it to `run` and `eval` only), and `pack.check_tools` is
   skipped when no registry is passed — so `validate` reports a clean pack whose tool
   names are all wrong. The `validate` line in the first transcript above passed on a
@@ -495,21 +495,21 @@ Three limits worth knowing before you wire a real action to a pack:
   already spent whatever the earlier nodes cost:
 
 ```
-$ python3 -m jig run notify --log-level info --input '{"to": "ops@example.com", "incident": "db-3 disk at 100%"}'
-11:42:47.010 INFO  jig.graph run.start run_id=5b3604f061ec4a55bd4d7288e11aa7c2 pack=notify version=1 entry=draft resumed=false max_steps=100 inputs=incident,to
-11:42:47.010 INFO  jig.graph node.ok run_id=5b3604f061ec4a55bd4d7288e11aa7c2 node=draft type=generate attempts=1 output=merge duration_ms=0.1
-11:42:47.010 ERROR jig.graph run.error run_id=5b3604f061ec4a55bd4d7288e11aa7c2 pack=notify node=send step=2 error=ToolsNotAvailable reason="node 'send' is a tool node, and this run was given no tools: this pack needs tools; pass tools= to run()" duration_ms=0.5
-jig: ToolsNotAvailable: node 'send' is a tool node, and this run was given no tools: this pack needs tools; pass tools= to run()
+$ python3 -m stepmold run notify --log-level info --input '{"to": "ops@example.com", "incident": "db-3 disk at 100%"}'
+11:42:47.010 INFO  stepmold.graph run.start run_id=5b3604f061ec4a55bd4d7288e11aa7c2 pack=notify version=1 entry=draft resumed=false max_steps=100 inputs=incident,to
+11:42:47.010 INFO  stepmold.graph node.ok run_id=5b3604f061ec4a55bd4d7288e11aa7c2 node=draft type=generate attempts=1 output=merge duration_ms=0.1
+11:42:47.010 ERROR stepmold.graph run.error run_id=5b3604f061ec4a55bd4d7288e11aa7c2 pack=notify node=send step=2 error=ToolsNotAvailable reason="node 'send' is a tool node, and this run was given no tools: this pack needs tools; pass tools= to run()" duration_ms=0.5
+stepmold: ToolsNotAvailable: node 'send' is a tool node, and this run was given no tools: this pack needs tools; pass tools= to run()
 (exit status 1)
 ```
 
-* **`jig eval` really calls the tools.** An evalset is not a dry run: every case that
+* **`stepmold eval` really calls the tools.** An evalset is not a dry run: every case that
   reaches a tool node performs the side effect for real. The outbox below is the eval's
   own doing, not the run's:
 
 ```
 $ rm -f /tmp/outbox.txt
-$ python3 -m jig eval notify --tools ./mailer.py
+$ python3 -m stepmold eval notify --tools ./mailer.py
 notify: 1/1 cases passed
 
 $ cat /tmp/outbox.txt
@@ -535,7 +535,7 @@ object of the same two keys.
 
 **The bare-string footgun.** `output: summary` on an `end` node is not a syntax error;
 `_project` iterates the string and matches nothing. The CLI refuses the shape before
-running (`cli._check_output_shapes`), which is why `jig validate` catches it:
+running (`cli._check_output_shapes`), which is why `stepmold validate` catches it:
 
 ```bash
 cp -r minimal strung
@@ -555,8 +555,8 @@ EOF
 ```
 
 ```
-$ python3 -m jig validate strung
-jig: graph.yaml: end node 'done': 'output' must be a list of state keys to project, got 'summary' — write 'output: [summary]' if you meant that one key
+$ python3 -m stepmold validate strung
+stepmold: graph.yaml: end node 'done': 'output' must be a list of state keys to project, got 'summary' — write 'output: [summary]' if you meant that one key
 ```
 
 **But that guard lives in the CLI, not in `pack.load_pack`.** A library caller gets the
@@ -566,9 +566,9 @@ silence:
 # probe_strung.py
 import json
 
-from jig.graph import run
-from jig.model import FakeModel
-from jig.pack import load_pack
+from stepmold.graph import run
+from stepmold.model import FakeModel
+from stepmold.pack import load_pack
 
 pack = load_pack("strung")           # `output: summary` on the end node
 model = FakeModel(json.load(open("strung/fakes/script.json")))
@@ -644,13 +644,13 @@ EOF
 ```
 
 ```
-$ python3 -m jig validate dotted
+$ python3 -m stepmold validate dotted
 dotted v1: 2 nodes, 1 edge, 0 evalset cases, entry 'decide'
 
-$ python3 -m jig run dotted --input '{"ticket": "refund me"}'
-jig: end node 'done' projected nothing: its 'output' names no key that exists in state (state has: decision, ticket). Fix the node's 'output', or pass --state to print the whole state.
+$ python3 -m stepmold run dotted --input '{"ticket": "refund me"}'
+stepmold: end node 'done' projected nothing: its 'output' names no key that exists in state (state has: decision, ticket). Fix the node's 'output', or pass --state to print the whole state.
 
-$ python3 -m jig run dotted --state --input '{"ticket": "refund me"}'
+$ python3 -m stepmold run dotted --state --input '{"ticket": "refund me"}'
 {"decision": {"action": "refund", "note": "under policy cap"}, "ticket": "refund me"}
 ```
 
@@ -680,11 +680,11 @@ EOF
 ```
 
 ```
-$ python3 -m jig run partial --input '{"text": "The build broke on Friday."}'
+$ python3 -m stepmold run partial --input '{"text": "The build broke on Friday."}'
 {"summary": "the build broke on Friday"}
 ```
 
-Use `jig run --state` to see everything the run actually held.
+Use `stepmold run --state` to see everything the run actually held.
 
 ## Edges
 
@@ -734,11 +734,11 @@ condition holds, `small` as the fallback:
 # probe_when.py — every row of the `when:` table, run against a real two-edge graph.
 # The pack is built in memory so one script can try many mappings; `load_pack`
 # builds the same Pack/Node/Edge objects out of graph.yaml. The mapping itself is
-# parsed by jig's own YAML reader, so what is compared is what a graph.yaml gives.
-from jig.errors import DeadEnd
-from jig.graph import run
-from jig.pack import Edge, Node, Pack
-from jig.yamlish import parse
+# parsed by stepmold's own YAML reader, so what is compared is what a graph.yaml gives.
+from stepmold.errors import DeadEnd
+from stepmold.graph import run
+from stepmold.pack import Edge, Node, Pack
+from stepmold.yamlish import parse
 
 STATE = {"kind": "refund", "amount_usd": 900}
 
@@ -838,12 +838,12 @@ fallback declared first -> small
 ### The bare word is the sharpest edge here
 
 The last four rows are one bug, and it is silent: the value in `when:` is parsed by
-jig's YAML subset (`jig/yamlish.py`) *before* it is ever compared, so a bare word that
+stepmold's YAML subset (`stepmold/yamlish.py`) *before* it is ever compared, so a bare word that
 YAML calls a boolean never equals the string a model emitted.
 
 ```python
-# probe_scalars.py — how jig's YAML subset reads a bare scalar (jig/yamlish.py).
-from jig.yamlish import parse
+# probe_scalars.py — how stepmold's YAML subset reads a bare scalar (stepmold/yamlish.py).
+from stepmold.yamlish import parse
 
 for text in ["yes", "no", "on", "off", "NO", "Off", "true", "~", "null",
              "0700", "1_000", '"no"', "'no'", "maybe"]:
@@ -954,12 +954,12 @@ The model guesses wrong on the first draw; the ladder corrects it and the edge o
 sees a checked value:
 
 ```
-$ python3 -m jig run bucket --run-id over --log-level info --input '{"amount_usd": 900}'
-18:05:08.063 INFO  jig.graph run.start run_id=over pack=bucket version=1 entry=label resumed=false max_steps=100 inputs=amount_usd
-18:05:08.064 WARNING jig.verify node.rejected node=label attempt=1 cause=verify reason="assert failed: (bucket.tier == \"over_cap\") == (amount_usd > 500)" of=3
-18:05:08.064 INFO  jig.verify node.retry node=label attempt=2 of=3 temperature=0.5 seed=1 reason="assert failed: (bucket.tier == \"over_cap\") == (amount_usd > 500)" rethink=false
-18:05:08.064 INFO  jig.graph node.ok run_id=over node=label type=generate attempts=2 output=bucket duration_ms=0.3
-18:05:08.064 INFO  jig.graph run.end run_id=over pack=bucket end_node=big steps=2 generations=2 failures=0 output_keys=2 output_bytes=51 duration_ms=0.8
+$ python3 -m stepmold run bucket --run-id over --log-level info --input '{"amount_usd": 900}'
+18:05:08.063 INFO  stepmold.graph run.start run_id=over pack=bucket version=1 entry=label resumed=false max_steps=100 inputs=amount_usd
+18:05:08.064 WARNING stepmold.verify node.rejected node=label attempt=1 cause=verify reason="assert failed: (bucket.tier == \"over_cap\") == (amount_usd > 500)" of=3
+18:05:08.064 INFO  stepmold.verify node.retry node=label attempt=2 of=3 temperature=0.5 seed=1 reason="assert failed: (bucket.tier == \"over_cap\") == (amount_usd > 500)" rethink=false
+18:05:08.064 INFO  stepmold.graph node.ok run_id=over node=label type=generate attempts=2 output=bucket duration_ms=0.3
+18:05:08.064 INFO  stepmold.graph run.end run_id=over pack=bucket end_node=big steps=2 generations=2 failures=0 output_keys=2 output_bytes=51 duration_ms=0.8
 {"amount_usd": 900, "bucket": {"tier": "over_cap"}}
 ```
 
@@ -967,16 +967,16 @@ It costs a generation per decision, and a model that never gets it right burns t
 and takes `on_fail`:
 
 ```
-$ python3 -m jig run bucket --model fake:fakes/always_wrong.json --run-id burnt --log-level info --input '{"amount_usd": 900}'
-18:05:08.128 INFO  jig.graph run.start run_id=burnt pack=bucket version=1 entry=label resumed=false max_steps=100 inputs=amount_usd
-18:05:08.129 WARNING jig.verify node.rejected node=label attempt=1 cause=verify reason="assert failed: (bucket.tier == \"over_cap\") == (amount_usd > 500)" of=3
-18:05:08.129 INFO  jig.verify node.retry node=label attempt=2 of=3 temperature=0.5 seed=1 reason="assert failed: (bucket.tier == \"over_cap\") == (amount_usd > 500)" rethink=false
-18:05:08.129 WARNING jig.verify node.rejected node=label attempt=2 cause=verify reason="assert failed: (bucket.tier == \"over_cap\") == (amount_usd > 500)" of=3
-18:05:08.129 INFO  jig.verify node.retry node=label attempt=3 of=3 temperature=0.8 seed=2 reason="assert failed: (bucket.tier == \"over_cap\") == (amount_usd > 500)" rethink=false
-18:05:08.129 WARNING jig.verify node.rejected node=label attempt=3 cause=verify reason="assert failed: (bucket.tier == \"over_cap\") == (amount_usd > 500)" of=3
-18:05:08.129 WARNING jig.graph node.failed run_id=burnt node=label type=generate attempts=3 error=NodeFailed reason="assert failed: (bucket.tier == \"over_cap\") == (amount_usd > 500)" on_fail=unlabelled duration_ms=0.5
-18:05:08.129 INFO  jig.graph edge.on_fail run_id=burnt node=label to=unlabelled
-18:05:08.129 INFO  jig.graph run.end run_id=burnt pack=bucket end_node=unlabelled steps=2 generations=3 failures=1 output_keys=1 output_bytes=19 duration_ms=0.8
+$ python3 -m stepmold run bucket --model fake:fakes/always_wrong.json --run-id burnt --log-level info --input '{"amount_usd": 900}'
+18:05:08.128 INFO  stepmold.graph run.start run_id=burnt pack=bucket version=1 entry=label resumed=false max_steps=100 inputs=amount_usd
+18:05:08.129 WARNING stepmold.verify node.rejected node=label attempt=1 cause=verify reason="assert failed: (bucket.tier == \"over_cap\") == (amount_usd > 500)" of=3
+18:05:08.129 INFO  stepmold.verify node.retry node=label attempt=2 of=3 temperature=0.5 seed=1 reason="assert failed: (bucket.tier == \"over_cap\") == (amount_usd > 500)" rethink=false
+18:05:08.129 WARNING stepmold.verify node.rejected node=label attempt=2 cause=verify reason="assert failed: (bucket.tier == \"over_cap\") == (amount_usd > 500)" of=3
+18:05:08.129 INFO  stepmold.verify node.retry node=label attempt=3 of=3 temperature=0.8 seed=2 reason="assert failed: (bucket.tier == \"over_cap\") == (amount_usd > 500)" rethink=false
+18:05:08.129 WARNING stepmold.verify node.rejected node=label attempt=3 cause=verify reason="assert failed: (bucket.tier == \"over_cap\") == (amount_usd > 500)" of=3
+18:05:08.129 WARNING stepmold.graph node.failed run_id=burnt node=label type=generate attempts=3 error=NodeFailed reason="assert failed: (bucket.tier == \"over_cap\") == (amount_usd > 500)" on_fail=unlabelled duration_ms=0.5
+18:05:08.129 INFO  stepmold.graph edge.on_fail run_id=burnt node=label to=unlabelled
+18:05:08.129 INFO  stepmold.graph run.end run_id=burnt pack=bucket end_node=unlabelled steps=2 generations=3 failures=1 output_keys=1 output_bytes=19 duration_ms=0.8
 {"amount_usd": 900}
 ```
 
@@ -1055,12 +1055,12 @@ EOF
 ```
 
 ```
-$ python3 -m jig run loop --run-id spin --log-level info --input '{"work": "tidy the shed"}'
-18:05:34.877 INFO  jig.graph run.start run_id=spin pack=loop version=1 entry=tick resumed=false max_steps=6 inputs=work
-18:05:34.878 INFO  jig.graph node.ok run_id=spin node=tick type=generate attempts=1 output=merge duration_ms=0.1
-18:05:34.878 INFO  jig.graph node.ok run_id=spin node=tick type=generate attempts=1 output=merge duration_ms=0.0
-18:05:34.878 INFO  jig.graph node.ok run_id=spin node=tick type=generate attempts=1 output=merge duration_ms=0.0
-18:05:34.878 INFO  jig.graph run.end run_id=spin pack=loop end_node=finished steps=4 generations=3 failures=0 output_keys=2 output_bytes=26 duration_ms=0.6
+$ python3 -m stepmold run loop --run-id spin --log-level info --input '{"work": "tidy the shed"}'
+18:05:34.877 INFO  stepmold.graph run.start run_id=spin pack=loop version=1 entry=tick resumed=false max_steps=6 inputs=work
+18:05:34.878 INFO  stepmold.graph node.ok run_id=spin node=tick type=generate attempts=1 output=merge duration_ms=0.1
+18:05:34.878 INFO  stepmold.graph node.ok run_id=spin node=tick type=generate attempts=1 output=merge duration_ms=0.0
+18:05:34.878 INFO  stepmold.graph node.ok run_id=spin node=tick type=generate attempts=1 output=merge duration_ms=0.0
+18:05:34.878 INFO  stepmold.graph run.end run_id=spin pack=loop end_node=finished steps=4 generations=3 failures=0 output_keys=2 output_bytes=26 duration_ms=0.6
 {"done": true, "round": 3}
 ```
 
@@ -1069,7 +1069,7 @@ Read the price off that transcript before writing one.
 | Loop fact | Consequence |
 | --- | --- |
 | Only a `generate` node can write state ([No computed-value node](#no-computed-value-node)) | **every iteration is a model call.** Three rounds above cost three generations |
-| The counter is whatever the model emitted | `round` is not incremented by jig. Nothing checks that it went 1, 2, 3 — the fake script above simply said so |
+| The counter is whatever the model emitted | `round` is not incremented by stepmold. Nothing checks that it went 1, 2, 3 — the fake script above simply said so |
 | The exit condition is a `when:` on committed output | the model decides when to stop, by emitting `done: true`. An `assert` node can gate the edge, but it cannot count |
 | The only backstop is `max_steps` | there is no iteration limit, no cycle detection, and no timeout |
 | `RunResult.attempts` is cumulative per node | a node visited three times, one generation each, reads `{'tick': 3}` — not per visit. The per-visit cost is what `node.ok` logs |
@@ -1078,16 +1078,16 @@ A model that never says `done: true` runs until the budget stops it, and every s
 that is a paid generation:
 
 ```
-$ python3 -m jig run loop --model fake:fakes/never_done.json --run-id runaway --log-level info --input '{"work": "tidy the shed"}'
-18:05:34.942 INFO  jig.graph run.start run_id=runaway pack=loop version=1 entry=tick resumed=false max_steps=6 inputs=work
-18:05:34.942 INFO  jig.graph node.ok run_id=runaway node=tick type=generate attempts=1 output=merge duration_ms=0.1
-18:05:34.942 INFO  jig.graph node.ok run_id=runaway node=tick type=generate attempts=1 output=merge duration_ms=0.0
-18:05:34.942 INFO  jig.graph node.ok run_id=runaway node=tick type=generate attempts=1 output=merge duration_ms=0.0
-18:05:34.942 INFO  jig.graph node.ok run_id=runaway node=tick type=generate attempts=1 output=merge duration_ms=0.0
-18:05:34.942 INFO  jig.graph node.ok run_id=runaway node=tick type=generate attempts=1 output=merge duration_ms=0.0
-18:05:34.942 INFO  jig.graph node.ok run_id=runaway node=tick type=generate attempts=1 output=merge duration_ms=0.0
-18:05:34.942 ERROR jig.graph run.error run_id=runaway pack=loop node=tick step=7 error=MaxStepsExceeded reason="run exceeded max_steps=6 at node 'tick' — the graph is looping" duration_ms=0.8
-jig: MaxStepsExceeded: run exceeded max_steps=6 at node 'tick' — the graph is looping
+$ python3 -m stepmold run loop --model fake:fakes/never_done.json --run-id runaway --log-level info --input '{"work": "tidy the shed"}'
+18:05:34.942 INFO  stepmold.graph run.start run_id=runaway pack=loop version=1 entry=tick resumed=false max_steps=6 inputs=work
+18:05:34.942 INFO  stepmold.graph node.ok run_id=runaway node=tick type=generate attempts=1 output=merge duration_ms=0.1
+18:05:34.942 INFO  stepmold.graph node.ok run_id=runaway node=tick type=generate attempts=1 output=merge duration_ms=0.0
+18:05:34.942 INFO  stepmold.graph node.ok run_id=runaway node=tick type=generate attempts=1 output=merge duration_ms=0.0
+18:05:34.942 INFO  stepmold.graph node.ok run_id=runaway node=tick type=generate attempts=1 output=merge duration_ms=0.0
+18:05:34.942 INFO  stepmold.graph node.ok run_id=runaway node=tick type=generate attempts=1 output=merge duration_ms=0.0
+18:05:34.942 INFO  stepmold.graph node.ok run_id=runaway node=tick type=generate attempts=1 output=merge duration_ms=0.0
+18:05:34.942 ERROR stepmold.graph run.error run_id=runaway pack=loop node=tick step=7 error=MaxStepsExceeded reason="run exceeded max_steps=6 at node 'tick' — the graph is looping" duration_ms=0.8
+stepmold: MaxStepsExceeded: run exceeded max_steps=6 at node 'tick' — the graph is looping
 ```
 
 Six generations, no output, exit 1: `MaxStepsExceeded` is not routed to `on_fail` and
@@ -1100,9 +1100,9 @@ The library sees the same walk:
 # probe_loop.py
 import json
 
-from jig.graph import run
-from jig.model import FakeModel
-from jig.pack import load_pack
+from stepmold.graph import run
+from stepmold.model import FakeModel
+from stepmold.pack import load_pack
 
 pack = load_pack("loop")
 model = FakeModel(json.load(open("loop/fakes/three_rounds.json")))
@@ -1150,10 +1150,10 @@ One probe, one line per row:
 ```python
 # probe_on_fail.py — what `on_fail` catches, and what escapes it.
 # The packs are built in memory so one script can vary one node at a time.
-from jig.errors import RunError
-from jig.graph import run
-from jig.model import FakeModel
-from jig.pack import Edge, Node, Pack
+from stepmold.errors import RunError
+from stepmold.graph import run
+from stepmold.model import FakeModel
+from stepmold.pack import Edge, Node, Pack
 
 GRAMMAR = {
     "type": "object",
@@ -1167,7 +1167,7 @@ class DeadBackend:
     """A model that cannot be reached at all."""
 
     def generate(self, prompt, grammar=None, max_tokens=512):
-        from jig.errors import BackendError
+        from stepmold.errors import BackendError
 
         raise BackendError("connection refused")
 
@@ -1265,10 +1265,10 @@ split is deliberate.
 ```python
 # probe_tool_fail.py — how a tool node's own failures are routed.
 # The packs are built in memory so one script can vary one thing at a time.
-from jig.errors import RunError
-from jig.graph import run
-from jig.pack import Edge, Node, Pack
-from jig.tools import ToolRegistry
+from stepmold.errors import RunError
+from stepmold.graph import run
+from stepmold.pack import Edge, Node, Pack
+from stepmold.tools import ToolRegistry
 
 MISSING = {}                 # a run whose inputs are empty, distinct from "the default"
 
@@ -1351,7 +1351,7 @@ happy path                     -> ended at 'z', failures none
 The two that escape `on_fail` are the two that are facts about the *caller*, not about
 this run: a pack naming an action the host never allowed, and a host that started a pack
 it cannot let act. Diverting either would finish the workflow with its acting half
-missing, which is the one outcome a rescue path must not produce (`jig/graph.py`,
+missing, which is the one outcome a rescue path must not produce (`stepmold/graph.py`,
 `ToolsNotAvailable`).
 
 Two details the transcript is the evidence for:
@@ -1379,7 +1379,7 @@ not fail — it is **unsure**, and that is a different claim.
 | The exception | `NodeFailed` | `Unsure` — a `RunError`, **not** a subclass of `NodeFailed`, so `except NodeFailed` does not catch it |
 
 The walker catches `Unsure` ahead of `NodeFailed` on purpose, and routes it by a ladder
-of its own (`jig/graph.py`, the generate branch):
+of its own (`stepmold/graph.py`, the generate branch):
 
 | The node declares | Where an unsure answer goes | Log line |
 | --- | --- | --- |
@@ -1389,17 +1389,17 @@ of its own (`jig/graph.py`, the generate branch):
 
 ```python
 # probe_unsure.py — where a node goes when its draws disagree.
-# `samples`/`agree` are not graph.yaml keys yet (jig/pack.py `_NODE_KEYS`), so the node
+# `samples`/`agree` are not graph.yaml keys yet (stepmold/pack.py `_NODE_KEYS`), so the node
 # is built here with the fields `verify.gate_for` reads. Everything else is the real
 # runtime: real draws, real verification, real routing.
 import dataclasses
 import sys
 
-from jig import log
-from jig.errors import RunError
-from jig.graph import run
-from jig.model import FakeModel
-from jig.pack import Edge, Node, Pack
+from stepmold import log
+from stepmold.errors import RunError
+from stepmold.graph import run
+from stepmold.model import FakeModel
+from stepmold.pack import Edge, Node, Pack
 
 log.configure(level="info", stream=sys.stdout)
 
@@ -1460,37 +1460,37 @@ show("disagreed, neither", classify(), THREE_WAYS)
 $ python3 probe_unsure.py
 
 --- agreed, on_unsure
-11:42:47.181 INFO  jig.graph run.start run_id=agreed/on_unsure pack=probe version=1 entry=classify resumed=false max_steps=100 inputs=ticket
-11:42:47.182 WARNING jig.verify node.samples.blind node=classify samples=3 model=FakeModel reason="backend takes no sampling hint, so extra draws repeat the first"
-11:42:47.182 INFO  jig.verify node.agreed node=classify agreed=2 of=2 required=2 asked=3 generations=2
-11:42:47.182 INFO  jig.graph node.ok run_id=agreed/on_unsure node=classify type=generate attempts=2 output=merge duration_ms=0.3
-11:42:47.182 INFO  jig.graph run.end run_id=agreed/on_unsure pack=probe end_node=done steps=2 generations=2 failures=0 output_keys=2 output_bytes=58 duration_ms=0.7
+11:42:47.181 INFO  stepmold.graph run.start run_id=agreed/on_unsure pack=probe version=1 entry=classify resumed=false max_steps=100 inputs=ticket
+11:42:47.182 WARNING stepmold.verify node.samples.blind node=classify samples=3 model=FakeModel reason="backend takes no sampling hint, so extra draws repeat the first"
+11:42:47.182 INFO  stepmold.verify node.agreed node=classify agreed=2 of=2 required=2 asked=3 generations=2
+11:42:47.182 INFO  stepmold.graph node.ok run_id=agreed/on_unsure node=classify type=generate attempts=2 output=merge duration_ms=0.3
+11:42:47.182 INFO  stepmold.graph run.end run_id=agreed/on_unsure pack=probe end_node=done steps=2 generations=2 failures=0 output_keys=2 output_bytes=58 duration_ms=0.7
 agreed, on_unsure          -> ended at 'done'   generations=2 state={'ticket': 'the card was charged twice', 'priority': 'p1'} failures=none
 
 --- disagreed, on_unsure
-11:42:47.182 INFO  jig.graph run.start run_id=disagreed/on_unsure pack=probe version=1 entry=classify resumed=false max_steps=100 inputs=ticket
-11:42:47.182 WARNING jig.verify node.samples.blind node=classify samples=3 model=FakeModel reason="backend takes no sampling hint, so extra draws repeat the first"
-11:42:47.182 WARNING jig.verify node.unsure node=classify agreed=1 of=3 required=2 asked=3 distinct=3 generations=3
-11:42:47.182 WARNING jig.graph node.failed run_id=disagreed/on_unsure node=classify type=generate attempts=3 error=Unsure reason="node 'classify' is unsure: 1 of 3 draws agreed and 2 had to; 3 generation(s) spent" on_fail=rescue duration_ms=0.1
-11:42:47.182 INFO  jig.graph edge.on_unsure run_id=disagreed/on_unsure node=classify to=desk
-11:42:47.182 INFO  jig.graph run.end run_id=disagreed/on_unsure pack=probe end_node=desk steps=2 generations=3 failures=1 output_keys=1 output_bytes=40 duration_ms=0.2
+11:42:47.182 INFO  stepmold.graph run.start run_id=disagreed/on_unsure pack=probe version=1 entry=classify resumed=false max_steps=100 inputs=ticket
+11:42:47.182 WARNING stepmold.verify node.samples.blind node=classify samples=3 model=FakeModel reason="backend takes no sampling hint, so extra draws repeat the first"
+11:42:47.182 WARNING stepmold.verify node.unsure node=classify agreed=1 of=3 required=2 asked=3 distinct=3 generations=3
+11:42:47.182 WARNING stepmold.graph node.failed run_id=disagreed/on_unsure node=classify type=generate attempts=3 error=Unsure reason="node 'classify' is unsure: 1 of 3 draws agreed and 2 had to; 3 generation(s) spent" on_fail=rescue duration_ms=0.1
+11:42:47.182 INFO  stepmold.graph edge.on_unsure run_id=disagreed/on_unsure node=classify to=desk
+11:42:47.182 INFO  stepmold.graph run.end run_id=disagreed/on_unsure pack=probe end_node=desk steps=2 generations=3 failures=1 output_keys=1 output_bytes=40 duration_ms=0.2
 disagreed, on_unsure       -> ended at 'desk'   generations=3 state={'ticket': 'the card was charged twice'} failures=[Failure(node='classify', reason="node 'classify' is unsure: 1 of 3 draws agreed and 2 had to; 3 generation(s) spent", attempts=3)]
 
 --- disagreed, only on_fail
-11:42:47.182 INFO  jig.graph run.start run_id=disagreed/only_on_fail pack=probe version=1 entry=classify resumed=false max_steps=100 inputs=ticket
-11:42:47.182 WARNING jig.verify node.samples.blind node=classify samples=3 model=FakeModel reason="backend takes no sampling hint, so extra draws repeat the first"
-11:42:47.182 WARNING jig.verify node.unsure node=classify agreed=1 of=3 required=2 asked=3 distinct=3 generations=3
-11:42:47.182 WARNING jig.graph node.failed run_id=disagreed/only_on_fail node=classify type=generate attempts=3 error=Unsure reason="node 'classify' is unsure: 1 of 3 draws agreed and 2 had to; 3 generation(s) spent" on_fail=rescue duration_ms=0.1
-11:42:47.182 INFO  jig.graph edge.on_fail run_id=disagreed/only_on_fail node=classify to=rescue
-11:42:47.182 INFO  jig.graph run.end run_id=disagreed/only_on_fail pack=probe end_node=rescue steps=2 generations=3 failures=1 output_keys=1 output_bytes=40 duration_ms=0.2
+11:42:47.182 INFO  stepmold.graph run.start run_id=disagreed/only_on_fail pack=probe version=1 entry=classify resumed=false max_steps=100 inputs=ticket
+11:42:47.182 WARNING stepmold.verify node.samples.blind node=classify samples=3 model=FakeModel reason="backend takes no sampling hint, so extra draws repeat the first"
+11:42:47.182 WARNING stepmold.verify node.unsure node=classify agreed=1 of=3 required=2 asked=3 distinct=3 generations=3
+11:42:47.182 WARNING stepmold.graph node.failed run_id=disagreed/only_on_fail node=classify type=generate attempts=3 error=Unsure reason="node 'classify' is unsure: 1 of 3 draws agreed and 2 had to; 3 generation(s) spent" on_fail=rescue duration_ms=0.1
+11:42:47.182 INFO  stepmold.graph edge.on_fail run_id=disagreed/only_on_fail node=classify to=rescue
+11:42:47.182 INFO  stepmold.graph run.end run_id=disagreed/only_on_fail pack=probe end_node=rescue steps=2 generations=3 failures=1 output_keys=1 output_bytes=40 duration_ms=0.2
 disagreed, only on_fail    -> ended at 'rescue' generations=3 state={'ticket': 'the card was charged twice'} failures=[Failure(node='classify', reason="node 'classify' is unsure: 1 of 3 draws agreed and 2 had to; 3 generation(s) spent", attempts=3)]
 
 --- disagreed, neither
-11:42:47.182 INFO  jig.graph run.start run_id=disagreed/neither pack=probe version=1 entry=classify resumed=false max_steps=100 inputs=ticket
-11:42:47.182 WARNING jig.verify node.samples.blind node=classify samples=3 model=FakeModel reason="backend takes no sampling hint, so extra draws repeat the first"
-11:42:47.182 WARNING jig.verify node.unsure node=classify agreed=1 of=3 required=2 asked=3 distinct=3 generations=3
-11:42:47.182 WARNING jig.graph node.failed run_id=disagreed/neither node=classify type=generate attempts=3 error=Unsure reason="node 'classify' is unsure: 1 of 3 draws agreed and 2 had to; 3 generation(s) spent" on_fail=- duration_ms=0.1
-11:42:47.182 ERROR jig.graph run.error run_id=disagreed/neither pack=probe node=classify step=1 error=Unsure reason="node 'classify' is unsure: 1 of 3 draws agreed and 2 had to; 3 generation(s) spent" duration_ms=0.1
+11:42:47.182 INFO  stepmold.graph run.start run_id=disagreed/neither pack=probe version=1 entry=classify resumed=false max_steps=100 inputs=ticket
+11:42:47.182 WARNING stepmold.verify node.samples.blind node=classify samples=3 model=FakeModel reason="backend takes no sampling hint, so extra draws repeat the first"
+11:42:47.182 WARNING stepmold.verify node.unsure node=classify agreed=1 of=3 required=2 asked=3 distinct=3 generations=3
+11:42:47.182 WARNING stepmold.graph node.failed run_id=disagreed/neither node=classify type=generate attempts=3 error=Unsure reason="node 'classify' is unsure: 1 of 3 draws agreed and 2 had to; 3 generation(s) spent" on_fail=- duration_ms=0.1
+11:42:47.182 ERROR stepmold.graph run.error run_id=disagreed/neither pack=probe node=classify step=1 error=Unsure reason="node 'classify' is unsure: 1 of 3 draws agreed and 2 had to; 3 generation(s) spent" duration_ms=0.1
 disagreed, neither         -> Unsure: node 'classify' is unsure: 1 of 3 draws agreed and 2 had to; 3 generation(s) spent
 ```
 
@@ -1526,8 +1526,8 @@ p = pathlib.Path("/tmp/notify-gate/graph.yaml")
 p.write_text(p.read_text().replace("    type: generate",
                                    "    type: generate\n    samples: 3\n    agree: 2"))
 PY
-$ python3 -m jig validate /tmp/notify-gate
-jig: pack error: graph.yaml: node 'draft' has unknown key(s): agree, samples
+$ python3 -m stepmold validate /tmp/notify-gate
+stepmold: pack error: graph.yaml: node 'draft' has unknown key(s): agree, samples
 ```
 
 — and the probe above builds its node in memory precisely because a pack cannot. Until
@@ -1543,7 +1543,7 @@ Three smaller limits, all of them things the code does not do rather than does b
 * **`on_unsure` on any other node type is inert.** The loader accepts it on a `tool` or
   `assert` node — it is checked as a reachable target and never read again, because only
   the generate branch of `graph.run` looks at it.
-* **A backend that cannot vary its sampling makes the gate lie**, and jig says so at
+* **A backend that cannot vary its sampling makes the gate lie**, and stepmold says so at
   WARNING: `node.samples.blind`. Identical requests produce identical answers, the draws
   "agree", and the pack reports a confidence nobody measured. `FakeModel` is exactly such
   a backend — its `generate` takes no `sampling` keyword — which is why that warning is
@@ -1577,9 +1577,9 @@ makes dotted `when: {decision.action: refund}` possible — though not dotted
 
 ```python
 # probe_state.py — the three commit collisions, one line each.
-from jig.graph import StateCollision, run
-from jig.model import FakeModel
-from jig.pack import Edge, Node, Pack
+from stepmold.graph import StateCollision, run
+from stepmold.model import FakeModel
+from stepmold.pack import Edge, Node, Pack
 
 GRAMMAR = {
     "type": "object",
@@ -1678,8 +1678,8 @@ EOF
 ```
 
 ```
-$ python3 -m jig validate reserved
-jig: pack error: graph.yaml: node 'decide' has output 'scratchpad', which is a name jig reserves for its own scope — committing there would write the node's answer into the think stage's notes slot
+$ python3 -m stepmold validate reserved
+stepmold: pack error: graph.yaml: node 'decide' has output 'scratchpad', which is a name stepmold reserves for its own scope — committing there would write the node's answer into the think stage's notes slot
 ```
 
 A **run input** may. `graph.run` starts with `state = dict(inputs or {})` and screens
@@ -1738,9 +1738,9 @@ EOF
 # caller-supplied scratchpad.
 import json
 
-from jig.graph import run
-from jig.model import FakeModel
-from jig.pack import load_pack
+from stepmold.graph import run
+from stepmold.model import FakeModel
+from stepmold.pack import load_pack
 
 pack = load_pack("notes")
 
@@ -1767,7 +1767,7 @@ inputs: {'ticket': 'double charged', 'scratchpad': 'POISON FROM THE CALLER'}
 
 The emit stage overwrites it with the real notes; the think stage does not. If any input
 to a run comes from somewhere you do not control, **drop `scratchpad` from the inputs
-dict in your own caller** — jig will not do it for you. (`pack.py`'s own comment on
+dict in your own caller** — stepmold will not do it for you. (`pack.py`'s own comment on
 `RESERVED_STATE_NAMES` says this check "belongs where inputs enter a run (`graph.run`)";
 it is not there yet.)
 
@@ -1790,7 +1790,7 @@ Do not reach for a `generate` node to do arithmetic a caller could do for free.
 
 ## Checkpoints, resume and replay
 
-`jig run --store <file.db>` writes a checkpoint after each node that completes (see the
+`stepmold run --store <file.db>` writes a checkpoint after each node that completes (see the
 table in [How a run walks](#how-a-run-walks)), and `--resume <run-id>` picks a dead run
 up from its last one. The pack below dead-ends on purpose: the only edge out of the
 assert node `k` carries a `when:` that can never match.
@@ -1848,7 +1848,7 @@ rm -f /tmp/snag.db      # the transcripts below start from an empty store
 # probe_checkpoints.py — print a store's whole audit trail.
 import sys
 
-from jig.state import Store
+from stepmold.state import Store
 
 store = Store(sys.argv[1])
 for run_id in sorted(store.runs()):
@@ -1860,8 +1860,8 @@ store.close()
 ```
 
 ```
-$ python3 -m jig run snag --store /tmp/snag.db --run-id assert_deadend --input '{}'
-jig: DeadEnd: no outgoing edge from 'k' matched the current state
+$ python3 -m stepmold run snag --store /tmp/snag.db --run-id assert_deadend --input '{}'
+stepmold: DeadEnd: no outgoing edge from 'k' matched the current state
 
 $ python3 probe_checkpoints.py /tmp/snag.db
 assert_deadend   step=1 node=a   next_node='k'    state={'x': 1}
@@ -1895,8 +1895,8 @@ EOF
 ```
 
 ```
-$ python3 -m jig run snag --store /tmp/snag.db --run-id generate_deadend --input '{}'
-jig: DeadEnd: no outgoing edge from 'a' matched the current state
+$ python3 -m stepmold run snag --store /tmp/snag.db --run-id generate_deadend --input '{}'
+stepmold: DeadEnd: no outgoing edge from 'a' matched the current state
 
 $ python3 probe_checkpoints.py /tmp/snag.db
 assert_deadend   step=1 node=a   next_node='k'    state={'x': 1}
@@ -1926,13 +1926,13 @@ EOF
 ```
 
 ```
-$ python3 -m jig run snag --store /tmp/snag.db --resume assert_deadend --log-level info
-18:07:21.874 INFO  jig.state resume.start run_id=assert_deadend pack=snag from_step=1 next_node=k
-18:07:21.875 INFO  jig.state lease.taken run_id=assert_deadend store=/tmp/snag.db seconds=300.0
-18:07:21.875 INFO  jig.graph run.start run_id=assert_deadend pack=snag version=1 entry=k resumed=true max_steps=100 inputs=x
-18:07:21.875 INFO  jig.graph run.resumed run_id=assert_deadend pack=snag from_step=1 next_node=k done=1 failures=0
-18:07:21.876 INFO  jig.graph run.end run_id=assert_deadend pack=snag end_node=z steps=3 generations=1 failures=0 output_keys=1 output_bytes=8 duration_ms=0.8
-18:07:21.876 INFO  jig.state lease.released run_id=assert_deadend store=/tmp/snag.db
+$ python3 -m stepmold run snag --store /tmp/snag.db --resume assert_deadend --log-level info
+18:07:21.874 INFO  stepmold.state resume.start run_id=assert_deadend pack=snag from_step=1 next_node=k
+18:07:21.875 INFO  stepmold.state lease.taken run_id=assert_deadend store=/tmp/snag.db seconds=300.0
+18:07:21.875 INFO  stepmold.graph run.start run_id=assert_deadend pack=snag version=1 entry=k resumed=true max_steps=100 inputs=x
+18:07:21.875 INFO  stepmold.graph run.resumed run_id=assert_deadend pack=snag from_step=1 next_node=k done=1 failures=0
+18:07:21.876 INFO  stepmold.graph run.end run_id=assert_deadend pack=snag end_node=z steps=3 generations=1 failures=0 output_keys=1 output_bytes=8 duration_ms=0.8
+18:07:21.876 INFO  stepmold.state lease.released run_id=assert_deadend store=/tmp/snag.db
 {"x": 1}
 ```
 
@@ -1948,16 +1948,16 @@ Resuming a run that already finished replays its checkpoint through `graph.repla
 calls no model at all, so a supervisor can retry a resume without paying for it twice:
 
 ```
-$ python3 -m jig run snag --store /tmp/snag.db --resume assert_deadend --log-level info
-18:07:21.944 INFO  jig.state resume.replayed run_id=assert_deadend pack=snag step=3 end_node=z
+$ python3 -m stepmold run snag --store /tmp/snag.db --resume assert_deadend --log-level info
+18:07:21.944 INFO  stepmold.state resume.replayed run_id=assert_deadend pack=snag step=3 end_node=z
 {"x": 1}
 ```
 
 Reusing a run id for a *fresh* run in the same store is refused instead:
 
 ```
-$ python3 -m jig run snag --store /tmp/snag.db --run-id assert_deadend --input '{}'
-jig: RunIdInUse: run id 'assert_deadend' already has checkpoints in this store; resume it, delete it, or choose another id
+$ python3 -m stepmold run snag --store /tmp/snag.db --run-id assert_deadend --input '{}'
+stepmold: RunIdInUse: run id 'assert_deadend' already has checkpoints in this store; resume it, delete it, or choose another id
 ```
 
 Other things worth knowing before you rely on a store:
@@ -1968,7 +1968,7 @@ Other things worth knowing before you rely on a store:
 | resuming under a different pack | refused with `CheckpointMismatch` — the checkpoint records the pack name and version (`state._check_same_pack`) |
 | resuming an id the store never saw | `UnknownRun` |
 | resuming a pack with `tool` nodes, without `--tools` | `ToolsNotAvailable` at the tool node. The registry is per call, so a resume needs it exactly as the first attempt did (`state.resume` passes `tools=` through) |
-| retention | nothing is deleted on jig's own initiative; `Store.prune` and `Store.vacuum` are the operator's tools |
+| retention | nothing is deleted on stepmold's own initiative; `Store.prune` and `Store.vacuum` are the operator's tools |
 
 ## Exactly once — a tool call must not happen twice
 
@@ -2001,7 +2001,7 @@ It reaches the store as `tool_calls`, a JSON column on the checkpoint row
 ### When it is written, and the window that is left open
 
 Read the order carefully, because the guarantee is exactly as strong as this sequence and
-no stronger (`jig/graph.py`, the `tool` branch):
+no stronger (`stepmold/graph.py`, the `tool` branch):
 
 | # | What the walker does |
 | --- | --- |
@@ -2014,7 +2014,7 @@ no stronger (`jig/graph.py`, the `tool` branch):
 | 7 | clears the record and checkpoints again, now with `next_node` pointing at the edge's target |
 
 **The record is written after the call returns, not before it.** That is not an oversight
-to be documented politely — it is the shape of the promise, and it means jig makes a
+to be documented politely — it is the shape of the promise, and it means stepmold makes a
 narrower guarantee than "exactly once" unqualified:
 
 > A call that was **written down** is never made twice. A call that was **not** written
@@ -2024,10 +2024,10 @@ Everything from step 4 onwards is protected: the commit can fail, the edge can d
 the machine can lose power, and the resumed run finds the record and replays it. Steps 2
 and 3 are not: a process that dies *inside* the tool, or after the tool returned but
 before the checkpoint landed, leaves nothing on disk saying the call happened, and the
-resumed run calls again. jig cannot record a call it never saw return, and it does not
+resumed run calls again. stepmold cannot record a call it never saw return, and it does not
 pretend to — there is no pre-call intent record, no two-phase commit, and no
 deduplication key handed to the tool. A tool whose second execution would be
-catastrophic needs its own idempotency key on the host side; jig closes the window from
+catastrophic needs its own idempotency key on the host side; stepmold closes the window from
 step 4, not from step 1.
 
 **When it is cleared.** Step 7, the moment an edge out of the node is taken. From there
@@ -2041,7 +2041,7 @@ finished normally carries no trace of its calls at all:
 # probe_rows.py — a store's whole audit trail, tool calls included.
 import sys
 
-from jig.state import Store
+from stepmold.state import Store
 
 store = Store(sys.argv[1])
 for checkpoint in store.history(sys.argv[2]):
@@ -2053,7 +2053,7 @@ store.close()
 
 ```
 $ rm -f /tmp/outbox.txt
-$ python3 -m jig run notify --store /tmp/rows.db --run-id ok --tools ./mailer.py --input '{"to": "ops@example.com", "incident": "db-3 disk at 100%"}'
+$ python3 -m stepmold run notify --store /tmp/rows.db --run-id ok --tools ./mailer.py --input '{"to": "ops@example.com", "incident": "db-3 disk at 100%"}'
 {"receipt": "message 1", "subject": "disk full on db-3"}
 
 $ python3 probe_rows.py /tmp/rows.db ok
@@ -2077,10 +2077,10 @@ import os
 import subprocess
 import sys
 
-from jig.graph import run
-from jig.model import FakeModel
-from jig.pack import load_pack
-from jig.state import Store
+from stepmold.graph import run
+from stepmold.model import FakeModel
+from stepmold.pack import load_pack
+from stepmold.state import Store
 
 import mailer
 
@@ -2143,14 +2143,14 @@ Three facts in that output:
 Now resume it with the ordinary CLI — same pack, same store, same registry:
 
 ```
-$ python3 -m jig run notify --store /tmp/notify.db --resume alert1 --tools ./mailer.py --log-level info
-11:42:58.792 INFO  jig.state resume.start run_id=alert1 pack=notify from_step=2 next_node=send
-11:42:58.793 INFO  jig.state lease.taken run_id=alert1 store=/tmp/notify.db seconds=300.0
-11:42:58.793 INFO  jig.graph run.start run_id=alert1 pack=notify version=1 entry=send resumed=true max_steps=100 inputs=incident,subject,to
-11:42:58.793 INFO  jig.graph run.resumed run_id=alert1 pack=notify from_step=2 next_node=send done=2 failures=0
-11:42:58.794 INFO  jig.graph node.ok run_id=alert1 node=send type=tool attempts=0 tool=send_email replayed=true output=merge duration_ms=0.0
-11:42:58.794 INFO  jig.graph run.end run_id=alert1 pack=notify end_node=done steps=4 generations=1 failures=0 output_keys=2 output_bytes=56 duration_ms=0.9
-11:42:58.795 INFO  jig.state lease.released run_id=alert1 store=/tmp/notify.db
+$ python3 -m stepmold run notify --store /tmp/notify.db --resume alert1 --tools ./mailer.py --log-level info
+11:42:58.792 INFO  stepmold.state resume.start run_id=alert1 pack=notify from_step=2 next_node=send
+11:42:58.793 INFO  stepmold.state lease.taken run_id=alert1 store=/tmp/notify.db seconds=300.0
+11:42:58.793 INFO  stepmold.graph run.start run_id=alert1 pack=notify version=1 entry=send resumed=true max_steps=100 inputs=incident,subject,to
+11:42:58.793 INFO  stepmold.graph run.resumed run_id=alert1 pack=notify from_step=2 next_node=send done=2 failures=0
+11:42:58.794 INFO  stepmold.graph node.ok run_id=alert1 node=send type=tool attempts=0 tool=send_email replayed=true output=merge duration_ms=0.0
+11:42:58.794 INFO  stepmold.graph run.end run_id=alert1 pack=notify end_node=done steps=4 generations=1 failures=0 output_keys=2 output_bytes=56 duration_ms=0.9
+11:42:58.795 INFO  stepmold.state lease.released run_id=alert1 store=/tmp/notify.db
 {"receipt": "message 1", "subject": "disk full on db-3"}
 
 $ cat /tmp/outbox.txt
@@ -2184,12 +2184,12 @@ import os
 import subprocess
 import sys
 
-from jig import log
-from jig.graph import run
-from jig.model import FakeModel
-from jig.pack import load_pack
-from jig.state import Store, resume
-from jig.tools import ToolRegistry
+from stepmold import log
+from stepmold.graph import run
+from stepmold.model import FakeModel
+from stepmold.pack import load_pack
+from stepmold.state import Store, resume
+from stepmold.tools import ToolRegistry
 
 OUTBOX = "/tmp/probe_outbox.txt"
 DB = "/tmp/probe_notify.db"
@@ -2285,8 +2285,8 @@ $ python3 probe_exactly_once.py
 mode        crash     resume    receipt
 recorded    1 sent    1 sent    message 1
 idempotent  1 sent    2 sent    message 2
-11:42:47.693 WARNING jig.graph tool.unrecorded run_id=old-store node=send tool=send_email store=OldStore reason="store.save takes no tool_calls, so a resumed run cannot know this call already happened"
-11:42:47.697 WARNING jig.graph tool.unrecorded run_id=old-store node=send tool=send_email store=OldStore reason="store.save takes no tool_calls, so a resumed run cannot know this call already happened"
+11:42:47.693 WARNING stepmold.graph tool.unrecorded run_id=old-store node=send tool=send_email store=OldStore reason="store.save takes no tool_calls, so a resumed run cannot know this call already happened"
+11:42:47.697 WARNING stepmold.graph tool.unrecorded run_id=old-store node=send tool=send_email store=OldStore reason="store.save takes no tool_calls, so a resumed run cannot know this call already happened"
 old-store   1 sent    2 sent    message 2
 mid-call    1 sent    2 sent    message 2
 ```
@@ -2304,7 +2304,7 @@ resume means no repeat — but it also means the exactly-once machinery needs `s
 `tools` together to do anything (`graph.run`).
 
 **`idempotent=True` is a promise the author makes, not a hint.** It says: calling this
-tool twice with the same arguments has the same effect as calling it once. jig takes it
+tool twice with the same arguments has the same effect as calling it once. stepmold takes it
 literally — it skips the record, and a resumed run calls the tool again. It is not "this
 tool is fast", "this tool is probably safe" or "this tool mostly reads". A `PUT` to a
 fixed key qualifies; an `INSERT`, a payment and an email do not.
@@ -2320,7 +2320,7 @@ brought its own store has chosen this.
 
 A replayed result is only the answer to the arguments it was computed from, so the walker
 compares them before committing it. They cannot differ on a faithful resume — the state
-and the record came out of the same row — so a difference means something outside jig has
+and the record came out of the same row — so a difference means something outside stepmold has
 moved. Neither choice left is safe, and the run stops instead of choosing:
 
 ```python
@@ -2329,10 +2329,10 @@ moved. Neither choice left is safe, and the run stops instead of choosing:
 # faithful resume the state and the record came out of the same row.
 import dataclasses
 
-from jig.graph import run
-from jig.model import FakeModel
-from jig.pack import load_pack
-from jig.state import Store
+from stepmold.graph import run
+from stepmold.model import FakeModel
+from stepmold.pack import load_pack
+from stepmold.state import Store
 
 import mailer
 
@@ -2497,7 +2497,7 @@ EOF
 ```
 
 ```
-$ python3 -m jig validate refund_router
+$ python3 -m stepmold validate refund_router
 refund_router v1: 6 nodes, 5 edges, 0 evalset cases, entry 'classify'
 ```
 
@@ -2507,11 +2507,11 @@ Each path is one scripted model: `fakes/<name>.json` answers the nodes in order.
 matches:
 
 ```
-$ python3 -m jig run refund_router --model fake:fakes/refund.json --run-id refund --log-level info --input '{"ticket": "t"}'
-18:05:55.246 INFO  jig.graph run.start run_id=refund pack=refund_router version=1 entry=classify resumed=false max_steps=20 inputs=ticket
-18:05:55.246 INFO  jig.graph node.ok run_id=refund node=classify type=generate attempts=1 output=merge duration_ms=0.0
-18:05:55.246 INFO  jig.graph node.ok run_id=refund node=decide type=generate attempts=1 output=decision duration_ms=0.1
-18:05:55.246 INFO  jig.graph run.end run_id=refund pack=refund_router end_node=refunded steps=4 generations=2 failures=0 output_keys=3 output_bytes=99 duration_ms=0.5
+$ python3 -m stepmold run refund_router --model fake:fakes/refund.json --run-id refund --log-level info --input '{"ticket": "t"}'
+18:05:55.246 INFO  stepmold.graph run.start run_id=refund pack=refund_router version=1 entry=classify resumed=false max_steps=20 inputs=ticket
+18:05:55.246 INFO  stepmold.graph node.ok run_id=refund node=classify type=generate attempts=1 output=merge duration_ms=0.0
+18:05:55.246 INFO  stepmold.graph node.ok run_id=refund node=decide type=generate attempts=1 output=decision duration_ms=0.1
+18:05:55.246 INFO  stepmold.graph run.end run_id=refund pack=refund_router end_node=refunded steps=4 generations=2 failures=0 output_keys=3 output_bytes=99 duration_ms=0.5
 {"amount_usd": 120, "decision": {"action": "refund", "note": "under policy cap"}, "kind": "refund"}
 ```
 
@@ -2521,11 +2521,11 @@ at INFO (it is DEBUG when it passes, `graph.run`).
 **Path 2 — the assert node diverts.** `amount_usd` is 900:
 
 ```
-$ python3 -m jig run refund_router --model fake:fakes/big.json --run-id big --log-level info --input '{"ticket": "t"}'
-18:05:55.306 INFO  jig.graph run.start run_id=big pack=refund_router version=1 entry=classify resumed=false max_steps=20 inputs=ticket
-18:05:55.306 INFO  jig.graph node.ok run_id=big node=classify type=generate attempts=1 output=merge duration_ms=0.1
-18:05:55.306 INFO  jig.graph node.assert run_id=big node=small_enough type=assert passed=false expr="amount_usd <= 500" to=manual_review duration_ms=0.0
-18:05:55.307 INFO  jig.graph run.end run_id=big pack=refund_router end_node=manual_review steps=3 generations=1 failures=0 output_keys=2 output_bytes=37 duration_ms=0.5
+$ python3 -m stepmold run refund_router --model fake:fakes/big.json --run-id big --log-level info --input '{"ticket": "t"}'
+18:05:55.306 INFO  stepmold.graph run.start run_id=big pack=refund_router version=1 entry=classify resumed=false max_steps=20 inputs=ticket
+18:05:55.306 INFO  stepmold.graph node.ok run_id=big node=classify type=generate attempts=1 output=merge duration_ms=0.1
+18:05:55.306 INFO  stepmold.graph node.assert run_id=big node=small_enough type=assert passed=false expr="amount_usd <= 500" to=manual_review duration_ms=0.0
+18:05:55.307 INFO  stepmold.graph run.end run_id=big pack=refund_router end_node=manual_review steps=3 generations=1 failures=0 output_keys=2 output_bytes=37 duration_ms=0.5
 {"amount_usd": 900, "kind": "refund"}
 ```
 
@@ -2535,15 +2535,15 @@ $ python3 -m jig run refund_router --model fake:fakes/big.json --run-id big --lo
 text, then an out-of-enum action:
 
 ```
-$ python3 -m jig run refund_router --model fake:fakes/broken.json --run-id broken --log-level info --input '{"ticket": "t"}'
-18:05:55.367 INFO  jig.graph run.start run_id=broken pack=refund_router version=1 entry=classify resumed=false max_steps=20 inputs=ticket
-18:05:55.367 INFO  jig.graph node.ok run_id=broken node=classify type=generate attempts=1 output=merge duration_ms=0.0
-18:05:55.367 WARNING jig.verify node.rejected node=decide attempt=1 cause=verify reason="output was not valid JSON — return a single JSON object and nothing else" of=2
-18:05:55.367 INFO  jig.verify node.retry node=decide attempt=2 of=2 temperature=0.5 seed=1 reason="output was not valid JSON — return a single JSON object and nothing else" rethink=false
-18:05:55.367 WARNING jig.verify node.rejected node=decide attempt=2 cause=verify reason="schema: action: value is not one of 'refund', 'deny'" of=2
-18:05:55.367 WARNING jig.graph node.failed run_id=broken node=decide type=generate attempts=2 error=NodeFailed reason="schema: action: value is not one of 'refund', 'deny'" on_fail=manual_review duration_ms=0.2
-18:05:55.367 INFO  jig.graph edge.on_fail run_id=broken node=decide to=manual_review
-18:05:55.368 INFO  jig.graph run.end run_id=broken pack=refund_router end_node=manual_review steps=4 generations=3 failures=1 output_keys=2 output_bytes=37 duration_ms=0.7
+$ python3 -m stepmold run refund_router --model fake:fakes/broken.json --run-id broken --log-level info --input '{"ticket": "t"}'
+18:05:55.367 INFO  stepmold.graph run.start run_id=broken pack=refund_router version=1 entry=classify resumed=false max_steps=20 inputs=ticket
+18:05:55.367 INFO  stepmold.graph node.ok run_id=broken node=classify type=generate attempts=1 output=merge duration_ms=0.0
+18:05:55.367 WARNING stepmold.verify node.rejected node=decide attempt=1 cause=verify reason="output was not valid JSON — return a single JSON object and nothing else" of=2
+18:05:55.367 INFO  stepmold.verify node.retry node=decide attempt=2 of=2 temperature=0.5 seed=1 reason="output was not valid JSON — return a single JSON object and nothing else" rethink=false
+18:05:55.367 WARNING stepmold.verify node.rejected node=decide attempt=2 cause=verify reason="schema: action: value is not one of 'refund', 'deny'" of=2
+18:05:55.367 WARNING stepmold.graph node.failed run_id=broken node=decide type=generate attempts=2 error=NodeFailed reason="schema: action: value is not one of 'refund', 'deny'" on_fail=manual_review duration_ms=0.2
+18:05:55.367 INFO  stepmold.graph edge.on_fail run_id=broken node=decide to=manual_review
+18:05:55.368 INFO  stepmold.graph run.end run_id=broken pack=refund_router end_node=manual_review steps=4 generations=3 failures=1 output_keys=2 output_bytes=37 duration_ms=0.7
 {"amount_usd": 120, "kind": "refund"}
 ```
 
@@ -2553,10 +2553,10 @@ $ python3 -m jig run refund_router --model fake:fakes/broken.json --run-id broke
 and the un-conditioned edge takes it straight to the ending:
 
 ```
-$ python3 -m jig run refund_router --model fake:fakes/question.json --run-id question --log-level info --input '{"ticket": "t"}'
-18:05:55.431 INFO  jig.graph run.start run_id=question pack=refund_router version=1 entry=classify resumed=false max_steps=20 inputs=ticket
-18:05:55.431 INFO  jig.graph node.ok run_id=question node=classify type=generate attempts=1 output=merge duration_ms=0.1
-18:05:55.431 INFO  jig.graph run.end run_id=question pack=refund_router end_node=manual_review steps=2 generations=1 failures=0 output_keys=2 output_bytes=37 duration_ms=0.4
+$ python3 -m stepmold run refund_router --model fake:fakes/question.json --run-id question --log-level info --input '{"ticket": "t"}'
+18:05:55.431 INFO  stepmold.graph run.start run_id=question pack=refund_router version=1 entry=classify resumed=false max_steps=20 inputs=ticket
+18:05:55.431 INFO  stepmold.graph node.ok run_id=question node=classify type=generate attempts=1 output=merge duration_ms=0.1
+18:05:55.431 INFO  stepmold.graph run.end run_id=question pack=refund_router end_node=manual_review steps=2 generations=1 failures=0 output_keys=2 output_bytes=37 duration_ms=0.4
 {"amount_usd": 0, "kind": "question"}
 ```
 
@@ -2592,7 +2592,7 @@ and they are the best next read after this page:
 | `content_moderation` | two locks in series: a generate `assert:` and an `assert` node re-reading committed state |
 
 ```
-$ python3 -m jig eval examples/support_triage
+$ python3 -m stepmold eval examples/support_triage
 support_triage: 12/12 cases passed
 ```
 
@@ -2656,7 +2656,7 @@ Unreachable nodes are **not** flagged.
 **Checked only when a registry is passed** (`pack.check_tools`, from
 `load_pack(path, tools=registry)`): that every tool node names a registered tool, and
 that everything the tool declares it `reads` is written by some earlier node or declared
-as a run input. `jig validate` has no `--tools` flag, so it never runs either check.
+as a run input. `stepmold validate` has no `--tools` flag, so it never runs either check.
 
 **Checked by the CLI only** (`cli._check_output_shapes`, run by `validate`, `run` and
 `eval`): `output` written in the other node type's shape. Library callers do not get
@@ -2673,7 +2673,7 @@ strings.
 | `NodeFailed` | `verify.run_node` | a generate node's ladder is spent and it has no `on_fail` |
 | `MissingVariable` | prompt render | a prompt names state nobody wrote, and the node has no `on_fail` |
 | `AssertFailed` | `graph.run` | an `assert` node's expression was false and it has no `on_fail` |
-| `ExprError` | `jig.expr` | an expression is unsupported or names something absent |
+| `ExprError` | `stepmold.expr` | an expression is unsupported or names something absent |
 | `StateCollision` | `graph.commit` | a node's commit would overwrite a run input |
 | `BackendError` | the backend | the model could not be reached; never routed to `on_fail` |
 | `Unsure` | `verify.run_node` | a node's independent draws disagreed and it declares neither `on_unsure` nor `on_fail`. A `RunError`, **not** a `NodeFailed` |
@@ -2683,17 +2683,17 @@ strings.
 | `ToolContract` | `tools.Tool.invoke` | the tool was missing one of its declared `reads`, or returned something its `writes` did not describe; routed to `on_fail` |
 | `ToolReplayMismatch` | `graph._replay_call` | a run resumed into a recorded call whose arguments no longer match state ([Exactly once](#exactly-once--a-tool-call-must-not-happen-twice)) |
 | `RunIdInUse` | `graph.run`, `state.Store.save` | a fresh run reused a run id that already has checkpoints |
-| `CheckpointMismatch`, `UnknownRun`, `ResumeInProgress`, `StoreBusy` | `jig.state` | resume-time and store-level failures ([Checkpoints](#checkpoints-resume-and-replay)) |
+| `CheckpointMismatch`, `UnknownRun`, `ResumeInProgress`, `StoreBusy` | `stepmold.state` | resume-time and store-level failures ([Checkpoints](#checkpoints-resume-and-replay)) |
 
 `RunIdInUse` needs one clause of its own, because it is easy to think you are protected
 by it when you are not. `graph.run` performs its check **only** when a `store` is
-passed, a `run_id` is passed, and it is not a resume. `jig run --run-id refund` with no
+passed, a `run_id` is passed, and it is not a resume. `stepmold run --run-id refund` with no
 `--store` — which is eight of the commands on this page — can never raise it, and run ids
 are not unique across runs unless a store is enforcing them. The store raises its own
 `RunIdInUse` (different wording) when two runs race for the same id at their first
 checkpoint (`state.Store._claim`).
 
-All of these subclass `RunError` (`jig/errors.py`, plus `graph.StateCollision`, the
-`jig.tools` and `graph` tool errors, and the `jig.state` ones). Every one raised *during* the walk is logged as `run.error` on its way
+All of these subclass `RunError` (`stepmold/errors.py`, plus `graph.StateCollision`, the
+`stepmold.tools` and `graph` tool errors, and the `stepmold.state` ones). Every one raised *during* the walk is logged as `run.error` on its way
 out; `graph.run`'s `RunIdInUse` check happens before the walk starts, so it is logged as
 nothing at all — the run has not even printed `run.start`.

@@ -20,7 +20,7 @@
 #                          flagged                          manual_review
 #
 # Four checks, four terminal reasons. Each failing check routes to its own
-# one-answer node, because the reason has to reach the output and in jig only a
+# one-answer node, because the reason has to reach the output and in stepmold only a
 # node can write to state.
 #
 # `inputs_check` runs before any of it: a run needs `invoice_text` and a `today`

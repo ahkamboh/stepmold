@@ -4,20 +4,20 @@ docs/ARCHITECTURE.md §0 makes one quantitative claim and the whole product rest
 
     "Use a smaller model" -> error compounding (2%/step = 33% failure at 20 steps)
 
-and §3 claims jig removes that structurally — short bounded steps, a grammar per node,
+and §3 claims stepmold removes that structurally — short bounded steps, a grammar per node,
 verify-before-commit, and a rejected generation that never re-enters context. Nobody had
 ever measured it. This module is the apparatus; `test_longhorizon.py` is the experiment.
 
 Two pieces:
 
-* `build_pack` writes a real JigPack to disk — an N-link arithmetic chain where every
+* `build_pack` writes a real StepmoldPack to disk — an N-link arithmetic chain where every
   node's correct output is a single integer computed from the previous one. That
   checkability is the point: a wrong answer is unambiguous, so "did the run succeed" is
   a fact rather than a judgement. The same chain is emitted under different `Arm`s
-  (strict schema or permissive, semantic assert or none, retries or none), so jig's
+  (strict schema or permissive, semantic assert or none, retries or none), so stepmold's
   defences can be switched off one at a time and the difference measured.
 
-* `FlakyModel` is a `jig.model.Model` that fails on purpose with a *seeded* per-call
+* `FlakyModel` is a `stepmold.model.Model` that fails on purpose with a *seeded* per-call
   probability, in the six ways a small model actually fails: prose instead of JSON,
   prose wrapped around good JSON, truncated JSON, a wrong-typed field, an extra field,
   and — the one no schema can catch — a plausible integer that is simply wrong.
@@ -26,9 +26,9 @@ The fault draw is a hash of `(seed, node, attempt)`, not a sequential RNG. That 
 deliberate and load-bearing: a paired comparison needs node 7's first attempt to
 misbehave *identically* whether or not the arm under test allows retries. A sequential
 RNG would desynchronise the moment one arm made a different number of calls, and the
-"jig vs baseline" number would be measuring stream drift as much as jig.
+"stepmold vs baseline" number would be measuring stream drift as much as stepmold.
 
-stdlib only, like everything else in jig. Nothing here touches a network.
+stdlib only, like everything else in stepmold. Nothing here touches a network.
 """
 
 import hashlib
@@ -38,8 +38,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from jig.model import Call
-from jig.pack import load_pack
+from stepmold.model import Call
+from stepmold.pack import load_pack
 
 __all__ = [
     "ARMS",
@@ -61,7 +61,7 @@ __all__ = [
 
 # The recurrence every node computes. Chosen for three properties: it stays inside three
 # digits so prompts never grow with N (the horizon claim would be untestable if they
-# did), it is cheap to express in jig's assert language, and it mixes enough that a
+# did), it is cheap to express in stepmold's assert language, and it mixes enough that a
 # corrupted link never coincidentally re-joins the correct chain.
 STEP_MUL = 7
 STEP_ADD = 13
@@ -91,13 +91,13 @@ def expected_final(seed_value, n):
 
 @dataclass(frozen=True)
 class Arm:
-    """One configuration of jig's defences, so they can be removed one at a time.
+    """One configuration of stepmold's defences, so they can be removed one at a time.
 
     `naive` is the closest thing this harness has to ARCHITECTURE.md's "naive 8B, free-running
     loop": the model's output is committed if it is a JSON object at all. It is not a
-    *straw* baseline — it still gets jig's graph decomposition and its fresh per-node
+    *straw* baseline — it still gets stepmold's graph decomposition and its fresh per-node
     context, because those are structural and cannot be switched off without writing a
-    different runtime. So every number below understates jig's total contribution and
+    different runtime. So every number below understates stepmold's total contribution and
     isolates exactly the part this experiment is about: verification and the ladder.
     """
 
@@ -112,14 +112,14 @@ class Arm:
 NAIVE = Arm("naive", strict_schema=False, check_answer=False, retries=0)
 GRAMMAR_ONLY = Arm("grammar_only", strict_schema=True, check_answer=False, retries=0)
 VERIFY_ONLY = Arm("verify_only", strict_schema=True, check_answer=True, retries=0)
-JIG = Arm("jig", strict_schema=True, check_answer=True, retries=2)
-JIG_LADDER_5 = Arm("jig_r5", strict_schema=True, check_answer=True, retries=5)
-JIG_TWO_STAGE = Arm("jig_two_stage", strict_schema=True, check_answer=True, retries=2,
+STEPMOLD = Arm("stepmold", strict_schema=True, check_answer=True, retries=2)
+STEPMOLD_LADDER_5 = Arm("stepmold_r5", strict_schema=True, check_answer=True, retries=5)
+STEPMOLD_TWO_STAGE = Arm("stepmold_two_stage", strict_schema=True, check_answer=True, retries=2,
                     two_stage=True)
-JIG_ON_FAIL = Arm("jig_on_fail", strict_schema=True, check_answer=True, retries=2,
+STEPMOLD_ON_FAIL = Arm("stepmold_on_fail", strict_schema=True, check_answer=True, retries=2,
                   on_fail_end=True)
 
-ARMS = (NAIVE, GRAMMAR_ONLY, VERIFY_ONLY, JIG)
+ARMS = (NAIVE, GRAMMAR_ONLY, VERIFY_ONLY, STEPMOLD)
 
 
 # ------------------------------------------------------------------ pack emission
@@ -240,7 +240,7 @@ POISON_MARK = "POISON-9f3a"
 
 # How a small model fails, and how often. `wrong_value` carries the most weight on
 # purpose: it is the only fault a grammar cannot see, and a mix that under-weights it
-# would flatter jig. The rest split between format failures (which a grammar catches
+# would flatter stepmold. The rest split between format failures (which a grammar catches
 # for free) and shape failures (which a schema catches).
 FAULT_MIX = (
     ("wrong_value", 0.35),     # valid JSON, valid schema, plausible integer, wrong
@@ -329,7 +329,7 @@ class FlakyModel:
         Counted separately from the emit attempts, so that a `think` which is re-run
         draws a fresh fault. Today `verify.run_node` never re-runs it — that is the
         defect this harness exists to measure — but the counter has to be here, or the
-        measurement would be an artefact of the model rather than of jig.
+        measurement would be an artefact of the model rather than of stepmold.
         """
         attempt = self.think_attempts.get(node, 0)
         self.think_attempts[node] = attempt + 1
@@ -354,8 +354,8 @@ class FlakyModel:
         not reshuffle which attempts fail, so two sweeps stay comparable.
         """
         # A stubborn model's draw ignores the attempt number, so every re-sample of a
-        # node reproduces the identical mistake. Nothing in jig's ladder can move it:
-        # `jig/verify.py` says so itself — with no sampling parameter in the `Model`
+        # node reproduces the identical mistake. Nothing in stepmold's ladder can move it:
+        # `stepmold/verify.py` says so itself — with no sampling parameter in the `Model`
         # protocol, a re-sample changes only the appended feedback.
         index = 0 if self.stubborn else attempt
         if _draw(self.seed, node, index, "fail") >= self.p:

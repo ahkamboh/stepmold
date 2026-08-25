@@ -1,4 +1,4 @@
-"""A YAML subset parser, because jig may not install PyYAML.
+"""A YAML subset parser, because stepmold may not install PyYAML.
 
 `TASKS.md` specifies the pack format as `manifest.yaml` / `graph.yaml`, and the
 project rule is standard library only. The standard library has no YAML parser, so
@@ -24,7 +24,7 @@ __all__ = ["YamlError", "parse"]
 
 
 class YamlError(ValueError):
-    """A YAML document jig cannot parse, with the line it gave up on."""
+    """A YAML document stepmold cannot parse, with the line it gave up on."""
 
 
 _INT = re.compile(r"^[-+]?[0-9][0-9_]*$")
@@ -40,7 +40,7 @@ _UNSUPPORTED = {
 }
 _BLOCK_HEADER = re.compile(r"^([|>])([-+]?)$")
 # str.splitlines() breaks on these, so a document containing one would be silently
-# re-flowed into extra lines. Real YAML rejects them outright, so jig does too. (NEL
+# re-flowed into extra lines. Real YAML rejects them outright, so stepmold does too. (NEL
 # and U+2028/U+2029 are left alone: real YAML treats those as line breaks as well.)
 _CONTROLS = "\x0b\x0c\x1c\x1d\x1e"
 
@@ -76,7 +76,7 @@ def _lex(text, filename):
     raw_lines = text.splitlines()
     out = []
     index = 0
-    started = False  # a `---` has opened the one document jig accepts
+    started = False  # a `---` has opened the one document stepmold accepts
     ended = False  # a `...` has closed it
     while index < len(raw_lines):
         raw = raw_lines[index]
@@ -95,7 +95,7 @@ def _lex(text, filename):
             # into the first, so refuse it by name.
             if marker == "---" and (started or out or ended):
                 raise YamlError(
-                    "%s:%d: jig's YAML subset does not support multiple "
+                    "%s:%d: stepmold's YAML subset does not support multiple "
                     "documents (`---`)" % (filename, number)
                 )
             started = started or marker == "---"
@@ -104,7 +104,7 @@ def _lex(text, filename):
             continue
         if ended:
             raise YamlError(
-                "%s:%d: content after `...`; jig's YAML subset does not support "
+                "%s:%d: content after `...`; stepmold's YAML subset does not support "
                 "multiple documents" % (filename, number)
             )
         indent = len(stripped) - len(stripped.lstrip(" "))
@@ -119,7 +119,7 @@ def _lex(text, filename):
         style, chomp = header
         if chomp == "+":
             raise YamlError(
-                "%s:%d: jig's YAML subset does not support keep chomping (`%s+`)"
+                "%s:%d: stepmold's YAML subset does not support keep chomping (`%s+`)"
                 % (filename, number, style)
             )
         parent = _block_parent_indent(indent, content)
@@ -467,7 +467,7 @@ def _closing_quote(text, quote):
 def _scalar(text, filename, line):
     text = text.strip()
     if text[:1] in _UNSUPPORTED and text[:1] not in ("-", "+"):
-        raise _err(filename, line, "jig's YAML subset does not support %s"
+        raise _err(filename, line, "stepmold's YAML subset does not support %s"
                    % _UNSUPPORTED[text[0]])
     if text[:1] == "'":
         return _unquote_single(text, filename, line)

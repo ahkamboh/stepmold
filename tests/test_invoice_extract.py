@@ -11,12 +11,12 @@ import subprocess
 import sys
 import unittest
 
-from jig.cli import resolve_model
-from jig.errors import AssertFailed, ExprError
-from jig.eval import evaluate
-from jig.graph import run
-from jig.model import FakeModel
-from jig.pack import load_pack
+from stepmold.cli import resolve_model
+from stepmold.errors import AssertFailed, ExprError
+from stepmold.eval import evaluate
+from stepmold.graph import run
+from stepmold.model import FakeModel
+from stepmold.pack import load_pack
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PACK = os.path.join(ROOT, "examples", "invoice_extract")
@@ -80,7 +80,7 @@ class TestThePackScores(unittest.TestCase):
 
     def test_the_cli_scores_it_too(self):
         completed = subprocess.run(
-            [sys.executable, "-m", "jig", "eval", PACK],
+            [sys.executable, "-m", "stepmold", "eval", PACK],
             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             universal_newlines=True,
         )
@@ -89,7 +89,7 @@ class TestThePackScores(unittest.TestCase):
 
     def test_the_cli_validates_it(self):
         completed = subprocess.run(
-            [sys.executable, "-m", "jig", "validate", PACK],
+            [sys.executable, "-m", "stepmold", "validate", PACK],
             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             universal_newlines=True,
         )
@@ -298,7 +298,7 @@ class TestTheInputGuard(unittest.TestCase):
         self.assertEqual(model.call_count, 0)  # nothing was spent
 
     def test_a_today_that_is_not_iso_stops_too(self):
-        """A date jig would compare lexicographically against ISO due dates."""
+        """A date stepmold would compare lexicographically against ISO due dates."""
         pack = load()
         with self.assertRaises(AssertFailed):
             run(pack, keyed(HEADER, AMOUNTS, DUE, CLEAR),
