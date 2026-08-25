@@ -951,3 +951,28 @@ class TheCliNeverShowsARawTracebackForAValueJsonCannotHold(unittest.TestCase):
         proc = self._run("nantool")
         self.assertNotIn("NaN", proc.stdout)
         self.assertEqual(1, proc.returncode)
+
+
+class CompilerLintReachesTheReader(unittest.TestCase):
+    """`check_script`'s diagnosis must not be computed and then thrown away.
+
+    The compiler already works out exactly which spec key a plan cannot honour — a case
+    declaring `rescued: true` when the plan has no `on_fail`, for instance — and stored it
+    on the attempt. Nothing read it: not `Attempt.__str__`, not `CompileResult.summary`,
+    not `_feedback`. The user saw "11/12 cases" and had to rediscover what the compiler
+    had already established, and the planner was re-run without being told. Found by audit.
+    """
+
+    NOTE = ("case 'unreadable' declares rescued: true, which needs a node to fail its "
+            "whole ladder; the plan says nothing about on_fail")
+
+    def test_the_note_is_printed_with_the_score(self):
+        from jig.build.compile import Attempt
+        rendered = str(Attempt(number=1, passed=11, total=12, lint=[self.NOTE]))
+        self.assertIn("11/12", rendered)
+        self.assertIn("rescued", rendered)
+
+    def test_an_attempt_with_no_lint_is_unchanged(self):
+        from jig.build.compile import Attempt
+        rendered = str(Attempt(number=2, passed=12, total=12))
+        self.assertEqual("attempt 2: 12/12 cases", rendered)

@@ -759,7 +759,27 @@ class AdversarialJsonShapesFromTheModel(TempDirTest):
             evaluate("r.__class__", state)
 
     def test_an_integer_too_long_to_parse_is_rejected_clearly(self):
-        """CPython caps int(str) at 4300 digits; the cap must arrive as a Rejected."""
+        """Where CPython caps int(str) at 4300 digits, the cap must arrive as a Rejected.
+
+        The cap is CPython's own protection against quadratic integer parsing
+        (CVE-2020-10735). It landed in 3.11 and was backported to 3.9.14 and 3.10.7, so an
+        interpreter older than those parses a 10,000-digit integer instead of refusing it,
+        and this test has nothing to assert. That is not hypothetical: macOS ships 3.9.6 as
+        /usr/bin/python3, which is what `python3 -m pytest -q` resolves to on a stock Mac —
+        and the test failed there while CI stayed green, because actions/setup-python
+        resolves "3.9" to the newest patch release, which has the cap. Found by audit.
+
+        Skipped rather than removed, because on such an interpreter jig genuinely inherits
+        the exposure: a model that emits a huge integer literal costs parse time jig cannot
+        cap on its behalf. The remedy is CPython's, not jig's — upgrade past 3.9.14.
+        """
+        import sys
+        if not hasattr(sys, "set_int_max_str_digits"):
+            self.skipTest(
+                "this interpreter (%s) predates the int(str) cap, backported in 3.9.14 "
+                "and 3.10.7; there is no cap here to observe"
+                % sys.version.split()[0]
+            )
         with self.assertRaises(Rejected) as caught:
             extract_json('{"v": %s}' % ("9" * 10000))
         self.assertIn("not valid JSON", str(caught.exception))

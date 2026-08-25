@@ -60,10 +60,16 @@ class Attempt:
     def __str__(self):
         if self.error:
             return "attempt %d: %s" % (self.number, self.error)
-        return "attempt %d: %d/%d cases%s" % (
+        line = "attempt %d: %d/%d cases%s" % (
             self.number, self.passed, self.total,
             (" — blamed %s" % ", ".join(self.blamed_nodes)) if self.blamed_nodes else "",
         )
+        # check_script names the exact spec key a plan cannot honour — a `rescued` case
+        # with no `on_fail` in the plan, say. Saying "11/12" and keeping that to itself
+        # would leave the reader to rediscover what the compiler already knows.
+        for note in self.lint:
+            line += "\n    note: %s" % note
+        return line
 
 
 @dataclass
@@ -186,6 +192,8 @@ def compile_pack(directory, description, cases, model, name=None,
                 return CompileResult(ok=True, directory=final, attempts=history,
                                      task=task, plan=plan, report=report)
             feedback = _feedback(report)
+            if attempt.lint:
+                feedback = "%s\n%s" % ("\n".join(attempt.lint), feedback)
         except BuildError as exc:
             if installed:
                 # The pack compiled and scored full marks; only putting it in place
