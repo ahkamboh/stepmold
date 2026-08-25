@@ -28,7 +28,7 @@ time people lose on their first pack.
 | `when:` is an expression language | equality only, against a dotted state path. No `!=`, no `>`, no `not`, no expression of any kind. `when: {amount: "> 500"}` compares the literal string `"> 500"`, and `when: {answer: no}` compares `False` | [`when:`](#when--equality-and-nothing-else) |
 | `assert` means one thing | two things. `type: assert` is a **routing node**; `assert:` on a `generate` node is a **verification gate** inside the retry ladder. Different keys, different mechanics | [Node types](#node-types) |
 | `on_fail` is the catch-all | it catches exactly two failures from a `generate` node and two more from a `tool` node. A node **without** `on_fail` aborts the whole run, and a backend error, a `DeadEnd`, a `StateCollision`, a missing registry and the step budget are never routed at all | [`on_fail`](#on_fail--what-it-catches-and-what-it-does-not) |
-| a pack can ask for the confidence gate | it cannot. The gate is real, and `verify.run_node` runs it — but `samples:` and `agree:` are not node keys (`pack._NODE_KEYS`), so a `graph.yaml` carrying them fails to load and no pack read off disk can ever be `Unsure`. `on_unsure:`, the destination, **is** a key, and today nothing can send a run down it | [Unsure](#unsure--disagreement-is-not-rejection) |
+| a pack can ask for the confidence gate | it can. `samples:` and `agree:` are node keys, `verify.run_node` runs the gate, and `on_unsure:` is where a disagreement goes. A node carrying `on_unsure:` with no `samples:` is refused at load — that edge could never be taken | [Unsure](#unsure--disagreement-is-not-rejection) |
 
 And one thing that is missing rather than misleading: **there is no node type that
 computes a value.** Nothing in a graph can write `total = qty * price` into state. See
@@ -1389,9 +1389,9 @@ of its own (`stepmold/graph.py`, the generate branch):
 
 ```python
 # probe_unsure.py — where a node goes when its draws disagree.
-# `samples`/`agree` are not graph.yaml keys yet (stepmold/pack.py `_NODE_KEYS`), so the node
-# is built here with the fields `verify.gate_for` reads. Everything else is the real
-# runtime: real draws, real verification, real routing.
+# `samples`/`agree` are graph.yaml keys; the node is built in memory here only so the
+# probe stays a single file. Everything is the real runtime: real draws, real
+# verification, real routing.
 import dataclasses
 import sys
 
@@ -1512,23 +1512,24 @@ Read the transcript for four things it says quietly:
   logged before the routing decision and reports the node's `on_fail` key; the `edge.*`
   line on the next row is what says where the run actually went.
 
-**The gate's own keys are not pack keys yet.** This is the limit that matters most on
-this page: `on_unsure:` is a `graph.yaml` key, validated like any other edge target
-(`pack._check_reachable_targets`), but `samples:` and `agree:` are not in
-`pack._NODE_KEYS` and are not fields on `pack.Node`. `verify.gate_for` reads them with
-`getattr`, so a node loaded from disk always answers "one draw, one answer" —
+**The gate's keys are pack keys.** `samples:` and `agree:` are node keys and fields on
+`pack.Node`, and `on_unsure:` is validated like any other edge target
+(`pack._check_reachable_targets`). A generate node carrying `on_unsure:` with no `samples:`
+is refused at load by `pack._check_gates`, because that edge could never be taken —
 
 ```
-$ cp -r notify /tmp/notify-gate
+$ rm -rf /tmp/notify-gate && cp -r notify /tmp/notify-gate
 $ python3 - <<'PY'
 import pathlib
 p = pathlib.Path("/tmp/notify-gate/graph.yaml")
 p.write_text(p.read_text().replace("    type: generate",
-                                   "    type: generate\n    samples: 3\n    agree: 2"))
+                                   "    type: generate\n    samples: 3\n"
+                                   "    agree: 2\n    on_unsure: done"))
 PY
 $ python3 -m stepmold validate /tmp/notify-gate
-stepmold: pack error: graph.yaml: node 'draft' has unknown key(s): agree, samples
+notify v1: 4 nodes, 2 edges, 1 evalset case, entry 'draft'
 ```
+
 
 — and the probe above builds its node in memory precisely because a pack cannot. Until
 those two keys land, `on_unsure:` in a pack on disk is an edge nothing can take.
@@ -2618,9 +2619,9 @@ support_triage: 12/12 cases passed
 | `grammar` | generate | `grammars/<node>.json` | schema path, inside the pack |
 | `description` | all | — | documentation, ignored at run time |
 
-There is no key here for the confidence gate. `samples:` and `agree:` are read by
-`verify.gate_for` but are not in `pack._NODE_KEYS`, so a `graph.yaml` carrying either
-fails to load; see [Unsure](#unsure--disagreement-is-not-rejection). And a tool node
+`samples:` and `agree:` are the confidence gate, read by `verify.gate_for`; see
+[Unsure](#unsure--disagreement-is-not-rejection). A generate node with `on_unsure:` and no
+`samples:` is refused at load, because that edge could never be taken. And a tool node
 refuses `prompt`, `grammar`, `two_stage`, `retries`, `max_tokens`, `think_max_tokens`,
 `assert` and `expr` by name, each with its reason (`pack._TOOL_FORBIDDEN_KEYS`).
 

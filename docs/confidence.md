@@ -28,7 +28,7 @@ Five things about the gate look different from how they behave.
 
 | Looks like | Actually is | Section |
 | --- | --- | --- |
-| `samples:` and `agree:` are `graph.yaml` keys | they are not. A pack carrying either is **refused at load**. The gate is reachable only from Python today | [The gate is not a pack key yet](#the-gate-is-not-a-pack-key-yet) |
+| `samples:` and `agree:` are `graph.yaml` keys | they are, and `examples/refund_desk` uses them. A node with `on_unsure:` and no `samples:` is refused at load, because that edge could never be taken | [The gate in a pack](#the-gate-in-a-pack) |
 | the gate scores a confidence | it counts matching draws. The comparison is the whole committed object as canonical JSON — not "the fields that matter" | [What "agree" means](#what-agree-means) |
 | `samples: 3` costs three generations | it costs two whenever the first two match, and stops early whenever no group can still reach the threshold | [What it costs](#what-it-costs) |
 | `Unsure` is a failure | it is a sibling of `NodeFailed`, not a subclass. Nothing was wrong with the answers; the model was not consistent | [Unsure is not rejected](#unsure-is-not-rejected) |
@@ -585,11 +585,10 @@ Two details worth knowing before you read a report:
   blamed on the right node, as the `route.py` transcript above shows; only the `kind`
   label is wrong. Do not build a report that counts on `kind == "unsure"` yet.
 
-## The gate is not a pack key yet
+## The gate in a pack
 
-This is the largest limit on this page. `samples:` and `agree:` are **not** keys a
-`graph.yaml` may carry. `_NODE_KEYS` in `stepmold/pack.py` does not list them and `Node` has no
-such fields, so a pack that declares a gate is refused at load:
+`samples:` and `agree:` are node keys. A `graph.yaml` asks for a gate the same way it
+asks for anything else:
 
 ```bash
 mkdir -p gated/prompts gated/grammars
@@ -632,12 +631,14 @@ printf '{"input": {"ticket": "charged twice"}, "expect": {"category": "billing"}
   > gated/evalset.jsonl
 ```
 
+
 ```console
 $ python3 -m stepmold validate gated
-stepmold: pack error: graph.yaml: node 'classify' has unknown key(s): agree, samples
+gated v1: 3 nodes, 1 edge, 1 evalset case, entry 'classify'
 ```
 
-Delete the two lines and the same pack loads, `on_unsure` and all:
+Delete the two gate lines, though, and the pack no longer loads — because `on_unsure:` is
+then an edge nothing can ever take:
 
 ```console
 $ python3 - <<'PY'
@@ -647,26 +648,24 @@ p.write_text("".join(l for l in p.read_text().splitlines(True)
                      if l.strip().split(":")[0] not in ("samples", "agree")))
 PY
 $ python3 -m stepmold validate gated
-gated v1: 3 nodes, 1 edge, 1 evalset case, entry 'classify'
+stepmold: pack error: graph.yaml: node 'classify' has an 'on_unsure' edge but draws one sample, so nothing can ever make it unsure and that edge can never be taken. Add 'samples: 3' (or more) to give it a gate, or remove 'on_unsure'.
 ```
 
-Which is the shape of the gap exactly. `on_unsure:` is a real pack key — `stepmold/pack.py`
-accepts it, validates its target and routes on it — but from a pack file nothing can make
-a node unsure, so today that edge can never be taken. The gate is a runtime feature with
-no pack surface.
-
-Until it has one:
+That refusal is the point. Until these keys existed, `on_unsure:` loaded fine on every
+pack and could never fire — a destination with no road to it, sitting in the file looking
+like a safety net. `pack._check_gates` settles the whole gate at load: an `agree` above
+`samples`, an `agree` on a single draw, a gate on a tool node, and this dead edge are all
+refused by `stepmold validate` rather than on the draw that trips them.
 
 | To use the gate | How |
 | --- | --- |
-| from Python | subclass `Node` with `samples` / `agree` fields, as every script on this page does. `verify.gate_for` reads them with `getattr`, so any object carrying the attributes works |
-| from a pack file | not yet possible |
-| from `stepmold build` | not yet possible. The compiler emits neither key |
+| from a pack file | `samples:` and `agree:` on a generate node, plus `on_unsure:` for where a disagreement goes. `examples/refund_desk` does this on the node guarding a refund |
+| from Python | set the same two fields on a `Node`; `verify.gate_for` reads them either way |
+| from `stepmold build` | not yet. The compiler emits neither key |
 
-`stepmold/verify.py` reading the keys with `getattr` is what makes the Python route work at all,
-and it is also why a pack written before the gate existed behaves identically — a node
-without the attributes draws once, and the request it sends is byte-for-byte the one it
-always sent.
+A pack written before the gate existed behaves identically — a node that names neither key
+draws once, and the request it sends is byte-for-byte the one it always sent. `None` and
+`1` are deliberately different: the first means the author never asked.
 
 ## Limits, in one place
 

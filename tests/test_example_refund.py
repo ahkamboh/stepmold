@@ -287,30 +287,22 @@ class TestTheRefundIsIssuedExactlyOnce(unittest.TestCase):
 # ------------------------------------------------------------------- the gate first
 
 
-@dataclasses.dataclass(frozen=True)
-class GatedNode(Node):
-    """A `Node` carrying the gate's keys, for as long as `stepmold.pack.Node` does not.
-
-    The same stand-in `tests/test_verify.py` uses, and for the same reason: `verify.
-    gate_for` reads `samples`/`agree` with `getattr`, so the runtime gate is real while
-    the pack format cannot yet spell it. `examples/refund_desk/gate_demo.py` is the
-    runnable version of everything below.
-    """
-
-    samples: int = 1
-    agree: int = 0
-
-
 AGREE = '{"approved": true, "rationale": "Damage three days after delivery is ours."}'
 DISSENT = '{"approved": false, "rationale": "The customer may have dropped it."}'
 AGREE_OTHER_WORDS = '{"approved": true, "rationale": "Cheaper to refund than to argue."}'
 
 
 def gated_pack(desk, samples=3, agree=2):
+    """The shipped pack, with the gate dialled to whatever a test needs.
+
+    `graph.yaml` already asks for samples: 3 / agree: 2, so the default here changes
+    nothing — this exists so a test can vary the numbers without editing the pack. It used
+    to build a `GatedNode` subclass, because the keys were not fields on `Node` and could
+    not be written in a pack at all.
+    """
     pack = load(desk)
-    node = pack.nodes["approve"]
-    fields = {f.name: getattr(node, f.name) for f in dataclasses.fields(node)}
-    pack.nodes["approve"] = GatedNode(samples=samples, agree=agree, **fields)
+    pack.nodes["approve"] = dataclasses.replace(
+        pack.nodes["approve"], samples=samples, agree=agree)
     return pack
 
 
@@ -421,7 +413,22 @@ class TestTheShippedScriptsRun(unittest.TestCase):
 class TestTheLimitsTheReadmeClaims(unittest.TestCase):
     """Every limit README.md states, pinned here so it cannot rot into a false claim."""
 
-    def test_the_gate_keys_cannot_be_written_in_graph_yaml(self):
+    def test_the_gate_keys_can_now_be_written_in_graph_yaml(self):
+        """This test used to assert the opposite, and the pack used to say so in a comment.
+
+        `samples:` and `agree:` were not in `pack._NODE_KEYS`, so the gate was reachable
+        only by building a Node in Python. `on_unsure:` validated and routed, which meant
+        every pack on disk carried an edge nothing could ever take. The keys are loader
+        keys now, and `approve` uses them.
+        """
+        pack = load_pack(PACK)
+        approve = pack.nodes["approve"]
+        self.assertEqual(3, approve.samples)
+        self.assertEqual(2, approve.agree)
+        self.assertEqual("needs_human", approve.on_unsure)
+
+    def test_an_on_unsure_edge_with_no_gate_is_refused_at_load(self):
+        """The edge that could never be taken is now a load error rather than a comment."""
         import shutil
         import tempfile
 
@@ -433,15 +440,10 @@ class TestTheLimitsTheReadmeClaims(unittest.TestCase):
         with open(graph) as handle:
             text = handle.read()
         with open(graph, "w") as handle:
-            handle.write(text.replace("    on_unsure: needs_human",
-                                      "    samples: 3\n    agree: 2\n"
-                                      "    on_unsure: needs_human"))
+            handle.write(text.replace("    samples: 3\n    agree: 2\n", ""))
         with self.assertRaises(GraphError) as caught:
             load_pack(copy)
-        self.assertEqual(
-            str(caught.exception),
-            "graph.yaml: node 'approve' has unknown key(s): agree, samples",
-        )
+        self.assertIn("can never be taken", str(caught.exception))
 
     def test_the_scripted_model_takes_no_sampling_hint_and_stepmold_says_so(self):
         """`node.samples.blind` — the warning that stops a gate reporting confidence it

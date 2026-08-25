@@ -67,7 +67,7 @@ DEFAULT_RETRIES = 2
 _NODE_KEYS = {
     "type", "output", "two_stage", "max_tokens", "think_max_tokens", "retries",
     "on_fail", "on_unsure", "expr", "assert", "prompt", "grammar", "tool",
-    "description",
+    "description", "samples", "agree",
 }
 
 # Keys that belong to a generate or an assert node and mean nothing on a tool node. Each
@@ -87,6 +87,12 @@ _TOOL_FORBIDDEN_KEYS = {
     "assert": "`assert:` gates a *generation* before it is committed; a tool node has no "
               "retry ladder for a rejection to spend",
     "expr": "`expr` is the assert node's branch condition",
+    "samples": "the gate compares independent draws from a model; a tool node calls a "
+               "function, and calling it twice is a side effect done twice, not a "
+               "second opinion",
+    "agree": "the gate compares independent draws from a model; a tool node calls a "
+             "function, and calling it twice is a side effect done twice, not a "
+             "second opinion",
 }
 _EDGE_KEYS = {"from", "to", "when", "description"}
 
@@ -155,6 +161,13 @@ class Node:
     # contains one (see stepmold/tools.py) — so this is a key into the host's registry and
     # nothing else: no import, no dotted path, no default.
     tool: Optional[str] = None
+    # The confidence gate. `samples` is how many independent draws to take, `agree` how
+    # many must match before the answer is accepted; disagreement takes `on_unsure`.
+    # None means "not asked for", which is not the same as 1: `verify.gate_for` reads
+    # these to decide whether a node has a gate at all, and every pack written before the
+    # keys existed must keep meaning one draw, one answer.
+    samples: Optional[int] = None
+    agree: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -255,6 +268,7 @@ def load_pack(path, tools=None):
             % (entry, ", ".join(sorted(nodes)) or "none")
         )
     _check_reachable_targets(nodes, edges)
+    _check_gates(nodes)
 
     evalset = _load_evalset(path)
     _check_case_endings(evalset, nodes)
@@ -387,6 +401,8 @@ def _build_node(path, node_name, node_type, spec):
         expr=spec.get("expr"),
         assert_expr=spec.get("assert"),
         tool=tool_name,
+        samples=_optional_int(spec, "samples", node_name),
+        agree=_optional_int(spec, "agree", node_name),
     )
 
 
@@ -436,6 +452,24 @@ def _tool_key(node_name, node_type, spec):
             "the tool's result under (a string), got %r" % (node_name, output)
         )
     return name.strip()
+
+
+def _optional_int(spec, key, node_name):
+    """A key that may be absent entirely, and must be a whole number when it is not.
+
+    Distinct from `_positive_int`, which substitutes a default: for the gate keys "absent"
+    is a third state that has to survive to `verify.gate_for`, because a node that never
+    asked for a gate must keep behaving exactly as it did before the keys existed.
+    """
+    if key not in spec:
+        return None
+    value = spec[key]
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise GraphError(
+            "graph.yaml: node %r: %r must be an integer >= 1, not %r"
+            % (node_name, key, value)
+        )
+    return value
 
 
 def _positive_int(spec, key, node_name, default, floor=1):
@@ -531,6 +565,38 @@ def _load_edges(graph, nodes):
             )
         edges.append(Edge(source=source, target=target, when=when))
     return edges
+
+
+def _check_gates(nodes):
+    """Settle every node's confidence gate at load, not on the draw that trips it.
+
+    Two refusals, both about a pack meaning something other than it says.
+
+    `gate_for` already rejects an impossible gate — agree above samples, agree on a single
+    draw — but it does so when the node runs, which on a branch that is rarely taken can
+    be a long way from the edit that caused it. Calling it here moves every one of those
+    to `stepmold validate`.
+
+    And an `on_unsure` with no `samples` is an edge nothing can ever take. That was true of
+    every pack until these keys existed, and the documentation said so; now that a pack can
+    ask for a gate, an `on_unsure` without one is a mistake rather than a limitation.
+    """
+    from .verify import GateError, gate_for
+
+    for node in nodes.values():
+        if node.type != "generate":
+            continue
+        try:
+            samples, _ = gate_for(node)
+        except GateError as exc:
+            raise GraphError("graph.yaml: %s" % exc)
+        if node.on_unsure and samples == 1:
+            raise GraphError(
+                "graph.yaml: node %r has an 'on_unsure' edge but draws one sample, so "
+                "nothing can ever make it unsure and that edge can never be taken. Add "
+                "'samples: 3' (or more) to give it a gate, or remove 'on_unsure'."
+                % node.name
+            )
 
 
 def _check_reachable_targets(nodes, edges):

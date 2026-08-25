@@ -14,17 +14,14 @@
 #    node draws several independent samples and they do not agree, the run is
 #    routed here instead of committing an answer nobody stands behind.
 #
-#    The gate's *entrance* — `samples:` and `agree:` — cannot be written in this
-#    file yet. `stepmold.pack._NODE_KEYS` does not carry them, so a graph.yaml that
-#    names them is refused at load:
+#    The gate's entrance is `samples:` and `agree:` on the node below. `approve`
+#    draws three independent times and needs two to match before the answer is
+#    committed; three different answers route here instead. The money is the
+#    reason: an irreversible action should cost more than one opinion.
 #
-#      stepmold: pack error: graph.yaml: node 'approve' has unknown key(s): agree, samples
-#
-#    `stepmold.verify.gate_for` reads them off the node with getattr and the walker
-#    already routes `Unsure`, so the runtime half is real and tested — see
-#    gate_demo.py in this directory, which attaches the keys from Python and
-#    shows a refund NOT being issued because two draws disagreed. README.md
-#    ("The gate comes before the action") has the run.
+#    A pack that writes `on_unsure:` without `samples:` is now refused at load,
+#    because that edge could never be taken — see `stepmold.pack._check_gates`.
+#    gate_demo.py in this directory shows the split verdict happening.
 
 max_steps: 12
 
@@ -56,6 +53,11 @@ nodes:
   approve:
     type: generate
     max_tokens: 128
+    # Three draws, two must agree. The third is only paid for when the first two
+    # differ, so agreement costs two calls and only a genuine disagreement costs
+    # three. Agreement is on the whole committed object, not on `approved` alone.
+    samples: 3
+    agree: 2
     # The deterministic half of the gate, checked before anything is committed:
     # a refund that `assess` found unjustified cannot be approved, whatever the
     # model says. `assert` catches a contradiction; `on_unsure` catches a

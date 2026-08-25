@@ -263,10 +263,10 @@ has not been shown:
   through a second tool or routes to a human. Run it with
   `python3 -m stepmold eval examples/refund_desk --tools examples/refund_desk/tools.py:registry`.
   The other six decide without acting.
-- **The gate has no pack-file surface.** `samples:` and `agree:` are not keys `graph.yaml`
-  accepts; a pack carrying them is refused at load, and the gate is reachable only from
-  Python. `on_unsure:` validates and routes, but nothing in a pack file can make a node
-  unsure, so from a pack that edge cannot yet be taken.
+- **The gate is now a pack key.** `samples:` and `agree:` are node keys, and
+  `examples/refund_desk` uses them: `approve` draws three times and needs two to match
+  before an irreversible refund is issued. A pack that writes `on_unsure:` without
+  `samples:` is refused at load, because that edge could never be taken.
 - **Nobody has measured what agreement buys.** There is no benchmark here for how much a
   gate raises accuracy inside the auto bucket, or how much of the escalated bucket it
   moves, against a real model. The mechanism is tested; its value is not a number anyone

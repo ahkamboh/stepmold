@@ -435,7 +435,7 @@ Every key stepmold accepts on a node. Anything else is a load-time error.
 | `assert` | expression string | — | verify-before-commit check | **refused at load** | **accepted and ignored** | **accepted and ignored** |
 | `expr` | expression string | — | **accepted and ignored** | **refused at load** | **required** — the routing test | **accepted and ignored** |
 | `on_fail` | node name | — | edge taken when the ladder is spent | edge taken when the tool raises or breaks its contract | edge taken when `expr` is false or unevaluable | accepted, unreachable |
-| `on_unsure` | node name | — | edge taken when the [gate](#the-confidence-gate-samples-agree-on_unsure) says unsure — **unreachable today** | accepted, unreachable (a tool never goes unsure) | accepted, unreachable | accepted, unreachable |
+| `on_unsure` | node name | — | edge taken when the [gate](#the-confidence-gate-samples-agree-on_unsure) says unsure; **refused at load without `samples:`** | accepted, unreachable (a tool never goes unsure) | accepted, unreachable | accepted, unreachable |
 | `two_stage` | anything | `false` | think → emit, if truthy ([not shape-checked](#the-one-key-that-is-not-shape-checked)) | **refused at load** | ignored | ignored |
 | `max_tokens` | integer ≥ 1 | `512` | emit budget | **refused at load** | shape-checked, then ignored | shape-checked, then ignored |
 | `think_max_tokens` | integer ≥ 1 | `256` | think budget | **refused at load** | shape-checked, then ignored | shape-checked, then ignored |
@@ -720,9 +720,9 @@ docstring — a number a model *says* about its own answer is generated after th
 already on the page, so the ranking is a deterministic `assert` first (a fact), agreement
 across independent draws second, and anything the model claims about itself never.
 
-**Read this before the rest of the section: `graph.yaml` does not accept `samples:` or
-`agree:`.** The gate is implemented, tested and reachable from Python; the pack format has
-no key for it. A pack that writes them is refused at load, as any unknown key is:
+**`graph.yaml` accepts `samples:` and `agree:`.** They are node keys, checked at load
+along with the rest of the gate — and a generate node carrying `on_unsure:` without them is
+refused, because that edge could never be taken:
 
 ```
 $ cp -r /tmp/hello /tmp/v-gate
@@ -740,7 +740,7 @@ edges:
     to: done
 EOF
 $ python3 -m stepmold validate /tmp/v-gate
-stepmold: pack error: graph.yaml: node 'classify' has unknown key(s): agree, samples
+hello v1: 2 nodes, 1 edge, 2 evalset cases, entry 'classify'
 ```
 
 `stepmold/pack.py:_NODE_KEYS` is the accepted-key list and neither name is in it; the `Node`
@@ -771,13 +771,8 @@ from stepmold.verify import GateError, gate_for
 SCHEMA = {"type": "object", "properties": {"kind": {"type": "string"}},
           "required": ["kind"], "additionalProperties": False}
 
-@dataclass(frozen=True)
-class Gated(Node):
-    samples: int = 1
-    agree: int = 0
-
 def node(**kw):
-    return Gated(name="classify", type="generate", prompt="Classify: {message}",
+    return Node(name="classify", type="generate", prompt="Classify: {message}",
                  grammar=SCHEMA, **kw)
 
 for kw in [{}, {"samples": 2}, {"samples": 3}, {"samples": 4}, {"samples": 5},
@@ -862,13 +857,8 @@ from stepmold.verify import Unsure, run_node
 SCHEMA = {"type": "object", "properties": {"kind": {"type": "string"}},
           "required": ["kind"], "additionalProperties": False}
 
-@dataclass(frozen=True)
-class Gated(Node):
-    samples: int = 1
-    agree: int = 0
-
 def node(**kw):
-    return Gated(name="classify", type="generate", prompt="Classify: {message}",
+    return Node(name="classify", type="generate", prompt="Classify: {message}",
                  grammar=SCHEMA, **kw)
 
 model = FakeModel(['{"kind": "complaint"}', '{"kind": "complaint"}', '{"kind": "question"}'])
@@ -935,12 +925,7 @@ from stepmold.verify import run_node
 SCHEMA = {"type": "object", "properties": {"kind": {"type": "string"}},
           "required": ["kind"], "additionalProperties": False}
 
-@dataclass(frozen=True)
-class Gated(Node):
-    samples: int = 1
-    agree: int = 0
-
-node = Gated(name="classify", type="generate", prompt="Classify: {message}",
+node = Node(name="classify", type="generate", prompt="Classify: {message}",
              grammar=SCHEMA, samples=2)
 
 # draw 1 is rejected once and then valid; draw 2 matches it
@@ -989,12 +974,7 @@ configure(level="info", stream=sys.stdout)
 SCHEMA = {"type": "object", "properties": {"kind": {"type": "string"}},
           "required": ["kind"], "additionalProperties": False}
 
-@dataclass(frozen=True)
-class Gated(Node):
-    samples: int = 1
-    agree: int = 0
-
-node = Gated(name="classify", type="generate", prompt="Classify: {message}",
+node = Node(name="classify", type="generate", prompt="Classify: {message}",
              grammar=SCHEMA, samples=3, agree=2)
 print("value:", run_node(node, {"message": "m"},
                          FakeModel(['{"kind": "complaint"}', '{"kind": "complaint"}'])))
@@ -1065,15 +1045,13 @@ from stepmold.pack import Node, load_pack
 from stepmold.verify import Unsure
 
 @dataclasses.dataclass(frozen=True)
-class Gated(Node):
+class Node(Node):
     samples: int = 1
     agree: int = 0
 
 def gated_pack(**routing):
     pack = load_pack("/tmp/hello-gate")
-    fields = dataclasses.asdict(pack.nodes["classify"])
-    fields.update(routing)
-    node = Gated(samples=3, agree=3, **fields)
+    node = dataclasses.replace(pack.nodes["classify"], samples=3, agree=3, **routing)
     return dataclasses.replace(pack, nodes=dict(pack.nodes, classify=node))
 
 def draws():

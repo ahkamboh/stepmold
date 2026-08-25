@@ -976,3 +976,70 @@ class CompilerLintReachesTheReader(unittest.TestCase):
         from stepmold.build.compile import Attempt
         rendered = str(Attempt(number=2, passed=12, total=12))
         self.assertEqual("attempt 2: 12/12 cases", rendered)
+
+
+class TheConfidenceGateIsReachableFromAPackFile(unittest.TestCase):
+    """`samples:` and `agree:` are node keys, and every bad gate is refused at load.
+
+    Until now the gate was real but unreachable: `verify.gate_for` read the two keys with
+    `getattr`, so a `Node` built in Python had a gate and a pack read off disk never could.
+    `on_unsure:` validated and routed, which meant every pack on disk carried an edge that
+    nothing could ever take — the README said so, and `examples/refund_desk` carried a
+    comment explaining the dead edge on the node guarding an irreversible refund.
+    """
+
+    def pack_with(self, edit):
+        import shutil, tempfile, pathlib, os
+        from stepmold.pack import load_pack
+        root = pathlib.Path(__file__).resolve().parent.parent
+        directory = tempfile.mkdtemp(prefix="stepmold-gate-")
+        self.addCleanup(shutil.rmtree, directory, True)
+        copy = os.path.join(directory, "refund_desk")
+        shutil.copytree(str(root / "examples" / "refund_desk"), copy)
+        graph = pathlib.Path(copy, "graph.yaml")
+        graph.write_text(edit(graph.read_text()))
+        return load_pack(copy)
+
+    def test_the_shipped_pack_carries_its_own_gate(self):
+        from stepmold.pack import load_pack
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parent.parent
+        approve = load_pack(str(root / "examples" / "refund_desk")).nodes["approve"]
+        self.assertEqual(3, approve.samples)
+        self.assertEqual(2, approve.agree)
+
+    def test_a_node_that_asks_for_nothing_still_draws_once(self):
+        from stepmold.pack import load_pack
+        from stepmold.verify import gate_for
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parent.parent
+        classify = load_pack(str(root / "examples" / "refund_desk")).nodes["classify"]
+        self.assertIsNone(classify.samples)
+        self.assertEqual(1, gate_for(classify)[0])
+
+    def test_on_unsure_without_a_gate_is_refused(self):
+        from stepmold.pack import GraphError
+        with self.assertRaises(GraphError) as caught:
+            self.pack_with(lambda t: t.replace("    samples: 3\n    agree: 2\n", ""))
+        self.assertIn("can never be taken", str(caught.exception))
+
+    def test_agree_above_samples_is_refused_at_load_not_on_the_draw(self):
+        from stepmold.pack import GraphError
+        with self.assertRaises(GraphError) as caught:
+            self.pack_with(lambda t: t.replace("    agree: 2\n", "    agree: 9\n"))
+        self.assertIn("no run can", str(caught.exception))
+
+    def test_a_gate_on_a_tool_node_is_refused(self):
+        from stepmold.pack import GraphError
+        with self.assertRaises(GraphError) as caught:
+            self.pack_with(lambda t: t.replace(
+                "  refund:\n    type: tool\n", "  refund:\n    type: tool\n    samples: 3\n"))
+        self.assertIn("side effect done twice", str(caught.exception))
+
+    def test_a_non_integer_gate_is_refused(self):
+        from stepmold.pack import GraphError
+        for bad in ("0", "-1", "true"):
+            with self.subTest(value=bad):
+                with self.assertRaises(GraphError):
+                    self.pack_with(lambda t: t.replace("    samples: 3\n",
+                                                       "    samples: %s\n" % bad))

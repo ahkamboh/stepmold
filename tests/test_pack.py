@@ -689,6 +689,8 @@ class TestToolReadsAreSatisfiable(PackOnDisk):
             "  classify:\n"
             "    type: generate\n"
             "    output: order_id\n"
+            "    samples: 3\n"
+            "    agree: 2\n"
             "    on_unsure: fetch\n"
             "  fetch:\n"
             "    type: tool\n"

@@ -47,19 +47,16 @@ from tools import RefundDesk                    # noqa: E402
 ORDER = "R-1001"
 
 
-@dataclasses.dataclass(frozen=True)
-class GatedNode(Node):
-    """A `Node` carrying the gate's keys, for as long as `stepmold.pack.Node` does not."""
-
-    samples: int = 1
-    agree: int = 0
-
-
 def gate(pack, node_name, samples, agree):
-    """Attach `samples`/`agree` to one node of an already-loaded pack."""
-    node = pack.nodes[node_name]
-    fields = {f.name: getattr(node, f.name) for f in dataclasses.fields(node)}
-    pack.nodes[node_name] = GatedNode(samples=samples, agree=agree, **fields)
+    """Dial one node's gate to a chosen setting.
+
+    graph.yaml already asks for samples: 3 / agree: 2 on `approve`, so calling this with
+    those numbers changes nothing — it stays so the demo can vary them. It used to build a
+    `Node` subclass, because `samples:` and `agree:` were not loader keys and a pack could
+    not spell its own gate.
+    """
+    pack.nodes[node_name] = dataclasses.replace(
+        pack.nodes[node_name], samples=samples, agree=agree)
     return pack
 
 
