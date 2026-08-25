@@ -41,10 +41,26 @@ def main(argv=None):
         return args.handler(args)
     except PackError as exc:
         return _fail("pack error: %s" % exc)
+    except _build_error() as exc:
+        return _fail("build error: %s" % exc)
     except JigError as exc:
         return _fail("%s: %s" % (type(exc).__name__, exc))
     except (ValidationError, ValueError) as exc:
         return _fail(str(exc))
+
+
+def _build_error():
+    """BuildError, or a class that never matches when the compiler is not installed.
+
+    Importing jig.build from the top of this module would defeat the separation the
+    compiler is built around, so the exception type is fetched only when it is needed.
+    """
+    try:
+        from .build.spec import BuildError
+    except Exception:  # pragma: no cover - the runtime may ship without jig.build
+        class BuildError(Exception):
+            pass
+    return BuildError
 
 
 def build_parser():
@@ -74,6 +90,19 @@ def build_parser():
     run.add_argument("--state", action="store_true",
                      help="print the whole final state, not the end node's projection")
     run.set_defaults(handler=command_run)
+
+    build = commands.add_parser(
+        "build", help="compile a pack from a task description and gold examples")
+    build.add_argument("spec", help="directory holding task.md and examples.jsonl")
+    build.add_argument("-o", "--out", required=True, help="where to write the pack")
+    build.add_argument("--model", required=True,
+                       help="the planning model, e.g. openai:https://host/v1#model")
+    build.add_argument("--name", help="pack name (default: the output directory's name)")
+    build.add_argument("--attempts", type=int, default=3,
+                       help="how many times to re-plan on a failing eval (default: 3)")
+    build.add_argument("--overwrite", action="store_true",
+                       help="replace the output directory if it already exists")
+    build.set_defaults(handler=command_build)
 
     evaluate_command = commands.add_parser(
         "eval", parents=[observability],
@@ -239,6 +268,49 @@ def _is_key_list(output):
 def _allow(args):
     """Whether this invocation accepts a network endpoint chosen by the pack."""
     return bool(getattr(args, "allow_pack_model", False))
+
+
+def command_build(args):
+    """Compile a pack. The only subcommand that needs a model at all times.
+
+    jig.build is imported here rather than at module scope on purpose: the runtime ships
+    to a client box and must not carry the compiler, and a test asserts that importing
+    jig.cli does not pull jig.build in behind it.
+    """
+    from .build.compile import compile_pack, load_build_spec
+
+    description, cases = load_build_spec(args.spec)
+
+    # A build model is always given explicitly. There is no pack to read a default from,
+    # and a compile is the one moment where quietly choosing a model for someone would be
+    # the wrong kind of helpful.
+    model = _build_model(args.model)
+
+    result = compile_pack(
+        args.out, description, cases, model,
+        name=args.name, attempts=args.attempts, overwrite=args.overwrite,
+        on_event=lambda message: print(message, file=sys.stderr),
+    )
+    print(result.directory)
+    return 0
+
+
+def _build_model(spec):
+    """Resolve --model for a build. Same spec grammar as `run`, minus the pack."""
+    scheme, _, rest = spec.partition(":")
+    if scheme == "openai":
+        return _openai_model(rest)
+    if scheme == "fake":
+        from .model import FakeModel
+
+        full = os.path.abspath(rest)
+        if not os.path.isfile(full):
+            raise ValueError("fake: no such script %r" % full)
+        with open(full) as handle:
+            return FakeModel(json.load(handle))
+    raise ValueError(
+        "unknown model scheme %r for build (known: openai, fake)" % scheme
+    )
 
 
 def resolve_model(spec, pack, allow_pack_model=False):
