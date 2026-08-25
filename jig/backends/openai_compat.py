@@ -176,14 +176,14 @@ class OpenAICompatModel:
 
     # ------------------------------------------------------------------ Model protocol
 
-    def generate(self, prompt, grammar=None, max_tokens=512):
+    def generate(self, prompt, grammar=None, max_tokens=512, sampling=None):
         """Complete `prompt`, constrained by `grammar` in whichever way this server wants."""
-        payload = self.build_payload(prompt, grammar, max_tokens)
+        payload = self.build_payload(prompt, grammar, max_tokens, sampling=sampling)
         return _content(self._post(payload))
 
     # ------------------------------------------------------------------------ internals
 
-    def build_payload(self, prompt, grammar, max_tokens):
+    def build_payload(self, prompt, grammar, max_tokens, sampling=None):
         schema = _schema_of(grammar)
         payload = {
             "model": self.model,
@@ -197,6 +197,16 @@ class OpenAICompatModel:
             "max_tokens": max_tokens + self.reasoning_reserve,
             "temperature": self.temperature,
         }
+        # An independent draw is the whole point of a re-sample and of the agreement gate.
+        # Without honouring this hint every extra draw is a byte-identical request, the
+        # draws agree by construction, and the gate reports full confidence on a single
+        # sample — which is worse than no gate, because it is confidence that was never
+        # earned. `seed` matters as much as temperature: a server pinned to greedy
+        # decoding is deterministic in its stream but still varies on seed.
+        if sampling is not None:
+            payload["temperature"] = sampling.temperature
+            if sampling.seed is not None:
+                payload["seed"] = sampling.seed
         if schema is not None:
             if self.grammar_mode == "response_format":
                 payload["response_format"] = {

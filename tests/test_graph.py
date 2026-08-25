@@ -28,6 +28,7 @@ from jig.tools import (
     ToolNotRegistered,
     ToolRegistry,
 )
+from jig.verify import Consensus
 from jig.graph import (
     StateCollision,
     ToolReplayMismatch,
@@ -1131,20 +1132,22 @@ class TestASideEffectHappensExactlyOnce(unittest.TestCase):
         self.assertEqual(self.sent, ["ops@example.com"])
 
 
-def unsure_signal(node="classify", reason="independent samples disagreed", attempts=3):
-    """jig's unsure outcome, built without depending on its constructor.
+def unsure_signal(node="classify", attempts=3):
+    """jig's unsure outcome, built against the real constructor.
 
-    `jig.verify` owns the class and what raises it; this file owns only where the walker
-    sends it. Constructing it defensively is what lets these tests keep proving the
-    routing whichever shape the signal settles into.
+    This was written defensively — try one shape, fall back to another — while
+    jig.verify's signal was still settling. That guessing then hid a genuine integration
+    break: the signature became Unsure(node, consensus, value=None), every fallback also
+    raised TypeError, and six routing tests errored instead of saying what was wrong.
+
+    A test helper that guesses at an interface cannot fail usefully when that interface
+    moves, which is the one moment it needed to. It is pinned to the real shape now, so a
+    future change to the signal breaks this line and names itself.
     """
-    try:
-        return Unsure(node, reason, attempts=attempts)
-    except TypeError:  # pragma: no cover - a signal with a different constructor
-        try:
-            return Unsure(reason)
-        except TypeError:
-            return Unsure()
+    consensus = Consensus(node=node, asked=attempts, drawn=attempts, agreed=1,
+                          required=attempts // 2 + 1, generations=attempts,
+                          distinct=attempts)
+    return Unsure(node, consensus)
 
 
 def raise_unsure(*args, **kwargs):
