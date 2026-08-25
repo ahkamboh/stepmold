@@ -16,14 +16,17 @@ for the harness: a file named in prose ("Save as `probe.py`:") or in the block's
 `(exit status 1)` and `exit=N` annotations. Timestamps, durations and run ids are normalised
 because none of them can reproduce.
 
-What it cannot check, and why each page still needs a human:
+What it cannot check, and why:
 
-  * `echo $?` — every command runs in its own shell, so the exit code of the previous one
-    is already gone. The pages that print it are checked by hand.
-  * A page whose setup is described in prose rather than shown. docs/expressions.md says
-    outright that each variant is `cp -r /tmp/jig-expr-demo <path>` plus one named edit;
-    that reads better than four lines of shell, and it is not replayable.
-  * `jig` on PATH, as docs/building.md uses. Correct for an installed reader, invisible here.
+  * The project's own test suite. The sandbox reaches jig and tests through symlinks, so a
+    relative path inside a test resolves somewhere else and the run fails for reasons that
+    have nothing to do with the page. Those commands are skipped and named in the output,
+    never silently passed.
+  * `jig` on PATH, as docs/building.md uses, and the compile transcript on that page, which
+    was recorded against a live model and cannot be reproduced without one.
+
+It does handle `echo $?` — the exit code of the previous command is remembered rather than
+sought in a fresh shell where it never existed.
 
 Exit status is the number of commands that did not reproduce, so this is usable as a gate.
 """
@@ -31,7 +34,8 @@ Exit status is the number of commands that did not reproduce, so this is usable 
 import subprocess, sys, pathlib, os, re, tempfile, shutil
 
 doc = pathlib.Path(sys.argv[1]).resolve()
-root = pathlib.Path(__file__).resolve().parent.parent
+root = pathlib.Path(os.environ.get("JIGROOT",
+                    pathlib.Path(__file__).resolve().parent.parent)).resolve()
 lines = doc.read_text().split("\n")
 
 # Run in a scratch directory. A page writes packs and probe scripts as it goes, and those
@@ -87,11 +91,13 @@ def norm(text):
         line = re.sub(r"elapsed_ms=[\d.]+", "elapsed_ms=X", line)
         line = re.sub(r"run_id=[0-9a-f]{32}", "run_id=UUID", line)
         if line.strip() in ("(exit status 1)",): continue
-        if re.match(r"^(validate )?exit=\d+$", line.strip()): continue
+        if re.match(r"^(\w+ )?exit=\d+$", line.strip()): continue
         out.append(line.rstrip())
     return "\n".join(out).strip()
 
 ran = checked = fails = 0
+last_status = 0
+skipped = []
 for ri, (lang, block, named) in enumerate(regions):
     text = "\n".join(block)
     has_prompt = any(l.startswith("$ ") for l in block)
@@ -116,6 +122,15 @@ for ri, (lang, block, named) in enumerate(regions):
         cmd = line[2:]; i += 1
         while i < len(block) and block[i].startswith("> "):
             cmd += "\n" + block[i][2:]; i += 1
+        # A command may span lines by leaving a quote open, as `python3 -c '...` does.
+        def _open_quote(text):
+            import shlex
+            try:
+                shlex.split(text); return False
+            except ValueError:
+                return True
+        while _open_quote(cmd) and i < len(block):
+            cmd += "\n" + block[i]; i += 1
         m = re.search(r"<<'([A-Za-z]+)'|<<\"([A-Za-z]+)\"", cmd)
         if m:
             tag = m.group(1) or m.group(2)
@@ -129,13 +144,30 @@ for ri, (lang, block, named) in enumerate(regions):
         while i < len(block) and not block[i].startswith("$ ") and (
                 block[i].strip() != "" or not rest_has_cmd):
             expected.append(block[i]); i += 1
+        # Some commands cannot mean anything from a scratch directory. Running the
+        # project's own suite is the clear case: the sandbox reaches jig and tests
+        # through symlinks, so a relative path inside a test resolves somewhere else and
+        # the run fails for reasons that have nothing to do with the page. Say so and
+        # count it, rather than reporting a mismatch the reader cannot act on.
+        if re.search(r"\b(pytest|unittest)\b", cmd):
+            skipped.append(cmd.split("\n")[0][:70])
+            while i < len(block) and not block[i].startswith("$ "):
+                i += 1
+            continue
         ran += 1
-        try:
-            proc = subprocess.run(["bash","-c",cmd], capture_output=True, text=True,
-                                  env=env, timeout=180)
-            actual = (proc.stderr + proc.stdout).rstrip("\n")
-        except Exception as exc:
-            actual = "HARNESS: %s" % exc
+        if cmd.strip() in ("echo $?", 'echo "$?"'):
+            # Each command runs in its own shell, so $? is gone by the time a fresh one
+            # starts. The harness kept the code, which is the thing the page is asserting.
+            actual = str(last_status)
+        else:
+            try:
+                proc = subprocess.run(["bash","-c",cmd], capture_output=True, text=True,
+                                      env=env, timeout=180)
+                actual = (proc.stderr + proc.stdout).rstrip("\n")
+                last_status = proc.returncode
+            except Exception as exc:
+                actual = "HARNESS: %s" % exc
+                last_status = -1
         exp = "\n".join(expected)
         if not exp.strip():
             continue
@@ -157,7 +189,10 @@ for ri, (lang, block, named) in enumerate(regions):
             print("  expected| %s" % norm(exp)[:340].replace("\n", "\n          | "))
             print("  actual  | %s" % norm(actual)[:340].replace("\n", "\n          | "))
             print()
-print("%s: ran %d, %d had printed output, %d did not reproduce"
-      % (doc.name, ran, checked, fails))
+for command in skipped:
+    print("SKIPPED   not replayable from a scratch directory: %s" % command)
+print("%s: ran %d, %d had printed output, %d did not reproduce%s"
+      % (doc.name, ran, checked, fails,
+         ", %d skipped" % len(skipped) if skipped else ""))
 shutil.rmtree(work, ignore_errors=True)
 raise SystemExit(1 if fails else 0)

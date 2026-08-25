@@ -126,8 +126,9 @@ Three details in those files are not guessable, and each one costs an afternoon:
 | `"vague"` has three responses | that node's ladder is three attempts (`retries: 2`), and this run burns all of them | `jig.model.ModelExhausted: FakeModel ran out of scripted responses for key 'vague'`, again as a traceback |
 
 Everything below runs against this pack. Where a block runs a different path —
-`/tmp/jig-expr-typo`, `/tmp/jig-expr-gate`, `/tmp/jig-expr-nested` and so on — that
-directory is `cp -r /tmp/jig-expr-demo <path>` plus the single edit named above the block.
+`/tmp/jig-expr-typo`, `/tmp/jig-expr-gate`, `/tmp/jig-expr-nested` and so on — the block
+makes that copy itself and shows the edit, so every transcript on this page can be run
+exactly as printed. The prose above each one still says what the edit is for.
 
 `run_id`, the `HH:MM:SS.mmm` prefix and `duration_ms` differ on every run. `--run-id
 <name>` is why some blocks show `run_id=typo` instead of a hex string; every other field
@@ -165,6 +166,14 @@ The demo pack with `triage`'s assert changed to `escalate == (severity == "p0")`
 nothing writes `severity`:
 
 ```
+$ rm -rf /tmp/jig-expr-typo && cp -r /tmp/jig-expr-demo /tmp/jig-expr-typo
+$ python3 - <<'PY'
+import pathlib
+p = pathlib.Path("/tmp/jig-expr-typo/graph.yaml"); t = p.read_text()
+t = t.replace('assert: escalate == (priority == "p0")',
+              'assert: escalate == (severity == "p0")')
+p.write_text(t)
+PY
 $ python3 -m jig run /tmp/jig-expr-typo --input '{"ticket": "vague"}' --log-level info --run-id typo
 17:18:21.633 INFO  jig.graph run.start run_id=typo pack=expr_demo version=1 entry=triage resumed=false max_steps=8 inputs=ticket
 17:18:21.634 WARNING jig.verify node.rejected node=triage attempt=1 cause=verify reason="assert 'escalate == (severity == \"p0\")' could not be evaluated: expression references 'severity', which is not in state" of=3
@@ -187,6 +196,14 @@ that cannot be evaluated is routed **exactly like one that was false**. The demo
 `gate`'s `expr:` changed to `severity == "high"`:
 
 ```
+$ rm -rf /tmp/jig-expr-gate && cp -r /tmp/jig-expr-demo /tmp/jig-expr-gate
+$ python3 - <<'PY'
+import pathlib
+p = pathlib.Path("/tmp/jig-expr-gate/graph.yaml"); t = p.read_text()
+t = t.replace('expr: escalate and priority == "p0"',
+              'expr: severity == "high"')
+p.write_text(t)
+PY
 $ python3 -m jig run /tmp/jig-expr-gate --input '{"ticket": "how do I export a CSV"}' --log-level info --run-id gate
 17:18:28.198 INFO  jig.graph run.start run_id=gate pack=expr_demo version=1 entry=triage resumed=false max_steps=8 inputs=ticket
 17:18:28.198 INFO  jig.graph node.ok run_id=gate node=triage type=generate attempts=1 output=merge duration_ms=0.1
@@ -203,6 +220,15 @@ anywhere records that the expression was unanswerable rather than false.
 Drop the `on_fail` from `gate` and the truth comes out:
 
 ```
+$ rm -rf /tmp/jig-expr-gate-loud && cp -r /tmp/jig-expr-demo /tmp/jig-expr-gate-loud
+$ python3 - <<'PY'
+import pathlib
+p = pathlib.Path("/tmp/jig-expr-gate-loud/graph.yaml"); t = p.read_text()
+t = t.replace('expr: escalate and priority == "p0"',
+              'expr: severity == "high"')
+t = t.replace("    on_fail: done\n", "", 1)
+p.write_text(t)
+PY
 $ python3 -m jig run /tmp/jig-expr-gate-loud --input '{"ticket": "how do I export a CSV"}'
 jig: ExprError: expression references 'severity', which is not in state
 exit=1
@@ -219,6 +245,13 @@ A false expression on an `assert` node with no `on_fail` stops the run too, with
 different exception:
 
 ```
+$ rm -rf /tmp/jig-expr-loudfalse && cp -r /tmp/jig-expr-demo /tmp/jig-expr-loudfalse
+$ python3 - <<'PY'
+import pathlib
+p = pathlib.Path("/tmp/jig-expr-loudfalse/graph.yaml"); t = p.read_text()
+t = t.replace("    on_fail: done\n", "", 1)
+p.write_text(t)
+PY
 $ python3 -m jig run /tmp/jig-expr-loudfalse --input '{"ticket": "how do I export a CSV"}'
 jig: AssertFailed: assert node 'gate' failed: escalate and priority == "p0"
 exit=1
@@ -466,6 +499,13 @@ The demo pack with `gate`'s `expr:` replaced by the single word `all`, run on th
 that produced `passed=false` earlier:
 
 ```
+$ rm -rf /tmp/jig-expr-barename && cp -r /tmp/jig-expr-demo /tmp/jig-expr-barename
+$ python3 - <<'PY'
+import pathlib
+p = pathlib.Path("/tmp/jig-expr-barename/graph.yaml"); t = p.read_text()
+t = t.replace('expr: escalate and priority == "p0"', 'expr: all')
+p.write_text(t)
+PY
 $ python3 -m jig run /tmp/jig-expr-barename --input '{"ticket": "how do I export a CSV"}' --log-level info --run-id barename
 17:21:18.883 INFO  jig.graph run.start run_id=barename pack=expr_demo version=1 entry=triage resumed=false max_steps=8 inputs=ticket
 17:21:18.884 INFO  jig.graph node.ok run_id=barename node=triage type=generate attempts=1 output=merge duration_ms=0.1
@@ -691,6 +731,14 @@ validates clean and fails at run time, one rung at a time. The demo pack with `t
 assert replaced by `assert: "escalate ==== broken("`:
 
 ```
+$ rm -rf /tmp/jig-expr-broken && cp -r /tmp/jig-expr-demo /tmp/jig-expr-broken
+$ python3 - <<'PY'
+import pathlib
+p = pathlib.Path("/tmp/jig-expr-broken/graph.yaml"); t = p.read_text()
+t = t.replace('assert: escalate == (priority == "p0")',
+              'assert: "escalate ==== broken("')
+p.write_text(t)
+PY
 $ python3 -m jig validate /tmp/jig-expr-broken
 expr_demo v1: 5 nodes, 2 edges, 0 evalset cases, entry 'triage'
 validate exit=0
@@ -881,6 +929,18 @@ projections to `[triage]`, since `priority` and `escalate` are no longer top-lev
 ```
 
 ```
+$ rm -rf /tmp/jig-expr-nested && cp -r /tmp/jig-expr-demo /tmp/jig-expr-nested
+$ python3 - <<'PY'
+import pathlib
+p = pathlib.Path("/tmp/jig-expr-nested/graph.yaml"); t = p.read_text()
+t = t.replace("    retries: 2\n", "    retries: 2\n    output: triage\n", 1)
+t = t.replace('assert: escalate == (priority == "p0")',
+              'assert: triage.escalate == (triage.priority == "p0")')
+t = t.replace('expr: escalate and priority == "p0"',
+              'expr: triage.escalate and triage.priority == "p0"')
+t = t.replace("output: [priority, escalate]", "output: [triage]")
+p.write_text(t)
+PY
 $ python3 -m jig run /tmp/jig-expr-nested --input '{"ticket": "card declined twice"}' --log-level info --run-id nested
 17:19:18.320 INFO  jig.graph run.start run_id=nested pack=expr_demo version=1 entry=triage resumed=false max_steps=8 inputs=ticket
 17:19:18.321 WARNING jig.verify node.rejected node=triage attempt=1 cause=verify reason="assert failed: triage.escalate == (triage.priority == \"p0\")" of=3

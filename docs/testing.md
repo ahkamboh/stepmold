@@ -1234,13 +1234,15 @@ is a failure.
 ## Testing jig itself
 
 The repo's own suite is offline for the same reason and by the same mechanism: no test
-touches a network or loads a model.
+touches a network or loads a model. It is around 1,500 tests and runs in well under a
+minute; the exact count is left out of the transcript below because it changes with every
+commit, and a number that has to be maintained by hand is a number that will be wrong.
 
 ```
 $ python3 -m pytest -q
 [one long line of dots, elided — a single `x` marks the one expected failure]
 ----------------------------------------------------------------------
-Ran 1562 tests in 24.680s
+[the count and the timing, elided — both move with every test added]
 
 OK (expected failures=1)
 ```

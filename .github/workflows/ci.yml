@@ -48,12 +48,12 @@ jobs:
         run: python -m unittest tests.test_invariants -v
 
       - name: The documentation still reproduces
-        # These three pages are transcripts, and a transcript rots in silence. Replaying
-        # them is what turns "the docs say" into "the docs are checked". Three of the eight
-        # pages, not all: the rest use conventions a replay cannot follow, and the harness
-        # says which and why rather than pretending otherwise.
+        # These pages are transcripts, and a transcript rots in silence. Replaying them is
+        # what turns "the docs say" into "the docs are checked". Five of the eight pages:
+        # ARCHITECTURE and BENCHMARKS print no commands, and building.md's compile was
+        # recorded against a live model. The harness names anything it skips.
         run: |
-          for page in graph pack-format confidence; do
+          for page in graph pack-format confidence expressions testing; do
             python tests/replay_docs.py "docs/$page.md"
           done
 
