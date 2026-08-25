@@ -1,16 +1,27 @@
-"""T6 — nothing enters state until it has been verified, and the retry ladder."""
+"""T6 — nothing enters state until it has been verified, and the retry ladder.
 
+Plus the confidence gate that sits on top of it: a node that draws more than once and
+commits only what its draws agree on.
+"""
+
+import logging
 import unittest
+from dataclasses import dataclass
 
 from jig.codegen import Sampling
-from jig.errors import BackendError, MissingVariable, NodeFailed
+from jig.errors import BackendError, MissingVariable, NodeFailed, RunError
 from jig.graph import run
 from jig.model import FakeModel
 from jig.pack import Edge, Node, Pack
 from jig.verify import (
+    DRAW_TEMPERATURE,
+    Consensus,
     EmptyCompletion,
+    GateError,
     Rejected,
+    Unsure,
     extract_json,
+    gate_for,
     run_node,
     sampling_for,
     verify,
@@ -24,6 +35,7 @@ SCHEMA = {
 }
 
 GOOD = '{"category": "billing"}'
+OTHER = '{"category": "technical"}'
 BAD_ENUM = '{"category": "refund"}'
 BAD_JSON = "sorry, I cannot do that"
 
@@ -36,6 +48,34 @@ def node(name="classify", **kwargs):
     }
     options.update(kwargs)
     return Node(name=name, **options)
+
+
+@dataclass(frozen=True)
+class GatedNode(Node):
+    """A node carrying the gate's keys, for as long as `jig.pack.Node` does not.
+
+    `verify.gate_for` reads `samples` and `agree` with `getattr`, so the runtime works
+    whether or not the pack format has grown them yet — and `gated()` below builds the
+    real `Node` the moment it has, so these tests move to the production record without
+    being rewritten.
+    """
+
+    samples: int = 1
+    agree: int = 0
+
+
+def gated(name="classify", samples=2, agree=0, **kwargs):
+    """A generate node with `samples`/`agree` on it."""
+    options = {
+        "type": "generate",
+        "prompt": "Classify: {ticket}",
+        "grammar": SCHEMA,
+    }
+    options.update(kwargs)
+    try:
+        return Node(name=name, samples=samples, agree=agree, **options)
+    except TypeError:
+        return GatedNode(name=name, samples=samples, agree=agree, **options)
 
 
 def pack_of(*nodes):
@@ -445,3 +485,437 @@ class DeeplyNestedOutputIsRejectedNotFatal(unittest.TestCase):
         with self.assertRaises(Rejected) as caught:
             self._with_exploding_decoder(lambda: extract_json("[[[["))
         self.assertIn("flat JSON object", caught.exception.feedback)
+
+
+# ------------------------------------------------------- the confidence gate (samples)
+
+PAIR = {"type": "object", "properties": {"category": {"type": "string"},
+                                         "amount": {"type": "number"}}}
+
+BILLING_10 = '{"category": "billing", "amount": 10}'
+BILLING_99 = '{"category": "billing", "amount": 99}'
+
+# A payload shaped so that a leak into a log line or an exception message is unambiguous.
+POISON = "REFUND-SCAM-9f3a-ssn-123-45-6789"
+
+
+class TestTheGateIsReadOffTheNode(unittest.TestCase):
+    """`gate_for` is the whole configuration surface: what to draw, and what counts."""
+
+    def test_a_node_that_asks_for_nothing_draws_once(self):
+        self.assertEqual(gate_for(node()), (1, 1))
+
+    def test_an_unset_agree_is_a_strict_majority(self):
+        self.assertEqual(gate_for(gated(samples=3)), (3, 2))
+        self.assertEqual(gate_for(gated(samples=4)), (4, 3))
+        self.assertEqual(gate_for(gated(samples=5)), (5, 3))
+
+    def test_two_samples_default_to_needing_both(self):
+        """A majority of two is two — the gate a pack most often means by `samples: 2`."""
+        self.assertEqual(gate_for(gated(samples=2)), (2, 2))
+
+    def test_an_explicit_agree_is_used_as_written(self):
+        self.assertEqual(gate_for(gated(samples=5, agree=5)), (5, 5))
+
+    def test_a_threshold_no_run_can_reach_is_refused(self):
+        with self.assertRaises(GateError) as caught:
+            gate_for(gated(samples=3, agree=4))
+        message = str(caught.exception)
+        self.assertIn("classify", message)
+        self.assertIn("agree", message)
+        self.assertIn("samples", message)
+
+    def test_a_threshold_of_one_is_refused_because_it_never_fires(self):
+        """`agree: 1` accepts the first answer, so the other draws are never taken.
+
+        Silently allowing it hands an author a gate they believe in and a run that does
+        not have one, which is worse than no gate at all.
+        """
+        with self.assertRaises(GateError):
+            gate_for(gated(samples=3, agree=1))
+
+    def test_agree_without_samples_is_refused(self):
+        with self.assertRaises(GateError):
+            gate_for(gated(samples=1, agree=2))
+
+    def test_zero_samples_is_refused(self):
+        with self.assertRaises(GateError):
+            gate_for(gated(samples=0))
+
+    def test_a_boolean_is_not_a_count(self):
+        """`samples: yes` is a plausible slip in YAML, and Python calls True an int."""
+        with self.assertRaises(GateError):
+            gate_for(gated(samples=True))
+
+    def test_a_string_is_not_a_count(self):
+        with self.assertRaises(GateError):
+            gate_for(gated(samples="3"))
+
+    def test_a_gate_error_is_a_run_error_so_a_walker_can_hold_it(self):
+        self.assertTrue(issubclass(GateError, RunError))
+
+
+class TestANodeWithoutSamplesIsUnchanged(unittest.TestCase):
+    """Backwards compatibility, stated as tests rather than as a claim.
+
+    Every pack that exists was written before the gate did. None of them may pay a token,
+    change a request, or gain a field because the gate now exists.
+    """
+
+    def test_it_draws_exactly_once(self):
+        model = FakeModel([GOOD, OTHER])
+        self.assertEqual(run_node(node(), {"ticket": "t"}, model), {"category": "billing"})
+        self.assertEqual(model.call_count, 1)
+
+    def test_it_reports_no_consensus(self):
+        report = {}
+        run_node(node(), {"ticket": "t"}, FakeModel([GOOD]), consensus=report)
+        self.assertEqual(report, {}, "a node that drew once compared nothing")
+
+    def test_it_can_never_be_unsure(self):
+        """One draw disagrees with nothing, whatever it says."""
+        model = FakeModel([BAD_ENUM, GOOD])
+        self.assertEqual(run_node(node(), {"ticket": "t"}, model), {"category": "billing"})
+
+    def test_its_requests_are_byte_for_byte_the_ones_it_always_made(self):
+        self.assertIsNone(sampling_for(0))
+        for rung in range(1, 5):
+            self.assertEqual(sampling_for(rung), sampling_for(rung, 0))
+            self.assertEqual(sampling_for(rung).seed, rung)
+
+    def test_a_walk_over_an_ungated_pack_is_untouched(self):
+        result = run(pack_of(node()), FakeModel([BAD_ENUM, GOOD]), {"ticket": "t"})
+        self.assertEqual(result.state, {"ticket": "t", "category": "billing"})
+        self.assertEqual(result.attempts, {"classify": 2})
+
+
+class TestAgreementIsWhatGetsCommitted(unittest.TestCase):
+    """What `agree` means: the committed object, compared whole."""
+
+    def test_matching_draws_commit_their_answer(self):
+        model = FakeModel([GOOD, GOOD, GOOD])
+        value = run_node(gated(samples=3, agree=2), {"ticket": "t"}, model)
+        self.assertEqual(value, {"category": "billing"})
+
+    def test_a_majority_wins_over_the_odd_one_out(self):
+        """The committed value is the group's, not necessarily the first draw's."""
+        model = FakeModel([GOOD, OTHER, OTHER])
+        value = run_node(gated(samples=3, agree=2), {"ticket": "t"}, model)
+        self.assertEqual(value, {"category": "technical"})
+
+    def test_field_order_is_not_disagreement(self):
+        """Two draws that emitted the same object differently are one answer."""
+        model = FakeModel(['{"a": 1, "b": 2}', '{"b": 2, "a": 1}'])
+        value = run_node(gated(samples=2, grammar=None), {"ticket": "t"}, model)
+        self.assertEqual(value, {"a": 1, "b": 2})
+
+    def test_a_difference_in_a_field_the_schema_does_not_gate_is_still_a_difference(self):
+        """The reason agreement is not 'the fields that matter'.
+
+        Nothing at this layer knows which fields matter, and the expensive mistake is
+        the one in this direction: two draws that match on the category and differ on
+        the amount are not a confident answer when the next node spends the amount.
+        """
+        model = FakeModel([BILLING_10, BILLING_99])
+        with self.assertRaises(Unsure) as caught:
+            run_node(gated(samples=2, grammar=PAIR), {"ticket": "t"}, model)
+        self.assertEqual(caught.exception.consensus.agreed, 1)
+
+    def test_one_and_one_point_zero_are_different_draws(self):
+        """Documented strictness: canonical JSON, not Python equality.
+
+        `{"n": 1}` and `{"n": 1.0}` are equal to Python and different on the wire. On a
+        gate whose whole job is to notice that the model was not consistent, the strict
+        reading is the safe one — it costs a rerun, never a wrong commit.
+        """
+        model = FakeModel(['{"n": 1}', '{"n": 1.0}'])
+        with self.assertRaises(Unsure):
+            run_node(gated(samples=2, grammar=None), {"ticket": "t"}, model)
+
+    def test_nested_differences_are_seen(self):
+        model = FakeModel(['{"a": {"b": [1, 2]}}', '{"a": {"b": [2, 1]}}'])
+        with self.assertRaises(Unsure):
+            run_node(gated(samples=2, grammar=None), {"ticket": "t"}, model)
+
+
+class TestDisagreementIsUnsureNotRejected(unittest.TestCase):
+    """A rejection means the output was invalid. Unsure means the model was inconsistent.
+
+    They route differently because they mean different things, so they are different
+    signals — `Unsure` is a sibling of `NodeFailed`, not a subclass of it.
+    """
+
+    def test_draws_that_do_not_agree_raise_unsure(self):
+        model = FakeModel([GOOD, OTHER])
+        with self.assertRaises(Unsure) as caught:
+            run_node(gated(samples=2), {"ticket": "t"}, model)
+        self.assertEqual(caught.exception.node, "classify")
+
+    def test_unsure_is_routable_but_is_not_a_failure(self):
+        self.assertTrue(issubclass(Unsure, RunError))
+        self.assertFalse(issubclass(Unsure, NodeFailed))
+        self.assertFalse(issubclass(Unsure, Rejected))
+
+    def test_unsure_carries_the_answer_that_came_closest(self):
+        """For a walker that hands it to a human rather than throwing it away."""
+        model = FakeModel([OTHER, OTHER, GOOD])
+        with self.assertRaises(Unsure) as caught:
+            run_node(gated(samples=3, agree=3), {"ticket": "t"}, model)
+        self.assertEqual(caught.exception.value, {"category": "technical"})
+
+    def test_a_tie_goes_to_the_earliest_draw(self):
+        model = FakeModel([GOOD, OTHER])
+        with self.assertRaises(Unsure) as caught:
+            run_node(gated(samples=2), {"ticket": "t"}, model)
+        self.assertEqual(caught.exception.value, {"category": "billing"})
+
+    def test_nothing_is_committed_and_state_is_untouched(self):
+        state = {"ticket": "t"}
+        model = FakeModel([GOOD, OTHER])
+        with self.assertRaises(Unsure):
+            run_node(gated(samples=2), state, model)
+        self.assertEqual(state, {"ticket": "t"})
+
+    def test_the_message_is_counts_and_names_only(self):
+        """Unlike a NodeFailed, this one is safe at any log level whole.
+
+        Every draw here was *valid* output — the model's answer about a customer's
+        ticket. It rides on `.value` for a caller that wants it, and nowhere else.
+        """
+        model = FakeModel(['{"c": "%s"}' % POISON, '{"c": "other"}'])
+        with self.assertRaises(Unsure) as caught:
+            run_node(gated(samples=2, grammar=None), {"ticket": "t"}, model)
+        self.assertNotIn(POISON, str(caught.exception))
+        self.assertNotIn(POISON, caught.exception.feedback)
+        self.assertNotIn(POISON, repr(caught.exception.consensus))
+        self.assertEqual(caught.exception.value, {"c": POISON})
+
+    def test_it_names_the_same_fields_a_node_failure_does(self):
+        """One failure-recording path in the walker has to be able to hold both."""
+        model = FakeModel([GOOD, OTHER])
+        with self.assertRaises(Unsure) as caught:
+            run_node(gated(samples=2), {"ticket": "t"}, model)
+        unsure = caught.exception
+        self.assertEqual(unsure.node, "classify")
+        self.assertEqual(unsure.attempts, 2)
+        self.assertTrue(unsure.reason)
+        self.assertEqual(unsure.feedback, unsure.reason)
+
+
+class TestSamplingCosts(unittest.TestCase):
+    """n samples cost n generations, so the loop stops when the answer cannot change."""
+
+    def test_it_stops_as_soon_as_enough_draws_match(self):
+        model = FakeModel([GOOD, GOOD, GOOD])
+        run_node(gated(samples=3, agree=2), {"ticket": "t"}, model)
+        self.assertEqual(model.call_count, 2, "the third draw could not change anything")
+
+    def test_it_stops_when_no_group_can_still_reach_the_threshold(self):
+        """`samples: 3, agree: 3` is decided the moment two draws differ."""
+        model = FakeModel([GOOD, OTHER, GOOD])
+        with self.assertRaises(Unsure) as caught:
+            run_node(gated(samples=3, agree=3), {"ticket": "t"}, model)
+        self.assertEqual(model.call_count, 2)
+        self.assertEqual(caught.exception.consensus.drawn, 2)
+        self.assertEqual(caught.exception.consensus.asked, 3)
+
+    def test_it_pays_for_every_draw_it_actually_needs(self):
+        model = FakeModel([GOOD, OTHER, OTHER])
+        run_node(gated(samples=3, agree=2), {"ticket": "t"}, model)
+        self.assertEqual(model.call_count, 3)
+
+    def test_every_draw_is_on_the_node_s_bill(self):
+        counts = {}
+        run_node(gated(samples=3, agree=3), {"ticket": "t"},
+                 FakeModel([GOOD, GOOD, GOOD]), attempts=counts)
+        self.assertEqual(counts, {"classify": 3})
+
+
+class TestTheLadderAndTheGate(unittest.TestCase):
+    """A sample that fails verification is a rejection, not a disagreement."""
+
+    def test_a_rejected_draw_climbs_the_ladder_and_does_not_count_as_a_vote(self):
+        model = FakeModel([BAD_ENUM, GOOD, GOOD])
+        report = {}
+        value = run_node(gated(samples=2), {"ticket": "t"}, model, consensus=report)
+        self.assertEqual(value, {"category": "billing"})
+        self.assertEqual(model.call_count, 3)
+        self.assertEqual(report["classify"].drawn, 2, "two answers, not three")
+        self.assertEqual(report["classify"].agreed, 2)
+        self.assertEqual(report["classify"].generations, 3, "the rejection cost a call")
+
+    def test_each_draw_starts_its_ladder_clean(self):
+        """A draw conditioned on another draw's rejection is not an independent draw."""
+        model = FakeModel([BAD_ENUM, GOOD, GOOD])
+        run_node(gated(samples=2), {"ticket": "t"}, model)
+        self.assertIn("rejected", model.calls[1].prompt)      # rung 2 of draw 1
+        self.assertNotIn("rejected", model.calls[2].prompt)   # rung 1 of draw 2
+
+    def test_a_two_stage_node_thinks_once_per_draw(self):
+        model = FakeModel(["NOTES-A", GOOD, "NOTES-B", GOOD])
+        run_node(gated(samples=2, two_stage=True), {"ticket": "t"}, model)
+        self.assertEqual(model.call_count, 4)
+        self.assertNotIn("NOTES-A", model.calls[3].prompt,
+                         "draw 2 must not emit from draw 1's reasoning")
+
+    def test_a_draw_that_spends_its_whole_ladder_fails_the_node(self):
+        """Not one dissenting voice: a node that produced no valid answer proved nothing."""
+        model = FakeModel([GOOD, BAD_ENUM])
+        with self.assertRaises(NodeFailed) as caught:
+            run_node(gated(samples=2, retries=0), {"ticket": "t"}, model)
+        self.assertEqual(caught.exception.node, "classify")
+
+    def test_the_failure_reports_the_whole_visit_s_bill(self):
+        model = FakeModel([GOOD, BAD_ENUM])
+        counts = {}
+        with self.assertRaises(NodeFailed) as caught:
+            run_node(gated(samples=2, retries=0), {"ticket": "t"}, model, attempts=counts)
+        self.assertEqual(caught.exception.attempts, 2, "the first draw was paid for too")
+        self.assertEqual(counts, {"classify": 2})
+
+    def test_a_failure_on_the_first_draw_is_todays_failure_untouched(self):
+        model = FakeModel([BAD_ENUM] * 3)
+        counts = {}
+        with self.assertRaises(NodeFailed) as caught:
+            run_node(gated(samples=2), {"ticket": "t"}, model, attempts=counts)
+        self.assertEqual(caught.exception.attempts, 3)
+        self.assertIn("category", str(caught.exception))
+        self.assertEqual(counts, {"classify": 3})
+
+    def test_an_empty_completion_is_still_a_rung_not_a_vote(self):
+        class EmptyOnce:
+            def __init__(self):
+                self.calls = 0
+
+            def generate(self, prompt, grammar=None, max_tokens=512):
+                self.calls += 1
+                if self.calls == 1:
+                    raise EmptyCompletion("no content in that choice")
+                return GOOD
+
+        model = EmptyOnce()
+        value = run_node(gated(samples=2), {"ticket": "t"}, model)
+        self.assertEqual(value, {"category": "billing"})
+        self.assertEqual(model.calls, 3)
+
+
+class TestTheDrawsAreIndependent(unittest.TestCase):
+    """Two identical requests are one draw charged twice — and would agree by construction."""
+
+    def test_the_first_draw_is_still_the_one_the_operator_configured(self):
+        model = SamplingModel([GOOD, GOOD])
+        run_node(gated(samples=2), {"ticket": "t"}, model)
+        self.assertIsNone(model.sampling[0])
+
+    def test_every_later_draw_asks_for_a_different_one(self):
+        model = SamplingModel([GOOD, GOOD, GOOD])
+        run_node(gated(samples=3, agree=3), {"ticket": "t"}, model)
+        self.assertEqual(model.sampling[1].temperature, DRAW_TEMPERATURE)
+        self.assertEqual(model.sampling[2].temperature, DRAW_TEMPERATURE)
+        self.assertNotEqual(model.sampling[1].seed, model.sampling[2].seed)
+
+    def test_an_extra_draw_is_not_a_retry_and_does_not_climb(self):
+        """A temperature ramp across draws would measure the ramp, not the model."""
+        model = SamplingModel([GOOD, GOOD, GOOD, GOOD])
+        run_node(gated(samples=4, agree=4), {"ticket": "t"}, model)
+        temperatures = {hint.temperature for hint in model.sampling if hint}
+        self.assertEqual(temperatures, {DRAW_TEMPERATURE})
+
+    def test_no_two_generations_of_one_node_make_the_same_request(self):
+        """Including across draw *and* rung — two draws that were retried identically
+        would produce the same answer twice and be counted as agreement."""
+        model = SamplingModel([BAD_ENUM, GOOD, BAD_ENUM, GOOD])
+        run_node(gated(samples=2, retries=1), {"ticket": "t"}, model)
+        seeds = [hint.seed for hint in model.sampling if hint]
+        self.assertEqual(len(seeds), len(set(seeds)))
+        self.assertEqual(len(model.sampling), 4)
+
+    def test_a_backend_that_cannot_vary_its_sampling_is_reported(self):
+        """The silent failure: identical requests 'agree', and the pack reports a
+        confidence nobody measured."""
+        with self.assertLogs("jig.verify", level="WARNING") as caught:
+            run_node(gated(samples=2), {"ticket": "t"}, FakeModel([GOOD, GOOD]))
+        self.assertIn("node.samples.blind", [record.msg for record in caught.records])
+
+    def test_a_backend_that_can_is_not_reported(self):
+        with self.assertLogs("jig.verify", level="WARNING") as caught:
+            # One record has to exist for assertLogs to pass, so a rejection provides it.
+            run_node(gated(samples=2), {"ticket": "t"},
+                     SamplingModel([BAD_ENUM, GOOD, GOOD]))
+        self.assertNotIn("node.samples.blind", [record.msg for record in caught.records])
+
+    def test_an_ungated_node_never_reports_it(self):
+        with self.assertLogs("jig.verify", level="WARNING") as caught:
+            # assertLogs needs at least one record to pass; this is it, and it is the
+            # only one that may be there.
+            logging.getLogger("jig.verify").warning("marker")
+            run_node(node(), {"ticket": "t"}, FakeModel([GOOD]))
+        self.assertEqual([record.msg for record in caught.records], ["marker"])
+
+
+class TestTheGateReportsItself(unittest.TestCase):
+    """`jig eval` has to be able to say how sure each node was."""
+
+    def test_an_agreeing_node_records_what_it_found(self):
+        report = {}
+        run_node(gated(samples=3, agree=2), {"ticket": "t"},
+                 FakeModel([GOOD, OTHER, OTHER]), consensus=report)
+        record = report["classify"]
+        self.assertEqual(
+            (record.node, record.asked, record.drawn, record.agreed, record.required),
+            ("classify", 3, 3, 2, 2),
+        )
+        self.assertEqual(record.generations, 3)
+        self.assertFalse(record.unsure)
+
+    def test_an_unsure_node_records_what_it_found_too(self):
+        report = {}
+        with self.assertRaises(Unsure) as caught:
+            run_node(gated(samples=2), {"ticket": "t"}, FakeModel([GOOD, OTHER]),
+                     consensus=report)
+        self.assertTrue(report["classify"].unsure)
+        self.assertEqual(report["classify"].agreed, 1)
+        self.assertIs(caught.exception.consensus, report["classify"])
+
+    def test_a_record_holds_no_model_output(self):
+        """It is meant to be logged, checkpointed and printed. All three are downstreams
+        a customer's ticket must not reach by accident."""
+        report = {}
+        run_node(gated(samples=2, grammar=None), {"ticket": "t"},
+                 FakeModel(['{"c": "%s"}' % POISON] * 2), consensus=report)
+        self.assertNotIn(POISON, repr(report["classify"]))
+
+    def test_a_node_visited_twice_reports_its_latest_visit(self):
+        report = {}
+        gate = gated(samples=2)
+        run_node(gate, {"ticket": "t"}, FakeModel([GOOD, GOOD]), consensus=report)
+        with self.assertRaises(Unsure):
+            run_node(gate, {"ticket": "t"}, FakeModel([GOOD, OTHER]), consensus=report)
+        self.assertTrue(report["classify"].unsure)
+
+    def test_the_report_is_optional(self):
+        self.assertEqual(
+            run_node(gated(samples=2), {"ticket": "t"}, FakeModel([GOOD, GOOD])),
+            {"category": "billing"},
+        )
+
+    def test_unsure_is_derived_rather_than_stored(self):
+        self.assertTrue(Consensus("n", asked=3, drawn=3, agreed=1, required=2,
+                                  generations=3).unsure)
+        self.assertFalse(Consensus("n", asked=3, drawn=2, agreed=2, required=2,
+                                   generations=2).unsure)
+
+    def test_the_shape_of_a_disagreement_is_reported_too(self):
+        """Two defensible readings and four guesses are different problems."""
+        report = {}
+        with self.assertRaises(Unsure):
+            run_node(gated(samples=4, agree=3), {"ticket": "t"},
+                     FakeModel([GOOD, GOOD, OTHER, OTHER]), consensus=report)
+        self.assertEqual(report["classify"].distinct, 2)
+        self.assertEqual(report["classify"].agreed, 2)
+
+    def test_agreeing_draws_report_one_distinct_answer(self):
+        report = {}
+        run_node(gated(samples=2), {"ticket": "t"}, FakeModel([GOOD, GOOD]),
+                 consensus=report)
+        self.assertEqual(report["classify"].distinct, 1)
