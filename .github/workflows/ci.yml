@@ -47,6 +47,16 @@ jobs:
       - name: Load-bearing invariants
         run: python -m unittest tests.test_invariants -v
 
+      - name: The documentation still reproduces
+        # These three pages are transcripts, and a transcript rots in silence. Replaying
+        # them is what turns "the docs say" into "the docs are checked". Three of the eight
+        # pages, not all: the rest use conventions a replay cannot follow, and the harness
+        # says which and why rather than pretending otherwise.
+        run: |
+          for page in graph pack-format confidence; do
+            python tests/replay_docs.py "docs/$page.md"
+          done
+
   zero-dependencies:
     name: zero dependencies
     runs-on: ubuntu-latest

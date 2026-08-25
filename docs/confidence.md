@@ -640,6 +640,12 @@ jig: pack error: graph.yaml: node 'classify' has unknown key(s): agree, samples
 Delete the two lines and the same pack loads, `on_unsure` and all:
 
 ```console
+$ python3 - <<'PY'
+import pathlib
+p = pathlib.Path("gated/graph.yaml")
+p.write_text("".join(l for l in p.read_text().splitlines(True)
+                     if l.strip().split(":")[0] not in ("samples", "agree")))
+PY
 $ python3 -m jig validate gated
 gated v1: 3 nodes, 1 edge, 1 evalset case, entry 'classify'
 ```

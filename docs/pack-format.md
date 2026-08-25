@@ -53,12 +53,16 @@ support_triage v1: 7 nodes, 5 edges, 12 evalset cases, entry 'classify'
 $ python3 -m jig eval examples/support_triage
 support_triage: 12/12 cases passed
 
-$ for d in examples/*/; do python3 -m jig eval "$d"; done
+$ for d in examples/*/; do
+>   t=""; [ -f "$d/tools.py" ] && t="--tools $d/tools.py:registry"
+>   python3 -m jig eval "$d" $t
+> done
 content_moderation: 13/13 cases passed
 incident_triage: 13/13 cases passed
 invoice_extract: 12/12 cases passed
 lead_qualify: 12/12 cases passed
 meeting_actions: 12/12 cases passed
+refund_desk: 12/12 cases passed
 support_triage: 12/12 cases passed
 ```
 
@@ -1494,35 +1498,32 @@ Two silences are deliberate, and both mean "unproven", not "fine":
   registry. The same is true of an earlier generate node whose grammar declares no
   `properties`: it may write anything, so nothing can be called missing.
 
-**Passing the registry is optional, and the CLI never does it.** That is two separate
-facts and the second one is the one that costs.
+**Passing the registry is optional, and the check runs only when you pass it.** That is
+by design (`load_pack`'s docstring): a pack whose tools live in another process, another
+language, or another machine must still be checkable, and a check that *cannot run* is not
+the same as a check that failed. So `load_pack(path)` with no registry loads a pack full of
+tool nodes and says nothing about them.
 
-The first is by design (`load_pack`'s docstring): a pack whose tools live in another
-process, another language, or another machine must still be checkable, and a check that
-*cannot run* is not the same as a check that failed. So `load_pack(path)` with no
-registry loads a pack full of tool nodes and says nothing about them.
-
-The second is that `jig/cli.py:command_run` and `command_eval` both call
-`load_pack(args.pack)` — no `tools=` — and then hand the registry to `run()` instead.
-`--tools` therefore supplies the actions without ever running `check_tools`. Every
-transcript above needed `python3 -` to reach that check at all, and through the CLI both
-failures arrive mid-run instead:
+From the CLI, `--tools` is what supplies one — to `validate`, `run` and `eval` alike:
 
 ```
 $ python3 -m jig validate /tmp/v-wiring
 hello v1: 3 nodes, 2 edges, 2 evalset cases, entry 'classify'
 
-$ python3 -m jig run /tmp/v-wiring --input '{"message":"my order never arrived"}' --tools /tmp/hellotools.py --log-level info
-11:35:47.066 INFO  jig.graph run.start run_id=08b7c97dca124e528738a9f8ff1da98b pack=hello version=1 entry=classify resumed=false max_steps=8 inputs=message
-11:35:47.066 INFO  jig.graph node.ok run_id=08b7c97dca124e528738a9f8ff1da98b node=classify type=generate attempts=1 output=merge duration_ms=0.1
-11:35:47.066 WARNING jig.graph node.failed run_id=08b7c97dca124e528738a9f8ff1da98b node=ship type=tool attempts=0 error=ToolContract reason="tool 'ship_order' on node 'ship' needs order_id, which state does not have (it has: kind, message)" on_fail=- duration_ms=0.0
-11:35:47.066 ERROR jig.graph run.error run_id=08b7c97dca124e528738a9f8ff1da98b pack=hello node=ship step=2 error=ToolContract reason="tool 'ship_order' on node 'ship' needs order_id, which state does not have (it has: kind, message)" duration_ms=0.6
-jig: ToolContract: tool 'ship_order' on node 'ship' needs order_id, which state does not have (it has: kind, message)
+$ python3 -m jig validate /tmp/v-wiring --tools /tmp/hellotools.py
+jig: pack error: graph.yaml: tool node 'ship' calls tool 'ship_order', which reads 'order_id' — and nothing writes it before this node runs. Earlier nodes write: kind. The run inputs this pack declares are: message. Give an earlier node an 'output:' that names the field, add it to the pack's inputs (an evalset case, or manifest 'inputs:'), or call a tool that reads what this graph has.
 ```
 
-`node.ok` for `classify` is the cost of the missing check: a generation was already spent,
-and on a longer graph so was every side effect before the broken node. If you host packs,
-call `load_pack(path, tools=registry)` yourself and do not rely on `jig validate`.
+The refusal arrives at load, before the entry node runs — so the generation `classify`
+would have spent is not spent, and on a longer graph neither is any side effect before the
+broken node. That is the whole point of checking wiring rather than discovering it.
+
+This did not use to be true. Until recently every CLI command called `load_pack(args.pack)`
+with no `tools=` and handed the registry to `run()` afterwards, so `--tools` supplied the
+actions without ever running `check_tools`: a pack naming a tool nobody registered
+validated clean, exit 0, and then died mid-run at the node that would have called it.
+Earlier versions of this page documented that behaviour and told you not to rely on
+`jig validate`. Both the code and the advice have changed — pass `--tools` and rely on it.
 
 #### Without a registry, a tool node cannot run at all
 
@@ -2693,7 +2694,7 @@ gives the same report to a machine, on one line:
 
 ```
 $ python3 -m jig eval /tmp/hello-evalfail --json
-{"by_node": {"classify": 1}, "cases": [{"actual": {"kind": "complaint"}, "error": null, "expected": {"kind": "question"}, "mismatches": [{"actual": "complaint", "expected": "question", "field": "kind", "node": "classify", "note": ""}], "name": "missing order is a complaint", "node": "classify", "passed": false}], "failed": 1, "pack": "hello", "passed": 0, "total": 1}
+{"by_node": {"classify": 1}, "cases": [{"actual": {"kind": "complaint"}, "error": null, "escalations": [], "expected": {"kind": "question"}, "mismatches": [{"actual": "complaint", "expected": "question", "field": "kind", "node": "classify", "note": ""}], "name": "missing order is a complaint", "node": "classify", "passed": false, "tier": "auto"}], "failed": 1, "pack": "hello", "passed": 0, "tiers": {"auto_accuracy": 0.0, "auto_passed": 0, "auto_total": 1, "automation_rate": 1.0, "counts": {"auto": 1, "escalated": 0, "failed": 0}, "escalated_by": {}, "escalation_rate": 0.0, "failed_by": {}, "failure_rate": 0.0}, "total": 1}
 ```
 
 ## What load-time validation does and does not check
@@ -2708,10 +2709,35 @@ from an `end` node, a non-`end` node with no outgoing edge, an unsupported gramm
 malformed JSON, and an evalset `end:` that is not an end node. Plus, when invoked through
 the CLI, the `output:` shape check on `generate` and `end` nodes.
 
-Two more checks exist but `jig validate` cannot run them: that every `tool:` names a
-registered tool, and that each tool's `reads` can be satisfied. They need the host's
-registry, and the CLI never passes one to `load_pack` — see [`tool`](#tool). A library
-caller gets them with `load_pack(path, tools=registry)`.
+Two more checks need the host's registry, so they run only when you hand one over:
+that every `tool:` names a registered tool, and that each tool's `reads` can be satisfied.
+Pass `--tools` to check them from the CLI, or `load_pack(path, tools=registry)` from a
+library — see [`tool`](#tool).
+
+```
+$ python3 -m jig validate examples/refund_desk
+refund_desk v1: 7 nodes, 7 edges, 12 evalset cases, entry 'classify'
+$ python3 -m jig validate examples/refund_desk --tools examples/refund_desk/tools.py:registry
+refund_desk v1: 7 nodes, 7 edges, 12 evalset cases, entry 'classify', 2 tools checked
+```
+
+Without `--tools` a pack naming a tool nobody registered still validates, because at that
+point nothing has said what "registered" means. That is why the flag exists: a pack that
+acts should be validated against the host that will run it. Point it at a registry that is
+missing something and the pack is refused, exit 1, before any of it runs:
+
+```
+$ cat > /tmp/partial_registry.py <<'EOF'
+from jig.tools import ToolRegistry
+registry = ToolRegistry()
+
+@registry.register("something_else", reads=["order_id"], writes=["x"])
+def something_else(order_id):
+    return {"x": 1}
+EOF
+$ python3 -m jig validate examples/refund_desk --tools /tmp/partial_registry.py:registry
+jig: ToolNotRegistered: no tool named 'fetch_order' on node 'lookup'. A pack can only call what the host registered (available: something_else). Register it before the run, or remove the node.
+```
 
 It does **not** check:
 

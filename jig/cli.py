@@ -197,8 +197,15 @@ def _load_checked(args):
 def command_validate(args):
     pack = _load_checked(args)
     _check_output_shapes(pack)
+    # Say when the tool wiring was checked. Without this the flag is invisible: passing
+    # --tools printed exactly what omitting it printed, so a reader had no way to tell
+    # whether the stricter check had run, and a CI log could not show that it had.
+    checked = ""
+    if getattr(args, "tools", None):
+        wired = sorted({node.tool for node in pack.nodes.values() if node.tool})
+        checked = ", %s checked" % _count(len(wired), "tool")
     print(
-        "%s v%s: %s, %s, %s, entry %r"
+        "%s v%s: %s, %s, %s, entry %r%s"
         % (
             pack.name,
             pack.version,
@@ -206,6 +213,7 @@ def command_validate(args):
             _count(len(pack.edges), "edge"),
             _count(len(pack.evalset), "evalset case"),
             pack.entry,
+            checked,
         )
     )
     return 0

@@ -451,7 +451,13 @@ string value serves both. Make `priority` two-stage and record every call:
 
 ```
 $ cp -r ticket_triage twostage
-$ sed -i '' 's|^name: ticket_triage|name: twostage|' twostage/manifest.yaml
+$ python3 - <<'PY'
+import pathlib
+p = pathlib.Path('twostage/manifest.yaml')
+text = p.read_text()
+text = text.replace('name: ticket_triage', 'name: twostage')
+p.write_text(text)
+PY
 $ python3 - <<'PY'
 path = 'twostage/graph.yaml'
 text = open(path).read().replace(
@@ -528,9 +534,14 @@ it — and the advice in the refusal does not apply to `eval`:
 
 ```
 $ cp -r ticket_triage netpack
-$ sed -i '' -e 's|^name: ticket_triage|name: netpack|' \
-            -e 's|^model: fake:fakes/script.json|model: openai:http://localhost:8000#qwen3-8b|' \
-            netpack/manifest.yaml
+$ python3 - <<'PY'
+import pathlib
+p = pathlib.Path('netpack/manifest.yaml')
+text = p.read_text()
+text = text.replace('name: ticket_triage', 'name: netpack')
+text = text.replace('model: fake:fakes/script.json', 'model: openai:http://localhost:8000#qwen3-8b')
+p.write_text(text)
+PY
 
 $ python3 -m jig eval netpack
 jig: this pack's manifest selects a network endpoint ('openai:http://localhost:8000#qwen3-8b'). Pass --model to choose the endpoint yourself, or --allow-pack-model to accept the pack's choice.
@@ -538,7 +549,7 @@ $ echo $?
 1
 
 $ python3 -m jig eval netpack --allow-pack-model
-usage: jig [-h] [--version] {validate,run,eval} ...
+usage: jig [-h] [--version] {validate,run,build,eval} ...
 jig: error: unrecognized arguments: --allow-pack-model
 $ echo $?
 2
@@ -1175,7 +1186,13 @@ changing nothing else:
 
 ```
 $ rm -rf sabotage && cp -r ticket_triage sabotage
-$ sed -i '' 's|when: {tier: urgent}|when: {tier: normal}|' sabotage/graph.yaml
+$ python3 - <<'PY'
+import pathlib
+p = pathlib.Path('sabotage/graph.yaml')
+text = p.read_text()
+text = text.replace('when: {tier: urgent}', 'when: {tier: normal}')
+p.write_text(text)
+PY
 
 $ python3 -m jig eval sabotage
 ticket_triage: 1/3 cases passed
@@ -1194,7 +1211,13 @@ And drop `"rescued": true` from case 3, changing nothing else:
 
 ```
 $ rm -rf sabotage && cp -r ticket_triage sabotage
-$ sed -i '' 's|, "rescued": true||' sabotage/evalset.jsonl
+$ python3 - <<'PY'
+import pathlib
+p = pathlib.Path('sabotage/evalset.jsonl')
+text = p.read_text()
+text = text.replace(', "rescued": true', '')
+p.write_text(text)
+PY
 
 $ python3 -m jig eval sabotage
 ticket_triage: 2/3 cases passed
@@ -1217,7 +1240,7 @@ touches a network or loads a model.
 $ python3 -m pytest -q
 [one long line of dots, elided — a single `x` marks the one expected failure]
 ----------------------------------------------------------------------
-Ran 1079 tests in 25.438s
+Ran 1562 tests in 24.680s
 
 OK (expected failures=1)
 ```

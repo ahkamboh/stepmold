@@ -405,11 +405,28 @@ keys that would imply otherwise rather than ignoring them (`pack._TOOL_FORBIDDEN
 | `assert` | `assert:` gates a *generation* before it is committed; a tool node has no retry ladder for a rejection to spend |
 | `expr` | `expr` is the assert node's branch condition |
 
+Both refusals below are provoked on a throwaway copy, so the `notify` built above stays
+valid for the rest of this page:
+
 ```
-$ python3 -m jig validate notify
+$ cp -r notify /tmp/notify-retries
+$ python3 - <<'PY'
+import pathlib
+p = pathlib.Path("/tmp/notify-retries/graph.yaml")
+p.write_text(p.read_text().replace("    tool: send_email",
+                                   "    tool: send_email\n    retries: 2"))
+PY
+$ python3 -m jig validate /tmp/notify-retries
 jig: pack error: graph.yaml: tool node 'send' carries 'retries'. Those keys belong to a generate or an assert node and nothing would read them here — remove them, or make this a node type that uses them. 'retries': a re-run tool is a side effect done twice; route the failure with `on_fail` instead of re-attempting it.
 
-$ python3 -m jig validate notify
+$ cp -r notify /tmp/notify-toolkey
+$ python3 - <<'PY'
+import pathlib
+p = pathlib.Path("/tmp/notify-toolkey/graph.yaml")
+p.write_text(p.read_text().replace("    type: generate",
+                                   "    type: generate\n    tool: send_email"))
+PY
+$ python3 -m jig validate /tmp/notify-toolkey
 jig: pack error: graph.yaml: node 'draft' is type 'generate' but carries 'tool: send_email'. Only a tool node names a tool — set 'type: tool', or drop the key.
 ```
 
@@ -491,6 +508,7 @@ jig: ToolsNotAvailable: node 'send' is a tool node, and this run was given no to
   own doing, not the run's:
 
 ```
+$ rm -f /tmp/outbox.txt
 $ python3 -m jig eval notify --tools ./mailer.py
 notify: 1/1 cases passed
 
@@ -1501,7 +1519,14 @@ this page: `on_unsure:` is a `graph.yaml` key, validated like any other edge tar
 `getattr`, so a node loaded from disk always answers "one draw, one answer" —
 
 ```
-$ python3 -m jig validate notify
+$ cp -r notify /tmp/notify-gate
+$ python3 - <<'PY'
+import pathlib
+p = pathlib.Path("/tmp/notify-gate/graph.yaml")
+p.write_text(p.read_text().replace("    type: generate",
+                                   "    type: generate\n    samples: 3\n    agree: 2"))
+PY
+$ python3 -m jig validate /tmp/notify-gate
 jig: pack error: graph.yaml: node 'draft' has unknown key(s): agree, samples
 ```
 
@@ -2027,6 +2052,7 @@ store.close()
 ```
 
 ```
+$ rm -f /tmp/outbox.txt
 $ python3 -m jig run notify --store /tmp/rows.db --run-id ok --tools ./mailer.py --input '{"to": "ops@example.com", "incident": "db-3 disk at 100%"}'
 {"receipt": "message 1", "subject": "disk full on db-3"}
 
@@ -2323,7 +2349,12 @@ except Exception as exc:
 store.close()
 ```
 
+`probe_kill.py` above left the interrupted checkpoint this reads, and the resume in
+between consumed it — so re-run the kill first, or `alert1` has nothing pending and the
+recorded call comes back empty:
+
 ```
+$ python3 probe_kill.py >/dev/null
 $ python3 probe_mismatch.py
 recorded call: [{'args': {'subject': 'disk full on db-3', 'to': 'ops@example.com'}, 'node': 'send', 'result': {'receipt': 'message 1'}, 'tool': 'send_email'}]
 ToolReplayMismatch: run resumed into node 'send' holding a call to 'send_email' that already happened, but state no longer matches the arguments it was made with (to differ). The recorded result answers a question this run is no longer asking, and calling again would repeat a side effect that already took place — so the run stops instead of choosing between them. Read the run's checkpoints before resuming it again.

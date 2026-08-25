@@ -668,3 +668,36 @@ class TheShapeCheckRunsEvenWithoutASchema(unittest.TestCase):
         with self.assertRaises(Rejected):
             verify(self._node(schema), '{"k": 12345}', {})
 
+
+
+class ValidateReportsTheToolCheck(unittest.TestCase):
+    """`jig validate --tools` must say that it checked, not just check.
+
+    A check whose success is indistinguishable from its absence is a check nobody trusts:
+    the flag printed exactly what omitting it printed, so neither a reader nor a CI log
+    could tell the stricter pass had run. The count is the evidence.
+    """
+
+    def _run(self, *extra):
+        import subprocess, sys, pathlib
+        root = pathlib.Path(__file__).resolve().parent.parent
+        proc = subprocess.run(
+            [sys.executable, "-m", "jig", "validate", "examples/refund_desk"] + list(extra),
+            capture_output=True, text=True, cwd=str(root))
+        return (proc.stdout + proc.stderr).strip()
+
+    def test_without_tools_it_claims_nothing(self):
+        self.assertNotIn("checked", self._run())
+
+    def test_with_tools_it_names_the_count(self):
+        self.assertIn("2 tools checked", self._run(
+            "--tools", "examples/refund_desk/tools.py:registry"))
+
+    def test_a_pack_with_no_tools_says_zero_rather_than_staying_silent(self):
+        import subprocess, sys, pathlib
+        root = pathlib.Path(__file__).resolve().parent.parent
+        proc = subprocess.run(
+            [sys.executable, "-m", "jig", "validate", "examples/support_triage",
+             "--tools", "examples/refund_desk/tools.py:registry"],
+            capture_output=True, text=True, cwd=str(root))
+        self.assertIn("0 tools checked", proc.stdout + proc.stderr)
