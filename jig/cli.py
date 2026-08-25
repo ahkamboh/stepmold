@@ -89,6 +89,7 @@ def build_parser():
     run.add_argument("--resume", help="continue a previous run id (needs --store)")
     run.add_argument("--state", action="store_true",
                      help="print the whole final state, not the end node's projection")
+    _add_tools_option(run)
     run.set_defaults(handler=command_run)
 
     build = commands.add_parser(
@@ -112,10 +113,31 @@ def build_parser():
     evaluate_command.add_argument("--model", help="model spec (default: the manifest's)")
     evaluate_command.add_argument("--json", action="store_true",
                                   help="emit the report as JSON")
+    evaluate_command.add_argument(
+        "--tiers", action="store_true",
+        help="also print the auto/escalated/failed split and the accuracy within "
+             "the auto tier",
+    )
+    _add_tools_option(evaluate_command)
     evaluate_command.set_defaults(handler=command_eval)
 
     parser.set_defaults(handler=lambda args: _usage(parser))
     return parser
+
+
+def _add_tools_option(command):
+    """`--tools`, on the two subcommands that execute a pack.
+
+    An operator-only flag, and that is the whole security model of `jig.tools` expressed
+    at the command line: a pack *names* the actions it wants and the host *supplies*
+    them. There is deliberately no manifest key for this — a pack you did not write must
+    not be able to choose which code its tool names resolve to.
+    """
+    command.add_argument(
+        "--tools", metavar="MODULE[:ATTR]",
+        help="python module (or ./path.py) defining a ToolRegistry the pack may call; "
+             "the registry is looked up as 'registry' or 'REGISTRY' unless :ATTR names it",
+    )
 
 
 def _observability_options():
@@ -187,10 +209,16 @@ def command_run(args):
     if args.resume and not args.store:
         return _fail("--resume needs --store: checkpoints live in the store")
 
+    tools = _tool_registry(args, resume if args.resume else run_pack)
+    # Only when the operator asked for tools: a walker that takes no `tools` keyword must
+    # keep running every pack that needs none, which is every pack written so far.
+    extra = {"tools": tools} if tools is not None else {}
+
     store = Store(args.store) if args.store else None
     try:
         if args.resume:
-            result = resume(pack, resolve_model(args.model, pack, _allow(args)), args.resume, store)
+            result = resume(pack, resolve_model(args.model, pack, _allow(args)),
+                            args.resume, store, **extra)
         else:
             result = run_pack(
                 pack,
@@ -198,6 +226,7 @@ def command_run(args):
                 _parse_input(args.input),
                 run_id=args.run_id,
                 store=store,
+                **extra
             )
     finally:
         if store is not None:
@@ -218,11 +247,23 @@ def command_run(args):
 
 
 def command_eval(args):
+    from .graph import run as run_pack
+
     pack = load_pack(args.pack)
     _check_output_shapes(pack)
-    report = evaluate(pack, resolve_model(args.model, pack, _allow(args)))
-    print(json.dumps(_report_json(report), sort_keys=True) if args.json
-          else report.summary())
+    tools = _tool_registry(args, run_pack)
+    report = evaluate(pack, resolve_model(args.model, pack, _allow(args)), tools=tools)
+    if args.json:
+        # The JSON report carries the tier split unconditionally. It is a machine
+        # surface, an added key breaks nothing that reads the old ones, and an automation
+        # rate that only appears behind a flag is one a deployment review can miss.
+        print(json.dumps(_report_json(report), sort_keys=True))
+    else:
+        # The text report is unchanged, always. Existing scripts grep it and the README's
+        # transcripts are executed as tests; `--tiers` adds a block, it rewrites nothing.
+        print(report.summary())
+        if args.tiers:
+            print(report.tier_summary())
     return 0 if report.passed_all else 1
 
 
@@ -400,6 +441,142 @@ def _fake_model(path, pack):
             raise ValueError("%s is not valid JSON (%s)" % (full, exc))
 
 
+# ---------------------------------------------------------------------------- tools
+
+
+REGISTRY_NAMES = ("registry", "REGISTRY")
+
+
+def _tool_registry(args, entry_point):
+    """Resolve `--tools`, or `None` when this invocation did not ask for tools.
+
+    `entry_point` is the function about to be called with the registry. It is checked
+    rather than assumed: a runtime whose walker predates tool nodes would otherwise
+    answer `--tools` with `TypeError: run() got an unexpected keyword argument`, which
+    says nothing about what the operator should do instead.
+    """
+    spec = getattr(args, "tools", None)
+    if not spec:
+        return None
+    if not _accepts_tools(entry_point):
+        raise ValueError(
+            "--tools: this jig runtime cannot run tools — %s.%s takes no 'tools' "
+            "argument. Upgrade jig, or drop the flag."
+            % (entry_point.__module__, entry_point.__name__)
+        )
+    return _load_registry(spec)
+
+
+def _accepts_tools(function):
+    """Whether `function` will accept a `tools=` keyword.
+
+    The same question `graph._save_accepts_attempts` asks of a store, asked for the same
+    reason: these are seams between a version of jig and code written against another
+    one, and a clear refusal beats a keyword error from three frames down.
+    """
+    import inspect
+
+    try:
+        parameters = inspect.signature(function).parameters.values()
+    except (TypeError, ValueError):  # a builtin, or something without a signature
+        return False
+    kinds = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        or (parameter.name == "tools" and parameter.kind in kinds)
+        for parameter in parameters
+    )
+
+
+def _load_registry(spec):
+    """`module[:attribute]` or `./path.py[:attribute]` -> the host's `ToolRegistry`.
+
+    Importing it runs the operator's own code, which is exactly the point: the tools are
+    the host's, written by the host, and this is how the host hands them over. Nothing in
+    the pack reaches this function — see `_add_tools_option`.
+
+    importlib is imported here rather than at module scope, like every other thing the
+    CLI can reach into: `import jig.cli` must stay as cheap as the runtime that never
+    passes this flag. Nothing here imports `jig.tools` either — the registry is
+    duck-typed, so a host may hand over its own wrapper.
+    """
+    import importlib
+
+    target, _, attribute = spec.partition(":")
+    target = target.strip()
+    if not target:
+        raise ValueError(
+            "--tools: needs a module or file, e.g. --tools mytools or "
+            "--tools ./mytools.py:registry"
+        )
+    if target.endswith(".py") or os.sep in target:
+        module = _module_from_file(target)
+    else:
+        try:
+            module = importlib.import_module(target)
+        except ModuleNotFoundError as exc:
+            if exc.name != target:
+                raise  # the module is there; something IT imports is not. Let it speak.
+            raise ValueError(
+                "--tools: no module named %r on sys.path. Give a file path "
+                "(--tools ./mytools.py), or set PYTHONPATH." % target
+            )
+    return _registry_from(module, attribute.strip(), spec)
+
+
+def _module_from_file(path):
+    """Load a .py file as a module without putting its directory on sys.path.
+
+    A host's tool module usually sits next to the pack rather than in site-packages, and
+    prepending its directory to sys.path would change what every later import in the
+    process resolves to.
+    """
+    import importlib.util
+
+    full = os.path.abspath(path)
+    if not os.path.isfile(full):
+        raise ValueError("--tools: no such file %s" % full)
+    name = "_jig_tools_%s" % os.path.splitext(os.path.basename(full))[0]
+    spec = importlib.util.spec_from_file_location(name, full)
+    if spec is None or spec.loader is None:
+        raise ValueError("--tools: %s is not importable as a Python module" % full)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _registry_from(module, attribute, spec):
+    """Find the registry inside a loaded module, and check it is one."""
+    names = [attribute] if attribute else list(REGISTRY_NAMES)
+    found = None
+    for name in names:
+        found = getattr(module, name, None)
+        if found is not None:
+            break
+    if found is None:
+        raise ValueError(
+            "--tools: %s defines no %s. Name it explicitly with %s:<attribute>, or "
+            "assign your ToolRegistry to one of those names."
+            % (getattr(module, "__name__", spec), " or ".join(repr(n) for n in names),
+               spec.partition(":")[0])
+        )
+    if callable(found) and not _looks_like_registry(found):
+        # A factory is allowed — `def registry(): ...` returning a fresh registry is the
+        # natural shape when the tools need a database handle to close over.
+        found = found()
+    if not _looks_like_registry(found):
+        raise ValueError(
+            "--tools: %s is a %s, not a ToolRegistry (see jig.tools)"
+            % (spec, type(found).__name__)
+        )
+    return found
+
+
+def _looks_like_registry(value):
+    """Duck-typed rather than isinstance: a host may wrap or subclass its registry."""
+    return all(hasattr(value, name) for name in ("get", "has", "names"))
+
+
 # --------------------------------------------------------------------------- output
 
 
@@ -410,12 +587,36 @@ def _report_json(report):
         "failed": report.failed,
         "total": report.total,
         "by_node": report.by_node,
+        # Rates are fractions, not percentages, and `auto_accuracy` is null rather than
+        # zero when nothing was automated: a report that is read by a script should hand
+        # over the measurement, not a rounded rendering of it, and should never hand over
+        # a number nobody measured.
+        "tiers": {
+            "counts": dict(report.tier_counts),
+            "automation_rate": report.automation_rate,
+            "escalation_rate": report.escalation_rate,
+            "failure_rate": report.failure_rate,
+            "auto_accuracy": report.auto_accuracy,
+            "auto_passed": report.auto_passed,
+            "auto_total": len(report.auto_cases),
+            "escalated_by": dict(report.escalated_by),
+            "failed_by": dict(report.failed_by),
+        },
         "cases": [
             {
                 "name": case.name,
                 "passed": case.passed,
                 "node": case.node,
                 "error": case.error,
+                "tier": case.tier,
+                "escalations": [
+                    {
+                        "node": escalation.node,
+                        "kind": escalation.kind,
+                        "reason": escalation.reason,
+                    }
+                    for escalation in case.escalations
+                ],
                 "expected": case.expected,
                 "actual": case.actual,
                 "mismatches": [
