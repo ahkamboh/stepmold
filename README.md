@@ -20,6 +20,9 @@ jig run mypack --input '{"ticket": "I was charged twice"}'
 - Any OpenAI-compatible endpoint — llama.cpp-server, vLLM, SGLang, or a hosted API.
 - A workflow is a directory of text files, so it can be diffed, reviewed and copied to a
   machine that cannot install anything.
+- A step can act, not only decide. A `tool` node calls a function the *host* registered,
+  and the call is written down before it is committed, so a resumed run replays it rather
+  than doing it twice.
 
 ---
 
@@ -157,7 +160,7 @@ JIG_API_KEY=... python3 -m jig eval examples/support_triage \
 ## How it works
 
 A **pack** is a directory of text: a graph, one prompt and one JSON-schema grammar per
-step, and an evalset of gold cases.
+generating step, and an evalset of gold cases.
 
 ```
 mypack/
@@ -167,6 +170,14 @@ mypack/
   grammars/           one .json schema per generate node
   evalset.jsonl       gold cases — the pack's contract
 ```
+
+There are four kinds of node. `generate` fills one schema-constrained slot, `assert`
+branches on a deterministic expression, `tool` takes an action, and `end` stops and
+returns. A `tool` node adds no files to the pack: it names a function the **host**
+registered, which is what lets a pack stay text. A pack cannot contain an action, only
+name one, so it can reach nothing the host did not hand it — an allowlist by construction
+rather than a sandbox that has to hold. A name that was never registered is refused when
+the pack loads, not at the step that would have called it.
 
 Running it:
 
@@ -182,7 +193,20 @@ Running it:
    description of what was wrong — never a quote of what the model said — and finally the
    node's `on_fail` edge is taken. A rejected generation is never shown to the model again,
    which is what stops a bad answer conditioning the next one.
-5. **Checkpoint.** State is persisted after each committed node, so a killed run resumes
+5. **Agree, or hand over.** A node can ask to be drawn several times and accepted only
+   when the draws match — `samples:` and `agree:`. Draws that all parse and all validate
+   but do not match are not a failure, they are the model being inconsistent, so the node
+   raises `Unsure` and the pack routes it to `on_unsure` — a human queue, a conservative
+   default branch — rather than committing a coin flip. Nothing the model says about its own
+   certainty is read. See [Confidence](docs/confidence.md), including the part where this
+   is reachable from Python and not yet from a pack file.
+6. **Act, at most once.** A `tool` node calls its registered function and commits what it
+   returns under the same rules a generation gets: declared `reads`, declared `writes`,
+   and no retry ladder, because re-running a tool is a side effect done twice. The moment
+   the call returns, the node, its arguments and its result go into the checkpoint with
+   the walk still standing on the node — so a run that dies mid-workflow resumes by
+   replaying that result instead of sending the second email.
+7. **Checkpoint.** State is persisted after each committed node, so a killed run resumes
    instead of restarting.
 
 The evalset is the pack's contract. `jig eval` scores every case, names which node caused
@@ -194,7 +218,8 @@ reroutes a workflow fails its tests instead of passing them.
 | Document                                     | What is in it                                                   |
 | -------------------------------------------- | --------------------------------------------------------------- |
 | [Pack format](docs/pack-format.md)            | Every file, every key, every default. Start here to build a pack |
-| [Graph and routing](docs/graph.md)            | Node types, edges, `when:`, `on_fail`, state and provenance       |
+| [Graph and routing](docs/graph.md)            | Node types including `tool`, edges, `when:`, `on_fail`, state and provenance |
+| [Confidence](docs/confidence.md)              | The agreement gate, why a self-reported number is not one, and how to read the tier split |
 | [Expressions](docs/expressions.md)            | The `assert` language: what it supports and what it refuses       |
 | [Testing packs](docs/testing.md)              | Evalsets, scripted models, and scoring offline                    |
 | [Compiling a pack](docs/building.md)          | `jig build`: the spec format, the loop, and what it cannot do yet |
@@ -226,6 +251,25 @@ generation is never logged above DEBUG.
 constrained generation, two-stage think-then-answer, verify-before-commit, the retry ladder,
 `on_fail` routing, SQLite checkpointing and resume, the evalset runner with per-node blame,
 the CLI, an OpenAI-compatible backend, and structured logging.
+
+**Built, and shipped without a worked example:** `tool` nodes and the confidence gate. A
+pack can now name an action the host registered, and the walker records the call so a
+resumed run replays it rather than repeating it; and a node can be drawn several times and
+accepted only on agreement, with disagreement routed to `on_unsure`. Both are tested. What
+has not been shown:
+
+- **No example pack in this repository uses a tool.** All six decide and none of them act,
+  so the worked, end-to-end pack you would copy does not exist yet — the runnable examples
+  are in the docs.
+- **The gate has no pack-file surface.** `samples:` and `agree:` are not keys `graph.yaml`
+  accepts; a pack carrying them is refused at load, and the gate is reachable only from
+  Python. `on_unsure:` validates and routes, but nothing in a pack file can make a node
+  unsure, so from a pack that edge cannot yet be taken.
+- **Nobody has measured what agreement buys.** There is no benchmark here for how much a
+  gate raises accuracy inside the auto bucket, or how much of the escalated bucket it
+  moves, against a real model. The mechanism is tested; its value is not a number anyone
+  in this repository can quote. [Confidence](docs/confidence.md) says how to find out on
+  your own workflow, and says the same thing there.
 
 **Built, and newer:** `jig build` — the compiler. A frontier model authors a pack once from
 a task description and gold examples; a small model then runs it forever. Two of its four
@@ -260,11 +304,11 @@ baseline on the same cases.
 $ python3 -m pytest -q
 ```
 
-1079 tests, no network, no GPU. The suite runs with no dependencies installed — including no pytest, via a stdlib shim. CI
+1530 tests, no network, no GPU. The suite runs with no dependencies installed — including no pytest, via a stdlib shim. CI
 runs it on Python 3.9 through 3.13, checks that `jig/` imports nothing outside the standard
 library, and builds and installs the wheel into a clean environment.
 
-Roughly 5,700 lines of framework and 14,700 lines of tests. The load-bearing invariants —
+Roughly 11,000 lines of framework and 20,000 lines of tests. The load-bearing invariants —
 that a rejected generation never returns to the model, that nothing is committed unverified,
 that the model never chooses the next node — are each guarded by tests verified to fail when
 the invariant is deliberately broken.
