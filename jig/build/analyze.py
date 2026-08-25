@@ -1,9 +1,10 @@
 """Stage 1 of `jig build` — the schema, induced from the gold examples.
 
-No model, no network, no randomness: everything here is arithmetic over the `expect`
-objects the author already wrote. `analyze` is the first stage precisely *because* it
-needs nothing, and everything downstream (the planner, the prompt writer, the offline
-script) is allowed to assume the answer it produces.
+No model, no network, no randomness: everything here is arithmetic over the cases the
+author already wrote — the `expect` objects, plus (for rule 6 below) the question of
+whether an `input` already spelled a value out. `analyze` is the first stage precisely
+*because* it needs nothing, and everything downstream (the planner, the prompt writer,
+the offline script) is allowed to assume the answer it produces.
 
 What it derives, per key seen in any `expect`:
 
@@ -54,6 +55,9 @@ A field gets an enum only when all of these hold:
 5. **the majority of observations land on a value that recurs.** Summing the counts of
    every value seen `MIN_TIMES_SEEN` (2) or more times must reach at least half the
    observations.
+6. **more than one value has to come back.** At least `MIN_RECURRING_VALUES` (2) distinct
+   values must be seen `MIN_TIMES_SEEN` or more times — or, if only one is, the field
+   must pass the transcription test below.
 
 Rule 5 is the load-bearing one, and it is what decides a field that is enum-like in 11
 of 12 cases with a unique twelfth: 11 of 12 observations recur, so it is a vocabulary
@@ -63,6 +67,39 @@ from it. The strictest reading — *every* value must recur — throws real enum
 them seen once, and it is unmistakably a vocabulary. The loosest reading — *any* value
 recurs — admits free text the moment two cases share a `"none"`. A majority separates
 them, and the length guard catches what slips through.
+
+Rule 6 closes the hole rule 3 only half covers. Rule 3 refuses a field with a single
+distinct value; rule 5 is satisfied by a single *dominant* value, and those are the same
+failure by two routes. An `approver` that is `"maya"` seven times and five other
+first names once each scores 7 of 12 recurring — a majority carried entirely by one
+habit — and an enum of those six names makes a seventh approver unrepresentable under a
+constrained decoder, which no retry and no better model recovers from.
+
+Counting alone cannot finish that job, and it is worth being exact about why, because the
+obvious strictening throws real enums away. `invoice_extract.currency` is `"USD"` nine
+times and `"EUR"`, `"GBP"`, `"PKR"` once each; `invoice_extract.review_reason` is `"none"`
+six times and six distinct reasons once each. Both are shipped enums; both have exactly
+one recurring value; and on every count this stage can take — observations, distinct
+values, singletons, the dominant value's share — the `approver` above (7 plus five
+singletons) scores at least as enum-like as `review_reason` (6 plus six singletons). No
+threshold over those numbers admits the one and refuses the other.
+
+What separates them is where the value came from. A name or a ledger code is in the
+`expect` because the input already said it: the model reads it off the page, and the page
+can always say a name the gold set never showed. A category is in the `expect` because the
+model chose it from a vocabulary the input never spells out. So when exactly one value
+recurs, the tie is broken on transcription: if `TRANSCRIBED_QUARTERS` (3) quarters or more
+of the observations appear verbatim, case-insensitively, in that case's own `input`, the
+field is being copied rather than classified, and its singletons are a sample of an open
+population instead of the rare members of a closed one. Over the six packs the gap is not
+close: no field they enum-constrain scores above 5 of 12 (`meeting_kind`, whose labels do
+sometimes appear in the transcript), while every open field that is not prose is copied
+in at least eleven observations of twelve — `supplier_name`, `due_date`, `order_id`,
+`lead` and `fallback_owner` are copied in all of them. The
+test runs only where the counts are ambiguous, so a genuine vocabulary that happens to
+echo its input keeps its enum on rule 6's first clause — `category` in the expense pack
+below is `"travel"`, `"software"` or `"meals"`, four times each and each word printed on
+the receipt.
 
 The enum is every distinct non-null value observed, sorted, singletons included: a value
 in the gold set that the grammar cannot express is a case the pack can never pass.
@@ -79,6 +116,11 @@ The last line is the one worth defending. Every open field in those packs
 (`supplier_name`, `invoice_number`, `due_date`, `order_id`, `review_note`, `lead`,
 `fallback_owner`) scores exactly zero recurrence — all of their values are distinct,
 which is what "open" means — so the majority test has room to spare on both sides.
+
+The seventh pack is the one that earned rule 6: twelve expense approvals, written after
+the fact to test generalisation rather than to be compiled, whose `approver` and
+`cost_center` rules 1-5 happily welded into grammars of six first names and six ledger
+codes. It is carried in `tests/test_build_analyze.py` so the shape stays covered.
 
 Two shapes of shyness remain, and they differ in how they fail. Inferring *nothing*
 (`defect`: three cases, three values, one each) costs accuracy a later stage or the
@@ -101,6 +143,8 @@ __all__ = ["analyze"]
 MIN_ENUM_OBSERVATIONS = 4
 MAX_ENUM_VALUES = 12
 MIN_TIMES_SEEN = 2
+MIN_RECURRING_VALUES = 2
+TRANSCRIBED_QUARTERS = 3      # in quarters, so the comparison stays integer arithmetic
 MAX_LABEL_LENGTH = 40
 
 MAX_EXAMPLES = 4
@@ -138,8 +182,9 @@ def analyze(description, cases, name):
         )
 
     inputs = _input_keys(cases)
+    haystacks = _haystacks(cases)
     fields = [
-        _field_spec(key, _observations(key, cases))
+        _field_spec(key, _observations(key, cases), haystacks)
         for key in _expect_keys(cases)
     ]
     return TaskSpec(
@@ -199,6 +244,24 @@ def _expect_keys(cases):
     return list(keys)
 
 
+def _haystacks(cases):
+    """Each case's `input`, flattened to one lowercased string to search in.
+
+    Rule 6 of the enum rule asks whether a value was copied out of the input rather than
+    chosen, and a substring test over the whole input object answers that without caring
+    which key carried it. Lowercased because `"maya"` in the `expect` and `"Maya Chen"`
+    in the input are the same transcription.
+
+    `input` is not the compiler's contract to police — only `expect` is, and `_type_of`
+    does that — so a value JSON cannot express is stringified here, not raised on.
+    """
+    return [
+        json.dumps(_case_object(case, index, "input"),
+                   default=repr, skipkeys=True).lower()
+        for index, case in enumerate(cases)
+    ]
+
+
 def _observations(key, cases):
     """Every value this key took, plus how many cases left it out."""
     seen = []
@@ -218,7 +281,7 @@ def _observations(key, cases):
 # ---------------------------------------------------------------------------- fields
 
 
-def _field_spec(key, observations):
+def _field_spec(key, observations, haystacks):
     seen, absent, nulls = observations
     if not seen:
         raise BuildError(
@@ -231,15 +294,21 @@ def _field_spec(key, observations):
     return FieldSpec(
         name=key,
         type=type_name,
-        enum=_enum(type_name, values),
+        enum=_enum(type_name, seen, haystacks),
         optional=bool(absent or nulls),
         examples=_examples(values),
     )
 
 
 def _one_type(key, seen):
-    """The single JSON type covering every observation, or a BuildError naming both."""
-    chosen, chosen_at = _type_of(seen[0][1]), seen[0][0]
+    """The single JSON type covering every observation, or a BuildError naming both.
+
+    `chosen` is the running type and may have widened to `number`; `witness` is what the
+    case the message names actually held. The author is looking for a line in a file, and
+    telling them case 1 is a `number` when the line says `1` sends them to the wrong line.
+    """
+    witness, witness_at = _type_of(seen[0][1]), seen[0][0]
+    chosen = witness
     for index, value in seen[1:]:
         name = _type_of(value)
         if name == chosen:
@@ -250,14 +319,23 @@ def _one_type(key, seen):
         raise BuildError(
             "field %r is %s in case %d and %s in case %d — no single JSON type covers "
             "both. Make %r the same type in every case, or split it into two fields."
-            % (key, chosen, chosen_at + 1, name, index + 1, key)
+            % (key, witness, witness_at + 1, name, index + 1, key)
         )
     return chosen
 
 
 def _type_of(value):
+    """The JSON type name of `value`, refusing anything JSON cannot express.
+
+    Nested values are checked, not just the outer one: `_examples` hands whole values to
+    `json.dumps` for the prompt writer, so a set buried in a list would otherwise reach
+    the author as a bare `TypeError` from inside the standard library, with no field name
+    and no case number anywhere in it.
+    """
     for python_type, name in _JSON_TYPES:
         if isinstance(value, python_type):
+            if name in ("array", "object"):
+                _check_inside(value)
             return name
     raise BuildError(
         "a value of type %s appeared in 'expect'; the examples must be JSON, and JSON "
@@ -265,10 +343,30 @@ def _type_of(value):
     )
 
 
-def _enum(type_name, values):
+def _check_inside(container):
+    """Walk a list or dict, refusing anything JSON cannot express.
+
+    Null is allowed here and has no name in `_JSON_TYPES`: a null *field* is an absent
+    observation and never reaches `_type_of`, but a null inside a list of action items is
+    an ordinary JSON value.
+    """
+    if isinstance(container, dict):
+        for key in container:
+            if not isinstance(key, str):
+                raise BuildError(
+                    "an object key of type %s appeared in 'expect'; the examples must be "
+                    "JSON, and every JSON object key is a string." % type(key).__name__
+                )
+    for item in (container.values() if isinstance(container, dict) else container):
+        if item is not None:
+            _type_of(item)
+
+
+def _enum(type_name, seen, haystacks):
     """The closed set of values this field takes, or None. See the module docstring."""
     if type_name != "string":
         return None
+    values = [value for _, value in seen]
     if len(values) < MIN_ENUM_OBSERVATIONS:
         return None
 
@@ -283,9 +381,23 @@ def _enum(type_name, values):
     # The majority test: how much of the gold set landed on a value the field has taken
     # before. Free text scores zero here however many cases there are, because "free"
     # means no value ever comes back.
-    recurring = sum(n for n in counts.values() if n >= MIN_TIMES_SEEN)
+    repeated = [value for value, n in counts.items() if n >= MIN_TIMES_SEEN]
+    recurring = sum(counts[value] for value in repeated)
     if recurring * 2 < len(values):
         return None
+
+    # Rule 6. A majority carried by one dominant value is a habit with a scatter around
+    # it, which is the same failure as rule 3's single value by another route: an
+    # `approver` seen as "maya" seven times and five other names once each clears the
+    # majority test outright. Two values coming back is what a vocabulary being *used*
+    # looks like, so that ends it; with only one, the counts cannot tell that field from
+    # `invoice_extract.currency`, and the tie goes to where the values came from.
+    if len(repeated) < MIN_RECURRING_VALUES:
+        transcribed = sum(
+            1 for index, value in seen if value.lower() in haystacks[index]
+        )
+        if transcribed * 4 >= len(values) * TRANSCRIBED_QUARTERS:  # in quarters
+            return None
     return sorted(counts)
 
 

@@ -1,9 +1,11 @@
 """`jig build` stage 1 — schema induction, and the enum rule it turns on.
 
-The last class in this file is the one that matters: it runs `analyze` over the evalsets
-of all six packs in `examples/` and holds the result against the grammars those packs
-actually ship. Everything above it probes a boundary of the enum rule with the smallest
-gold set that can express it.
+The last two classes are the ones that matter. `TestAgainstTheShippedPacks` runs `analyze`
+over the evalsets of all six packs in `examples/` and holds the result against the
+grammars those packs actually ship; `TestTheExpenseApprovalPack` runs it over a seventh
+pack the stage was never developed against, whose `approver` and `cost_center` columns are
+the shape rule 6 exists to refuse. Everything above them probes a boundary of the enum
+rule with the smallest gold set that can express it.
 """
 
 import copy
@@ -16,6 +18,9 @@ from jig.build.analyze import (
     MAX_ENUM_VALUES,
     MAX_LABEL_LENGTH,
     MIN_ENUM_OBSERVATIONS,
+    MIN_RECURRING_VALUES,
+    MIN_TIMES_SEEN,
+    TRANSCRIBED_QUARTERS,
     analyze,
 )
 from jig.build.spec import BuildError
@@ -32,6 +37,19 @@ def cases_for(field, values):
     """One case per value, with a constant input — the shape most tests here need."""
     return [case({field: value}, text="line %d" % index)
             for index, value in enumerate(values)]
+
+
+def quoting_cases(field, values, quoted):
+    """One case per value; the first `quoted` of them print their value in the input.
+
+    Rule 6's transcription test asks whether the input already spelled the answer out, so
+    a test of it needs to control that per case rather than per field.
+    """
+    return [
+        {"input": {"text": "case %d says %s" % (index, value if index < quoted else "-")},
+         "expect": {field: value}}
+        for index, value in enumerate(values)
+    ]
 
 
 def field_of(values, name="f", description="d", pack="p"):
@@ -69,6 +87,16 @@ class TestTypes(unittest.TestCase):
             field_of([True, 1])
         self.assertIn("'f'", str(caught.exception))
 
+    def test_the_conflict_names_the_type_the_case_it_cites_really_held(self):
+        # [1, 2.5, "s"] widens to `number` at case 2 before the string in case 3 breaks
+        # it. The author is looking for a line in a file, and case 1 holds `1` — calling
+        # it a number sends them to the wrong line.
+        with self.assertRaises(BuildError) as caught:
+            field_of([1, 2.5, "s"])
+        message = str(caught.exception)
+        self.assertIn("integer in case 1", message)
+        self.assertIn("string in case 3", message)
+
     def test_a_string_in_one_case_and_an_object_in_another_names_both_cases(self):
         with self.assertRaises(BuildError) as caught:
             field_of(["a", "b", {"a": 1}])
@@ -83,6 +111,29 @@ class TestTypes(unittest.TestCase):
         with self.assertRaises(BuildError) as caught:
             analyze("d", [case({"f": {1, 2}})], "p")
         self.assertIn("set", str(caught.exception))
+
+    def test_a_non_json_value_nested_in_a_list_or_dict_is_refused_too(self):
+        # `expect` is checked all the way down, not just at the top level: `examples`
+        # json.dumps whole values for the prompt writer, so a set buried in a list would
+        # otherwise reach the author as a bare TypeError from the standard library with
+        # neither the field nor the case in it.
+        for value in ([{1, 2}], {"items": [{"tag": {1, 2}}]}, [[{1, 2}]]):
+            with self.assertRaises(BuildError) as caught:
+                analyze("d", [case({"f": value})], "p")
+            self.assertIn("set", str(caught.exception))
+
+    def test_an_object_key_that_is_not_a_string_is_refused(self):
+        with self.assertRaises(BuildError) as caught:
+            analyze("d", [case({"f": {(1, 2): "x"}})], "p")
+        message = str(caught.exception)
+        self.assertIn("tuple", message)
+        self.assertIn("key", message)
+
+    def test_a_null_inside_a_list_or_object_is_ordinary_json(self):
+        # meeting_actions puts action items straight into `expect`, and an item whose
+        # owner is unknown is null. Only a null *field* is an absent observation.
+        spec = field_of([[{"owner": None}], [], [None]])
+        self.assertEqual(spec.type, "array")
 
 
 # --------------------------------------------------------------------- the enum rule
@@ -181,6 +232,85 @@ class TestEnumIsWithheld(unittest.TestCase):
     def test_arrays_and_objects_are_never_enumerated(self):
         self.assertIsNone(field_of([[], [], ["a"], ["a"]]).enum)
         self.assertIsNone(field_of([{}, {}, {"a": 1}, {"a": 1}]).enum)
+
+
+# ------------------------------------------------ rule 6: one habit is not a vocabulary
+
+
+class TestOneRecurringValueIsNotEnough(unittest.TestCase):
+    """The hole rule 3 only half covered, and the transcription test that closes it.
+
+    Rule 5 is satisfied by a single dominant value: seven of twelve on `"maya"` is a
+    majority even though every other observation is a name seen once. Under constrained
+    decoding an enum of those six names makes a seventh approver *unrepresentable*, which
+    is not recoverable at run time and not visible until it bites.
+    """
+
+    def test_one_dominant_value_and_a_scatter_of_names_is_refused(self):
+        names = ["maya"] * 7 + ["tomas", "priya", "jonas", "nadia", "dev"]
+        cases = quoting_cases("f", names, quoted=12)
+        self.assertIsNone(analyze("d", cases, "p").field_named("f").enum)
+
+    def test_the_same_counts_are_still_an_enum_when_nothing_was_copied(self):
+        # invoice_extract.currency: "USD" nine times, three others once each, and the
+        # invoice text says "$" as often as it says the code. The counts alone cannot
+        # tell this from the approver above, so the input has to break the tie.
+        codes = ["USD"] * 9 + ["EUR", "GBP", "PKR"]
+        cases = quoting_cases("f", codes, quoted=0)
+        self.assertEqual(analyze("d", cases, "p").field_named("f").enum,
+                         ["EUR", "GBP", "PKR", "USD"])
+
+    def test_two_values_coming_back_ends_it_however_the_input_reads(self):
+        # A vocabulary being *used* needs no tiebreak: `category` on an expense form is
+        # printed on the receipt and is still a closed set of three.
+        values = ["travel"] * 4 + ["software"] * 4 + ["meals"] * 4
+        cases = quoting_cases("f", values, quoted=12)
+        self.assertEqual(analyze("d", cases, "p").field_named("f").enum,
+                         ["meals", "software", "travel"])
+
+    def test_the_transcription_boundary_in_both_directions(self):
+        # One recurring value either side of three quarters. Eight of twelve copied is
+        # under the line and stays an enum; nine is on it and is refused.
+        values = ["dom"] * 7 + ["s1", "s2", "s3", "s4", "s5"]
+        under = quoting_cases("f", values, quoted=8)
+        on_the_line = quoting_cases("f", values, quoted=9)
+        self.assertEqual(len(analyze("d", under, "p").field_named("f").enum), 6)
+        self.assertIsNone(analyze("d", on_the_line, "p").field_named("f").enum)
+
+    def test_the_recurrence_boundary_is_two_distinct_values(self):
+        # Everything copied, so only the count of *recurring* values decides. One
+        # recurring value is refused; two is a vocabulary.
+        one = ["a", "a", "b", "c", "d", "e"]
+        two = ["a", "a", "b", "b", "c", "d"]
+        self.assertIsNone(
+            analyze("d", quoting_cases("f", one, quoted=6), "p").field_named("f").enum)
+        self.assertEqual(
+            analyze("d", quoting_cases("f", two, quoted=6), "p").field_named("f").enum,
+            ["a", "b", "c", "d"])
+
+    def test_a_value_is_transcribed_however_the_input_capitalises_it(self):
+        # "maya" in the expect and "Maya Chen" in the input are one transcription.
+        cases = [{"input": {"text": "Manager: %s Chen" % value.title()},
+                  "expect": {"f": value}}
+                 for value in ["maya"] * 7 + ["tomas", "priya", "jonas", "nadia", "dev"]]
+        self.assertIsNone(analyze("d", cases, "p").field_named("f").enum)
+
+    def test_the_transcription_test_reads_every_input_key(self):
+        # The value can be copied out of any part of the input, so the whole object is
+        # searched rather than one key the stage would have to guess.
+        values = ["maya"] * 7 + ["tomas", "priya", "jonas", "nadia", "dev"]
+        cases = [{"input": {"ticket": "no name here", "meta": {"manager": value}},
+                  "expect": {"f": value}}
+                 for value in values]
+        self.assertIsNone(analyze("d", cases, "p").field_named("f").enum)
+
+    def test_an_input_that_is_not_json_does_not_break_the_test(self):
+        # Only 'expect' is the compiler's contract. An input JSON cannot express is
+        # stringified for the search, not raised on — analyze must still produce a spec.
+        values = ["a", "a", "b", "c"]
+        cases = [{"input": {"text": "x", "odd": {1, 2}}, "expect": {"f": value}}
+                 for value in values]
+        self.assertEqual(analyze("d", cases, "p").field_named("f").enum, ["a", "b", "c"])
 
 
 # ---------------------------------------------------------------- optional, examples
@@ -462,6 +592,148 @@ class TestAgainstTheShippedPacks(unittest.TestCase):
     def test_the_thresholds_are_the_ones_the_docstring_states(self):
         self.assertEqual((MIN_ENUM_OBSERVATIONS, MAX_ENUM_VALUES, MAX_LABEL_LENGTH),
                          (4, 12, 40))
+        self.assertEqual((MIN_TIMES_SEEN, MIN_RECURRING_VALUES, TRANSCRIBED_QUARTERS),
+                         (2, 2, 3))
+
+
+# ------------------------------------------------------------- and against a seventh
+
+
+# Twelve expense claims, written to test generalisation rather than to be compiled: no
+# pack in `examples/` has a short-token field the author left open, so until this one
+# existed the length guard of rule 4 was doing all the work and the majority rule of
+# rule 5 had never actually been exercised. Every claim prints the manager who signs it
+# and the cost center it lands on, because that is the only way a reader — or a
+# model — could know either. `maya` signs seven of the twelve and five other managers
+# sign one each; `CC-1041` carries the same shape.
+EXPENSE_ROWS = [
+    ("Rui Alves", "Maya Chen", "CC-1041", "Platform", "travel",
+     "Flight, Lisbon to Berlin", 612.40, "attached", "approved"),
+    ("Rui Alves", "Maya Chen", "CC-1041", "Platform", "software",
+     "Annual IDE licence, one seat", 289.00, "attached", "approved"),
+    ("Ana Ruiz", "Tomas Beck", "CC-2037", "Field Sales", "meals",
+     "Client dinner, four covers", 214.80, "missing", "needs_receipt"),
+    ("Rui Alves", "Maya Chen", "CC-1041", "Platform", "travel",
+     "Business class upgrade, no waiver on file", 1840.00, "attached", "rejected"),
+    ("Sofia Marek", "Priya Nair", "CC-3312", "Data", "software",
+     "Warehouse seat, one month", 450.00, "attached", "approved"),
+    ("Rui Alves", "Maya Chen", "CC-1041", "Platform", "meals",
+     "Team lunch, six covers", 132.10, "missing", "needs_receipt"),
+    ("Lars Vogt", "Jonas Weber", "CC-4408", "Support", "travel",
+     "Train, Munich to Vienna", 96.50, "attached", "approved"),
+    ("Rui Alves", "Maya Chen", "CC-1041", "Platform", "software",
+     "Monitoring add-on, one seat", 78.00, "attached", "approved"),
+    ("Hana Ito", "Nadia Salem", "CC-5150", "Design", "meals",
+     "Workshop catering", 305.25, "attached", "approved"),
+    ("Rui Alves", "Maya Chen", "CC-1041", "Platform", "travel",
+     "Hotel, seven nights, over the nightly cap", 2310.00, "attached", "rejected"),
+    ("Omar Haddad", "Dev Shastri", "CC-6021", "Security", "software",
+     "Penetration testing toolkit", 999.00, "attached", "approved"),
+    ("Rui Alves", "Maya Chen", "CC-1041", "Platform", "meals",
+     "Offsite breakfast", 64.00, "missing", "needs_receipt"),
+]
+
+
+def expense_cases():
+    """The seventh pack's evalset, in the shape `analyze` is given."""
+    cases = []
+    for index, row in enumerate(EXPENSE_ROWS):
+        submitter, manager, code, team, category, line, amount, receipt, decision = row
+        cases.append({
+            "name": "%s, %s" % (category, line.split(",")[0].lower()),
+            "input": {"claim_text": "\n".join([
+                "Expense EXP-41%02d" % (index + 1),
+                "Submitted by: %s" % submitter,
+                "Manager: %s" % manager,
+                "Cost center: %s (%s)" % (code, team),
+                "Category: %s" % category.title(),
+                "%s ... %.2f USD" % (line, amount),
+                "Receipt: %s" % receipt,
+            ])},
+            "expect": {
+                "approver": manager.split()[0].lower(),
+                "cost_center": code,
+                "category": category,
+                "amount_usd": amount,
+                "decision": decision,
+            },
+        })
+    return cases
+
+
+class TestTheExpenseApprovalPack(unittest.TestCase):
+    """A pack the stage was never developed against, and the two fields it welded shut.
+
+    An invented enum is the one failure downstream cannot repair: under constrained
+    decoding a value outside the enum is unrepresentable, not merely unlikely, so a pack
+    compiled with `approver` pinned to these six names can never name a seventh —
+    however plainly the claim in front of it says so, however good the model, however
+    many retries. It is also invisible until it bites, which is why the shape is nailed
+    down here rather than left to the next corpus.
+    """
+
+    def setUp(self):
+        self.cases = expense_cases()
+        self.spec = analyze("Approve or reject an expense claim.",
+                            self.cases, "expense_approval")
+
+    def enum_of(self, name):
+        return self.spec.field_named(name).enum
+
+    def counts_of(self, name):
+        counts = {}
+        for case in self.cases:
+            value = case["expect"][name]
+            counts[value] = counts.get(value, 0) + 1
+        return counts
+
+    def test_the_fixture_is_the_shape_the_rule_has_to_decide(self):
+        # Guard the gold set itself: if a later edit softens these counts the two tests
+        # below would start passing for the wrong reason.
+        for name in ("approver", "cost_center"):
+            counts = self.counts_of(name)
+            self.assertEqual(len(counts), 6)
+            self.assertEqual(sorted(counts.values()), [1, 1, 1, 1, 1, 7])
+        self.assertEqual(len(self.cases), 12)
+
+    def test_rules_one_to_five_would_have_welded_both_shut(self):
+        # Why this pack is here at all. Both fields are strings, both have twelve
+        # observations and six short one-line values, and in both the majority lands on
+        # a value that recurs — seven of twelve, all of it on one habit. Every test the
+        # rule made before rule 6 passes.
+        for name in ("approver", "cost_center"):
+            counts = self.counts_of(name)
+            observations = sum(counts.values())
+            recurring = sum(n for n in counts.values() if n >= MIN_TIMES_SEEN)
+            self.assertGreaterEqual(observations, MIN_ENUM_OBSERVATIONS)
+            self.assertLessEqual(len(counts), MAX_ENUM_VALUES)
+            self.assertTrue(all(len(v) <= MAX_LABEL_LENGTH for v in counts))
+            self.assertGreaterEqual(recurring * 2, observations)
+            self.assertLess(len([n for n in counts.values() if n >= MIN_TIMES_SEEN]),
+                            MIN_RECURRING_VALUES)
+
+    def test_a_roster_of_managers_is_not_a_vocabulary(self):
+        self.assertIsNone(self.enum_of("approver"))
+
+    def test_a_column_of_ledger_codes_is_not_a_vocabulary(self):
+        self.assertIsNone(self.enum_of("cost_center"))
+
+    def test_the_pack_keeps_the_enums_it_really_has(self):
+        # The refusal has to be surgical. `category` is printed on every claim and would
+        # fail the transcription test outright, but three of its values come back, so
+        # rule 6 never asks. `decision` is nowhere in the input and is a vocabulary by
+        # the counts alone.
+        self.assertEqual(self.enum_of("category"), ["meals", "software", "travel"])
+        self.assertEqual(self.enum_of("decision"),
+                         ["approved", "needs_receipt", "rejected"])
+
+    def test_the_rest_of_the_spec_is_unaffected(self):
+        self.assertEqual([(f.name, f.type) for f in self.spec.fields],
+                         [("approver", "string"), ("cost_center", "string"),
+                          ("category", "string"), ("amount_usd", "number"),
+                          ("decision", "string")])
+        self.assertEqual(self.spec.inputs, ["claim_text"])
+        self.assertFalse(any(f.optional for f in self.spec.fields))
 
 
 if __name__ == "__main__":
