@@ -503,10 +503,10 @@ class TestNothingPrintsTheCredential(unittest.TestCase):
     def test_a_bare_key_shaped_string_is_redacted_too(self):
         """Not every echo comes with a `Bearer` in front of it, and the key in the body
         is not necessarily the one this model is holding."""
-        body = b'{"error": "key sk-someone-elses-0123456789 is revoked"}'
+        body = b'{"error": "key sk-FAKE-someone-elses-0123456789 is revoked"}'
         with self.assertRaises(BackendError) as caught:
             model(FakeHTTP(_http_error(400, body)), api_key=None).generate("hi")
-        self.assertNotIn("sk-someone-elses-0123456789", str(caught.exception))
+        self.assertNotIn("sk-FAKE-someone-elses-0123456789", str(caught.exception))
         self.assertIn("revoked", str(caught.exception))
 
 

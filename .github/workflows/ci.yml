@@ -124,13 +124,20 @@ jobs:
       - name: No credential-shaped strings
         run: |
           # Matches the same key shapes jig redacts in its own logs.
+          #
+          # The suite legitimately contains key-shaped strings: proving the redactor works
+          # requires something for it to redact. The convention is that such a fixture must
+          # SAY it is fake — FAKE, NOTAREAL, CANARY or DO-NOT-LEAK somewhere in the string.
+          # That way a real key pasted by accident is still caught, because a real key does
+          # not announce itself, while a test fixture is self-documenting to a reader too.
           if grep -rEn "(c?sk|gsk|xai|xoxb|ghp)-[A-Za-z0-9_-]{20,}" \
                --exclude-dir=.git --exclude-dir=.github . \
-               | grep -vE "CANARY|KEY_SHAPED|redact|SECRET|example|<redacted>"; then
-            echo "a credential-shaped string is present in the tree"
+               | grep -viE "FAKE|NOTAREAL|CANARY|DO-NOT-LEAK|KEY_SHAPED|redact|SECRET|example|<redacted>"; then
+            echo "a credential-shaped string is present that does not declare itself fake."
+            echo "If it is a test fixture, put FAKE or NOTAREAL in it. If it is real, remove it."
             exit 1
           fi
-          echo "clean: no credential-shaped strings"
+          echo "clean: every key-shaped string declares itself a fixture"
 
   package:
     name: builds and installs
