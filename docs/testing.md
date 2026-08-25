@@ -21,7 +21,7 @@ time: keeping the two in sync.
 | Scoring is **exact equality only** | No substring, no tolerance, no set-equality. `["a","b"] != ["b","a"]`. See `jig/eval.py:_compare`. |
 | **Nothing validates the fake script against the evalset** | A missing key is not a load error, and neither is a script file that does not exist. `jig validate` exits 0 on both. It surfaces mid-eval as a per-case failure, or as a raw traceback under `jig run`. |
 | An **ordered** script is a positional list over the *whole* eval | Every retry and every think stage consumes an entry. Reordering one evalset line shifts everything after it. |
-| A keyed **list** value is positional too | It is one queue per key across the whole eval, so it drifts the same way — just per node instead of globally. Five of the six example packs lean on it. |
+| A keyed **list** value is positional too | It is one queue per key across the whole eval, so it drifts the same way — just per node instead of globally. Five of the seven example packs lean on it. |
 | A keyed **string** value answers unlimited times | It cannot run out, so it will happily answer a node you forgot you added. |
 | Only a key that names the **case** is drift-proof | `examples/incident_triage` is the one pack here that keys per `(node, case)`. It is the style that survives an edit to `evalset.jsonl`. |
 
@@ -31,7 +31,7 @@ Transcripts on this page come from two places.
 
 | Named as | Where it comes from |
 | --- | --- |
-| `examples/<pack>` | One of the six packs already in this repo. Run from the repo root. |
+| `examples/<pack>` | One of the seven packs already in this repo. Run from the repo root. |
 | `ticket_triage` | **Not in the repo.** A scratch pack you build with the block in [The pack this page uses](#the-pack-this-page-uses). Build it before running anything that names it. |
 | `drift`, `netpack`, `tagpack`, `twostage`, `broken`, `noscript`, `stdrift`, `sabotage` | Scratch packs derived by a `cp -r` shown at the point of use. |
 | `check_script.py`, `probe_*.py` | Scripts given in full at the point of use. Save them at the repo root. |
@@ -399,11 +399,13 @@ what a keyed list value must be long enough for:
 | A rejected draw | +1 per retry rung; `retries` defaults to **2**, so up to 3 | `jig/verify.py:run_node` (`rungs = node.retries + 1`) |
 | `two_stage: true` | +1 for the think stage, per rung that re-thinks | `jig/codegen.py:generate_once` |
 | An `assert` node (`type: assert`) | 0 — it evaluates an expression | `jig/graph.py`, and `examples/invoice_extract` has five of them |
+| A `tool` node (`type: tool`) | 0 — it calls a function the host registered, never the model | `jig/tools.py`, and `examples/refund_desk` has two |
 | An `end` node | 0 | |
 | A node the case never reaches | 0 | branch not taken |
 | A prompt naming state nobody wrote | 0 — `MissingVariable` skips the ladder | `jig/verify.py:run_node` |
 
-There are exactly three node types: `generate`, `assert`, `end` (`jig/pack.py:NODE_TYPES`).
+There are exactly four node types: `generate`, `assert`, `tool`, `end`
+(`jig/pack.py:NODE_TYPES`).
 Only `generate` ever calls the model. Note the separate `assert:` *key*, which
 `examples/incident_triage` puts on `intake` and `route`: it is a condition on a generate
 node's output, so it adds no call of its own, but a candidate it rejects spends a rung

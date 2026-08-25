@@ -12,7 +12,7 @@ below was checked against `jig/graph.py`, `jig/pack.py`, `jig/verify.py`, `jig/c
 | Where commands run | the root of a jig checkout, where `python3 -m jig` resolves |
 | Demo packs | created by the shell block in the section that uses them — paste the block, then paste the command |
 | Probe scripts | saved next to them, in the same directory, and run with `python3 probe_*.py` |
-| Real packs | `examples/` — six of them, already on disk, no setup |
+| Real packs | `examples/` — seven of them, already on disk, no setup |
 | What differs run to run | log timestamps, `duration_ms`, and the uuid `run_id` a run gets when `--run-id` is not passed. Nothing else. |
 
 Every transcript below is pasted output, unedited — including the log lines that are
@@ -2579,7 +2579,7 @@ the whole story; it is just not part of the printed output.
 
 ## The packs on disk
 
-`examples/` ships six full packs, each with its own evalset and its own scripted model,
+`examples/` ships seven full packs, each with its own evalset and its own scripted model,
 and they are the best next read after this page:
 
 | Pack | Shows |

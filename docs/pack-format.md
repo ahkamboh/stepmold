@@ -42,7 +42,7 @@ inside the pack (`jig/pack.py:_resolve_inside`).
 Every `$` command below runs against `/tmp/hello` — the pack built, file by file, in the
 next section — or against a copy of it with one file replaced. Each example shows the
 `cp -r` and the replaced file, so every block from here to the end of the document is
-paste-and-run, in order, with nothing hidden. The six packs under `examples/` in this
+paste-and-run, in order, with nothing hidden. The seven packs under `examples/` in this
 repo are real packs too, and larger — every one of them is offline and scores clean from
 a checkout:
 
@@ -69,7 +69,7 @@ support_triage: 12/12 cases passed
 Read one of those when you want a shape bigger than two nodes; read `/tmp/hello` when you
 want to know which single key caused which single line of output.
 
-None of the six uses a `tool` node, and none uses `on_unsure:`. For those, the worked
+One of the seven — `examples/refund_desk` — uses `tool` nodes; none uses `on_unsure:`. For that, the worked
 packs are the ones this document builds: [`/tmp/hello-tool`](#tool) and
 [`/tmp/hello-gate`](#the-confidence-gate-samples-agree-on_unsure).
 
@@ -236,7 +236,7 @@ and is documented in `docs/building.md`.
 | `--allow-pack-model` | `run` **only** | off | Accept a network endpoint chosen by the pack's own manifest. `eval` does not take it, though its own error message says to pass it — see [below](#a-manifest-openai-endpoint-needs-a-cli-flag). |
 | `--state` | `run` | off | Print the whole final state instead of the end node's projection. |
 | `--run-id <name>` | `run` | generated | Name this run (used in logs and checkpoints). |
-| `--tools <module[:attr]>` | `run`, `eval` | none | Python module or `./path.py` holding the `ToolRegistry` this pack's `tool` nodes may call. Looked up as `registry` or `REGISTRY` unless `:attr` names it. **Not on `validate`.** [details](#tool) |
+| `--tools <module[:attr]>` | `validate`, `run`, `eval` | none | Python module or `./path.py` holding the `ToolRegistry` this pack's `tool` nodes may call. Looked up as `registry` or `REGISTRY` unless `:attr` names it. On `validate` it also checks the wiring and reports `N tools checked`. [details](#tool) |
 | `--store <file>` | `run` | none | SQLite file to checkpoint into after every completed node. |
 | `--resume <run-id>` | `run` | none | Continue a previous run instead of starting over. Needs `--store`. |
 | `--json` | `eval` | off | Emit the report as one JSON object instead of the text report. |
@@ -1834,7 +1834,7 @@ Downstream prompts then read `{verdict.kind}`, and edges use `when: {verdict.kin
 
 ### `output:` omitted on a generate node — merge
 
-Every field of the verified object drops into state at the top level. This is what all six
+Every field of the verified object drops into state at the top level. This is what all seven
 example packs do.
 
 ```

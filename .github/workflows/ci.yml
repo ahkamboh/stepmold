@@ -133,24 +133,50 @@ jobs:
 
       - name: No credential-shaped strings
         run: |
-          # Matches the same key shapes jig redacts in its own logs.
+          # Matches the same key shapes jig redacts in its own logs, and takes both
+          # separators for the same reason jig/log.py:KEY_SHAPED does: Groq writes gsk_
+          # and GitHub writes ghp_, so a hyphen-only guard was blind to the two shapes
+          # most likely to be pasted in by accident.
           #
           # The suite legitimately contains key-shaped strings: proving the redactor works
           # requires something for it to redact. The convention is that such a fixture must
-          # SAY it is fake — FAKE, NOTAREAL, CANARY or DO-NOT-LEAK somewhere in the string.
-          # That way a real key pasted by accident is still caught, because a real key does
-          # not announce itself, while a test fixture is self-documenting to a reader too.
-          # Both separators, for the same reason jig/log.py:KEY_SHAPED takes both: Groq
-          # writes gsk_ and GitHub writes ghp_, so a hyphen-only guard was blind to the
-          # two shapes most likely to be pasted in by accident.
-          if grep -rEn "\\b(c?sk|gsk|xai|xox[abpsr]|gh[pousr]|AKIA|ASIA)[-_][A-Za-z0-9_-]{20,}" \
-               --exclude-dir=.git --exclude-dir=.github . \
-               | grep -viE "FAKE|NOTAREAL|CANARY|DO-NOT-LEAK|KEY_SHAPED|redact|SECRET|example|<redacted>"; then
-            echo "a credential-shaped string is present that does not declare itself fake."
-            echo "If it is a test fixture, put FAKE or NOTAREAL in it. If it is real, remove it."
-            exit 1
-          fi
-          echo "clean: every key-shaped string declares itself a fixture"
+          # SAY it is fake — FAKE, NOTAREAL, CANARY or DO-NOT-LEAK *inside the key itself*.
+          # The test is applied to the matched key, not to the line around it. An audit
+          # found that testing the line let `client_secret = "sk-ant-<real key>"` through,
+          # because the word "secret" appeared somewhere on it.
+          #
+          # .github is scanned too. It was excluded, which is precisely where a token gets
+          # pasted while wiring up a workflow.
+          python3 - <<'GUARD'
+          import pathlib, re, sys
+
+          KEY = re.compile(r"\b(c?sk|gsk|xai|xox[abpsr]|gh[pousr]|AKIA|ASIA)[-_][A-Za-z0-9_-]{20,}")
+          DECLARED = ("FAKE", "NOTAREAL", "CANARY", "DO-NOT-LEAK", "REDACTED")
+
+          bad = []
+          for path in sorted(pathlib.Path(".").rglob("*")):
+              if not path.is_file() or ".git/" in str(path) + "/":
+                  continue
+              try:
+                  text = path.read_text(errors="ignore")
+              except OSError:
+                  continue
+              for number, line in enumerate(text.splitlines(), 1):
+                  for match in KEY.finditer(line):
+                      key = match.group(0)
+                      if any(mark in key.upper() for mark in DECLARED):
+                          continue
+                      bad.append("%s:%d: %s" % (path, number, key[:24] + "..."))
+          if bad:
+              print("credential-shaped strings that do not declare themselves fake:")
+              for line in bad:
+                  print("  " + line)
+              print("")
+              print("If it is a test fixture, put FAKE or NOTAREAL inside the string itself.")
+              print("If it is real, remove it and rotate the key.")
+              sys.exit(1)
+          print("clean: every key-shaped string declares itself a fixture")
+          GUARD
 
   package:
     name: builds and installs

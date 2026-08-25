@@ -156,10 +156,12 @@ ones to re-label first.
 
 ## What it cannot do yet
 
-* **Express an `assert` node or an `on_fail` edge in a plan.** Two of the six example packs
-  cannot be regenerated for this reason: `content_moderation` routes through an assert node,
-  and `meeting_actions` asserts over a field its gold set never pins. The compiler reports
-  this rather than emitting a pack that quietly scores zero.
+* **Express an `assert` node, an `on_fail` edge, or a `tool` node in a plan.** Three of the
+  seven example packs cannot be regenerated for this reason: `content_moderation` routes
+  through an assert node, `meeting_actions` asserts over a field its gold set never pins,
+  and `refund_desk` calls tools — the compiler has no notion of a `tool` node at all and
+  emits only `generate` and `end`. The compiler reports the first two rather than emitting
+  a pack that quietly scores zero.
 * **Refine a prompt.** The loop re-plans the decomposition on failure; it does not tune the
   wording of a prompt that is nearly right.
 * **Infer a schema inside an array or object.** A field whose value is a list comes back as
