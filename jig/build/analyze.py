@@ -133,6 +133,7 @@ would be inventing values, which is the one thing the numbers above say never ha
 """
 
 import json
+import re
 from collections import OrderedDict
 
 from .spec import BuildError, FieldSpec, TaskSpec
@@ -256,8 +257,8 @@ def _haystacks(cases):
     does that — so a value JSON cannot express is stringified here, not raised on.
     """
     return [
-        json.dumps(_case_object(case, index, "input"),
-                   default=repr, skipkeys=True).lower()
+        json.dumps(_case_object(case, index, "input"), default=repr,
+                   skipkeys=True, ensure_ascii=False).lower()
         for index, case in enumerate(cases)
     ]
 
@@ -362,6 +363,20 @@ def _check_inside(container):
             _type_of(item)
 
 
+def _mentioned(value, haystack):
+    """Whether `haystack` names `value` as a word, rather than merely containing it.
+
+    A bare substring test counts a short label as copied when it never appeared: `ok` sits
+    inside `broken`, so a status of ok/warn/fail/skip reads as transcribed and a real enum
+    is lost. Word boundaries are what separate "the input said this" from "these letters
+    happen to occur".
+    """
+    needle = value.lower().strip()
+    if not needle:
+        return False
+    return re.search(r"(?<!\w)%s(?!\w)" % re.escape(needle), haystack) is not None
+
+
 def _enum(type_name, seen, haystacks):
     """The closed set of values this field takes, or None. See the module docstring."""
     if type_name != "string":
@@ -394,7 +409,7 @@ def _enum(type_name, seen, haystacks):
     # `invoice_extract.currency`, and the tie goes to where the values came from.
     if len(repeated) < MIN_RECURRING_VALUES:
         transcribed = sum(
-            1 for index, value in seen if value.lower() in haystacks[index]
+            1 for index, value in seen if _mentioned(value, haystacks[index])
         )
         if transcribed * 4 >= len(values) * TRANSCRIBED_QUARTERS:  # in quarters
             return None
