@@ -26,6 +26,14 @@ Two contracts hold this together, and both are enforced rather than hoped for:
   wrote it, and `resume` refuses a pack that disagrees. Resuming under a different graph
   skips nodes that were inserted since and trusts nodes that were rewritten, which turns
   a crash into wrong output rather than a late one.
+* **A tool call that already happened is never made again.** Replaying state cannot tell
+  a resumer whether the email went out, because state records the *result* of a call and
+  not the fact of it. So a checkpoint carries `tool_calls` as well: the node, the
+  arguments it was handed and what it returned, written down the moment the call returns
+  and cleared once the walk has left the node. `graph.run` reads it and replays instead
+  of calling. This is deliberately not an audit log of every call a run ever made — the
+  checkpoint chain already is one, and a list that only grew would put back the quadratic
+  term the delta encoding below exists to remove.
 
 Concurrency
 -----------
@@ -135,6 +143,7 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     pack_version TEXT,
     state_kind  TEXT,
     attempts    TEXT,
+    tool_calls  TEXT,
     created_at  TEXT    NOT NULL,
     PRIMARY KEY (run_id, step)
 );
@@ -152,7 +161,7 @@ CREATE TABLE IF NOT EXISTS runs (
 # table already, so CREATE TABLE IF NOT EXISTS silently leaves it short a column and
 # every read of that column fails. Adding them on open keeps old files readable.
 _ADDED_COLUMNS = (("pack_version", "TEXT"), ("state_kind", "TEXT"),
-                  ("attempts", "TEXT"))
+                  ("attempts", "TEXT"), ("tool_calls", "TEXT"))
 
 #: The walker's first checkpoint of a fresh run. `graph.run` starts its step counter at
 #: zero and increments before the first node, so step 1 is the moment a run id is taken
@@ -186,6 +195,10 @@ class Checkpoint:
     pack: Optional[str] = None
     pack_version: Optional[str] = None
     attempts: Dict[str, int] = field(default_factory=dict)
+    #: Tool calls this run has made but has not yet finished leaving the node for. Empty
+    #: on all but the moment between a call returning and its node being walked out of —
+    #: which is precisely the window a crash would otherwise turn into a second call.
+    tool_calls: List[dict] = field(default_factory=list)
     created_at: Optional[str] = None
 
     @property
@@ -268,7 +281,8 @@ class Store:
             _add_column(self._connection, column, declared_type)
 
     def save(self, run_id, step, node, next_node, state, path=None, provenance=None,
-             failures=None, output=None, pack=None, pack_version=None, attempts=None):
+             failures=None, output=None, pack=None, pack_version=None, attempts=None,
+             tool_calls=None):
         """Record one completed node. Re-saving the same step replaces it.
 
         `pack` is the pack's identity: either its name, or the pack itself, in which case
@@ -284,6 +298,12 @@ class Store:
         and what lets a checkpoint record only the state its node changed. Rewriting a
         step that already has successors is the one thing that would leave those
         successors describing a state that no longer precedes them.
+
+        `tool_calls` is how a side effect survives a crash without being repeated: the
+        walker saves the same step twice around a tool node, once with the call recorded
+        and the walk still standing on the node, then again once the node has been left
+        and the call is settled. Re-saving a step replaces it, so only the second row
+        survives a run that got that far.
         """
         name, version = _identity(pack, pack_version)
         # Validate and serialise before opening a transaction: a value that cannot be
@@ -299,6 +319,9 @@ class Store:
             name,
             version,
         )
+        # Out here with the rest for the reason above: a tool result JSON cannot hold is
+        # refused before a lock is taken, not halfway through a write.
+        calls = _dump(list(tool_calls or []), "tool_calls")
         created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
         with self._lock, self._transaction(run_id, step, node):
@@ -307,10 +330,11 @@ class Store:
             self._connection.execute(
                 "INSERT OR REPLACE INTO checkpoints "
                 "(run_id, step, node, next_node, state, path, provenance, failures, "
-                " output, pack, pack_version, state_kind, attempts, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " output, pack, pack_version, state_kind, attempts, tool_calls, "
+                " created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (run_id, step, node, next_node) + blobs + tail
-                + (kind, _dump(dict(attempts or {}), "attempts"), created_at),
+                + (kind, _dump(dict(attempts or {}), "attempts"), calls, created_at),
             )
         # Only once the transaction committed: a cache entry for a row that was rolled
         # back would describe a chain the file does not have.
@@ -750,6 +774,9 @@ def resume(pack, model, run_id, store, **kwargs):
     An unfinished run is resumed under a lease, so two supervisors retrying the same
     resume do not both execute every remaining node. The second one is refused with
     `ResumeInProgress` rather than allowed to charge the card twice.
+
+    Extra keywords go through to `graph.run` — `tools=` among them, which a pack with
+    `tool` nodes needs on the resume exactly as it needed it on the first attempt.
     """
     from .graph import run as run_pack, replay  # local: graph imports nothing from here
 
@@ -914,18 +941,26 @@ def _check(value, where, open_containers):
     )
 
 
-def _attempts_of(row):
+def _json_column(row, column, kind):
+    """A JSON column read back, or its empty value if this row has nothing usable.
+
+    Both columns this serves were added after the first release, so a store file written
+    by an older jig may not have them at all — and a row written before the column
+    existed has NULL in it. Neither is a broken chain, so both read back empty rather
+    than raising: what is lost is a diagnostic, and in `tool_calls`' case a replay that
+    was never recorded to begin with.
+    """
     try:
-        raw = row["attempts"]
+        raw = row[column]
     except (IndexError, KeyError):
-        return {}
+        return kind()
     if not raw:
-        return {}
+        return kind()
     try:
         value = json.loads(raw)
     except ValueError:
-        return {}
-    return value if isinstance(value, dict) else {}
+        return kind()
+    return value if isinstance(value, kind) else kind()
 
 
 def _to_checkpoint(row, frame):
@@ -944,6 +979,7 @@ def _to_checkpoint(row, frame):
         pack_version=row["pack_version"],
         # A checkpoint written before this column existed has no attempt counts. That is
         # a missing diagnostic, not a broken chain, so it reads back as {}.
-        attempts=_attempts_of(row),
+        attempts=_json_column(row, "attempts", dict),
+        tool_calls=_json_column(row, "tool_calls", list),
         created_at=row["created_at"],
     )
