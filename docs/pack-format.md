@@ -352,10 +352,7 @@ it and the CLI dumps a traceback instead of a `jig: ...` line:
 ```
 $ cp -r /tmp/hello /tmp/hello-shortscript
 $ echo '["{\"kind\": \"spam\"}"]' > /tmp/hello-shortscript/fakes/script.json
-$ python3 -m jig run /tmp/hello-shortscript --input '{"message": "hi"}' 2>&1 | tail -4
-    raise ModelExhausted(
-    ...<2 lines>...
-    )
+$ python3 -m jig run /tmp/hello-shortscript --input '{"message": "hi"}' 2>&1 | tail -1
 jig.model.ModelExhausted: FakeModel script has 1 responses; call 2 has nothing to return
 ```
 
@@ -2121,11 +2118,12 @@ Both paths are relative to the pack root. Missing files are named at load:
 $ cp -r /tmp/hello /tmp/hello-noprompt
 $ rm /tmp/hello-noprompt/prompts/classify.txt
 $ python3 -m jig validate /tmp/hello-noprompt
-jig: pack error: prompts/classify.txt: required file is missing (/private/tmp/hello-noprompt/prompts/classify.txt)
+jig: pack error: prompts/classify.txt: required file is missing (/.../hello-noprompt/prompts/classify.txt)
 ```
 
-(The absolute path in the parentheses is `realpath` of your pack — on macOS `/tmp` is a
-symlink to `/private/tmp`, hence the prefix.)
+(The absolute path in the parentheses is `realpath` of your pack, elided above because it
+differs by platform: on macOS `/tmp` is a symlink to `/private/tmp`, so it reads
+`/private/tmp/hello-noprompt/...` there and `/tmp/hello-noprompt/...` on Linux.)
 
 ### Prompt templating
 
