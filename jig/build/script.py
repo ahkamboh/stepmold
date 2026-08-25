@@ -208,6 +208,7 @@ def check_script(script, task, plan, prompts=None):
         problems.extend(_check_prompts(script, plan, prompts, keys))
     problems.extend(_check_written_twice(plan))
     problems.extend(_check_input_collisions(task, plan))
+    problems.extend(_check_rescues(task))
     if not walk_failed:
         problems.extend(_check_placeholders(task, plan))
         problems.extend(_check_endings(task, plan))
@@ -596,6 +597,24 @@ def _check_written_twice(plan):
             else:
                 seen[name] = node.name
     return problems
+
+
+def _check_rescues(task):
+    """A case that declares a rescue cannot be scripted from this plan.
+
+    `rescued: true` says the case is *meant* to burn a node's retry ladder and take its
+    `on_fail` edge, so that node needs one answer per rung plus one for the rescue path —
+    and a `GraphPlan` records neither `on_fail` nor which node is supposed to fail. One
+    answer per visit is what this stage can honestly produce, so the case is named here
+    rather than scripted wrongly and left to fail at eval time.
+    """
+    return [
+        "case %r declares rescued: true, which needs a node to fail its whole ladder; "
+        "the plan says nothing about on_fail, so its answers are scripted as if it "
+        "passed first time" % _case_name(case)
+        for case in task.cases
+        if case.get("rescued")
+    ]
 
 
 def _check_input_collisions(task, plan):

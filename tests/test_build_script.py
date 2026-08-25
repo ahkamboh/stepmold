@@ -619,6 +619,14 @@ class TestCheckScript(unittest.TestCase):
         found = check_script(self.script, self.task, plan)
         self.assertTrue(any("StateCollision" in p for p in found))
 
+    def test_a_case_that_declares_a_rescue(self):
+        task = task_of(
+            [dict(self.task.cases[0], rescued=True)] + list(self.task.cases[1:]),
+            self.task.fields,
+        )
+        found = check_script(self.script, task, self.plan)
+        self.assertTrue(any("rescued: true" in p for p in found))
+
     def test_a_field_two_nodes_both_write(self):
         plan = GraphPlan(
             entry="triage",
