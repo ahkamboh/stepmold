@@ -76,6 +76,7 @@ def build_parser():
     validate = commands.add_parser("validate", parents=[observability],
                                    help="check that a pack is well-formed")
     validate.add_argument("pack", help="path to the pack directory")
+    _add_tools_option(validate)
     validate.set_defaults(handler=command_validate)
 
     run = commands.add_parser("run", parents=[observability], help="execute a pack once")
@@ -179,8 +180,22 @@ def _start_logging(args):
 # ------------------------------------------------------------------------ commands
 
 
+def _load_checked(args):
+    """Load the pack, checking its tool wiring whenever a registry is available.
+
+    `load_pack` skips the tool check when given no registry, which is right for a pack
+    whose tools live in another process. But every command called it that way, so the check
+    was unreachable from the CLI: a pack naming a tool nobody registered validated clean,
+    exit 0, and then died at the step that would have called it — exactly the failure the
+    check exists to prevent, and exactly what the documentation claimed was prevented.
+    """
+    if getattr(args, "tools", None):
+        return load_pack(args.pack, tools=_tool_registry(args, None))
+    return load_pack(args.pack)
+
+
 def command_validate(args):
-    pack = load_pack(args.pack)
+    pack = _load_checked(args)
     _check_output_shapes(pack)
     print(
         "%s v%s: %s, %s, %s, entry %r"
@@ -204,7 +219,7 @@ def command_run(args):
     from .graph import run as run_pack
     from .state import Store, resume
 
-    pack = load_pack(args.pack)
+    pack = _load_checked(args)
     _check_output_shapes(pack)
     if args.resume and not args.store:
         return _fail("--resume needs --store: checkpoints live in the store")
@@ -249,7 +264,7 @@ def command_run(args):
 def command_eval(args):
     from .graph import run as run_pack
 
-    pack = load_pack(args.pack)
+    pack = _load_checked(args)
     _check_output_shapes(pack)
     tools = _tool_registry(args, run_pack)
     report = evaluate(pack, resolve_model(args.model, pack, _allow(args)), tools=tools)
@@ -458,7 +473,12 @@ def _tool_registry(args, entry_point):
     spec = getattr(args, "tools", None)
     if not spec:
         return None
-    if not _accepts_tools(entry_point):
+    # `entry_point` is None when the registry is wanted only to CHECK a pack's wiring at
+    # load time, not to run it. There is nothing to be compatible with in that case, so
+    # the capability check does not apply — `jig validate --tools` must work on a runtime
+    # whose walker predates tool nodes, since checking is exactly what such a runtime can
+    # still usefully do.
+    if entry_point is not None and not _accepts_tools(entry_point):
         raise ValueError(
             "--tools: this jig runtime cannot run tools — %s.%s takes no 'tools' "
             "argument. Upgrade jig, or drop the flag."
