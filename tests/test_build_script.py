@@ -11,10 +11,12 @@ import shutil
 import tempfile
 import unittest
 
+from jig.build.analyze import analyze
 from jig.build.script import (
     THINK_ANSWER,
     THINK_KEY,
     check_script,
+    keys_for,
     node_key,
     route,
     script_for,
@@ -24,11 +26,10 @@ from jig.eval import evaluate
 from jig.model import FakeModel
 from jig.pack import load_pack
 
-EXAMPLE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "examples",
-    "support_triage",
+EXAMPLES = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples"
 )
+EXAMPLE = os.path.join(EXAMPLES, "support_triage")
 
 
 def spec(name, type="string", **kwargs):
@@ -148,18 +149,51 @@ class TestAnswers(unittest.TestCase):
             answers(script_for(task, plan), "route"), [{"kind": "bug", "queue": "eng"}]
         )
 
-    def test_an_unpinned_optional_field_without_an_enum_is_null(self):
+    def unpinned(self, field):
+        """What the script invents for a field `route` writes and no case pins."""
         plan = GraphPlan(
             entry="route",
             nodes=[NodePlan(name="route", writes=["kind", "ref"], purpose="Route.")],
             endings=["done"],
             edges=[{"from": "route", "to": "done"}],
         )
-        task = task_of(
-            [case("a", {"text": "x"}, {"kind": "bug"})],
-            [spec("kind"), spec("ref", optional=True, examples=["R-1"])],
+        task = task_of([case("a", {"text": "x"}, {"kind": "bug"})], [spec("kind"), field])
+        return answers(script_for(task, plan), "route")[0]["ref"]
+
+    def test_an_unpinned_optional_field_takes_an_observed_value_not_null(self):
+        # `FieldSpec.schema` — the grammar the compiled pack ships — is
+        # `{"type": "string"}` with no "null" in it, whatever `optional` says. So null is
+        # the one value the node's own grammar is guaranteed to reject, and an observed
+        # value is both legal and honest about the data.
+        self.assertEqual(
+            self.unpinned(spec("ref", optional=True, examples=["R-1", None])), "R-1"
         )
-        self.assertEqual(answers(script_for(task, plan), "route")[0]["ref"], None)
+
+    def test_an_unpinned_field_with_no_observation_falls_back_to_a_typed_zero(self):
+        # Nothing observed and nothing enumerated leaves only the zero of the type. It is
+        # a lie about the data, but a grammar-legal one, and `check_script` names every
+        # field it happens to.
+        self.assertEqual(self.unpinned(spec("ref", optional=True)), "")
+        self.assertEqual(self.unpinned(spec("ref", "integer", optional=True)), 0)
+        self.assertEqual(self.unpinned(spec("ref", "boolean")), False)
+
+    def test_an_unpinned_array_or_object_field_is_not_an_empty_string(self):
+        # `_ZERO.get(type, "")` used to hand an array field `""`, which is rejected by
+        # every grammar that declares the field an array — a whole pack scoring zero on a
+        # field nobody was testing. `analyze` induces both types, so both need a zero.
+        self.assertEqual(self.unpinned(spec("ref", "array", optional=True)), [])
+        self.assertEqual(self.unpinned(spec("ref", "object", optional=True)), {})
+        self.assertEqual(
+            self.unpinned(spec("ref", "array", optional=True, examples=[["a"], None])),
+            ["a"],
+        )
+
+    def test_an_enum_still_beats_an_observed_value(self):
+        # An enum'd field admits nothing outside the enum, so the enum has to come first
+        # even when `examples` holds something that looks more natural.
+        self.assertEqual(
+            self.unpinned(spec("ref", enum=["eng", "ops"], examples=["ops"])), "eng"
+        )
 
 
 # --------------------------------------------------------------- branching
@@ -528,6 +562,39 @@ class TestCheckScript(unittest.TestCase):
         found = check_script(script_for(task, plan), task, plan)
         self.assertTrue(any("outside the field's enum" in p for p in found))
 
+    def test_a_hand_written_key_the_prompt_really_contains_is_not_a_problem(self):
+        # The linter's own contract is `node_key`, but a pack written by hand is under no
+        # obligation to use it — "screen step", "clear-post step" and "the routing step"
+        # are all in examples/. What matters is which key the prompt actually resolves to,
+        # so a key checked against the prompt is a key the linter has nothing to say about.
+        script = {
+            "triage step": self.script[node_key("triage")],
+            "detail step": self.script[node_key("detail")],
+        }
+        self.assertEqual(self.problems(script, prompts=PROMPTS), [])
+
+    def test_a_key_that_only_a_rendered_prompt_contains(self):
+        # examples/incident_triage keys its script on the alert id, so its keys occur in
+        # no template at all — only in the prompt a case renders. The linter renders too.
+        prompts = {"triage": "Alert {text}: triage it", "detail": "Alert {text}: detail it"}
+        script = {}
+        for text, answer in zip(["a", "b", "c", "d"], self.script[node_key("triage")]):
+            script["Alert %s: triage" % text] = [answer]
+        for text, answer in zip(["a", "c"], self.script[node_key("detail")]):
+            script["Alert %s: detail" % text] = [answer]
+        self.assertEqual(self.problems(script, prompts=prompts), [])
+
+    def test_a_rendered_key_missing_for_one_case_names_that_case(self):
+        prompts = {"triage": "Alert {text}: triage it", "detail": "Alert {text}: detail it"}
+        script = {}
+        for text, answer in zip(["a", "b", "c", "d"], self.script[node_key("triage")]):
+            script["Alert %s: triage" % text] = [answer]
+        script["Alert a: detail"] = [self.script[node_key("detail")][0]]
+        found = self.problems(script, prompts=prompts)
+        self.assertEqual(len(found), 1)
+        self.assertIn("'ham2'", found[0])
+        self.assertIn("ModelExhausted", found[0])
+
     def test_a_prompt_that_matches_another_nodes_key_first(self):
         prompts = dict(PROMPTS)
         prompts["detail"] = "Read what the triage step said and add detail: {kind}"
@@ -641,7 +708,122 @@ class TestCheckScript(unittest.TestCase):
         self.assertTrue(any("written by both" in p for p in found))
 
 
+# --------------------------------------------------------------- keys off real prompts
+
+
+class TestKeysFor(unittest.TestCase):
+    """Where a key comes from when the pack's prompts already exist."""
+
+    def setUp(self):
+        self.plan = branching_plan()
+
+    def test_with_no_prompts_the_key_is_the_published_marker(self):
+        self.assertEqual(keys_for(self.plan), {"triage": ("the triage step", None),
+                                               "detail": ("the detail step", None)})
+
+    def test_the_marker_wins_when_the_prompt_carries_it(self):
+        keys = keys_for(self.plan, PROMPTS)
+        self.assertEqual(keys["triage"][0], "the triage step")
+
+    def test_a_prompt_that_names_the_step_differently_gives_up_its_first_literal_line(self):
+        # examples/content_moderation calls its `clear_post` node "the clear-post step"
+        # and examples/incident_triage calls `route` "the routing step". No marker will
+        # ever cover both, so the key is read off the prompt instead.
+        prompts = {
+            "triage": "You are the triage-and-screen step.\nText: {text}",
+            "detail": "You are the detail step. Kind: {kind}",
+        }
+        keys = keys_for(self.plan, prompts)
+        self.assertEqual(keys["triage"][0], "You are the triage-and-screen step.")
+        self.assertEqual(keys["detail"][0], "the detail step")
+
+    def test_a_line_holding_a_placeholder_cannot_be_a_key(self):
+        # It is a different string in every case, so it would match no rendered prompt.
+        prompts = {
+            "triage": "Case {text}\nYou are the first-look step.",
+            "detail": "You are the detail step. Kind: {kind}",
+        }
+        self.assertEqual(keys_for(self.plan, prompts)["triage"][0],
+                         "You are the first-look step.")
+
+    def test_a_key_two_prompts_share_is_refused_rather_than_shipped(self):
+        # Shipping it would mean one node answering out of the other's queue, silently.
+        prompts = {
+            "triage": "You are a step of the workflow. Text: {text}",
+            "detail": "You are a step of the workflow. Kind: {kind}",
+        }
+        with self.assertRaises(BuildError) as caught:
+            keys_for(self.plan, prompts)
+        self.assertIn("no other prompt", str(caught.exception))
+
+    def test_a_two_stage_node_without_a_think_template_shares_the_suffix_key(self):
+        keys = keys_for(two_stage_plan(), {"weigh": "You are the weigh step. {text}"})
+        self.assertEqual(keys["weigh"], ("the weigh step", THINK_KEY))
+
+
 # --------------------------------------------------------------- against a real pack
+
+
+def support_triage_plan():
+    """The four-node plan `induce` would propose for the shipped support_triage pack."""
+    return GraphPlan(
+        entry="classify",
+        nodes=[
+            NodePlan(name="classify", writes=["category"], purpose="Classify."),
+            NodePlan(
+                name="extract",
+                writes=["order_id", "amount_usd", "sentiment"],
+                purpose="Extract.",
+            ),
+            NodePlan(
+                name="priority",
+                writes=["priority", "reason"],
+                purpose="Prioritise.",
+                two_stage=True,
+            ),
+            NodePlan(
+                name="emit",
+                writes=["queue", "summary", "escalate"],
+                purpose="Emit.",
+            ),
+        ],
+        endings=["escalated", "done", "needs_human"],
+        edges=[
+            {"from": "classify", "to": "extract"},
+            {"from": "extract", "to": "priority"},
+            {"from": "priority", "to": "emit"},
+            {"from": "emit", "to": "escalated", "when": {"priority": "p0"}},
+            {"from": "emit", "to": "done"},
+        ],
+    )
+
+
+def support_triage_task(pack_dir):
+    """Its `TaskSpec`, with the two free-text fields no `expect` pins spelled out."""
+    cases = []
+    with open(os.path.join(pack_dir, "evalset.jsonl")) as handle:
+        for line in handle:
+            if line.strip():
+                cases.append(json.loads(line))
+    fields = [
+        spec("category", enum=["billing", "technical", "account", "other"]),
+        spec("order_id", optional=True),
+        spec("amount_usd", "number", optional=True),
+        spec("sentiment", enum=["calm", "frustrated", "angry"]),
+        spec("priority", enum=["p0", "p1", "p2", "p3"]),
+        # Neither of these is in any `expect`, so both are answered by a placeholder.
+        spec("reason", examples=["The customer is blocked."]),
+        spec("summary", examples=["Customer reports a problem with their order."]),
+        spec("queue", enum=["billing-ops", "eng-support", "identity", "general"]),
+        spec("escalate", "boolean"),
+    ]
+    return TaskSpec(
+        name="support_triage",
+        description="triage a support ticket",
+        inputs=["ticket"],
+        fields=fields,
+        cases=cases,
+    )
 
 
 class TestAgainstSupportTriage(unittest.TestCase):
@@ -649,7 +831,7 @@ class TestAgainstSupportTriage(unittest.TestCase):
 
     The pack is copied first and its hand-written `priority.think.txt` dropped, because a
     compiled pack has no think template — which is exactly the case the think entry is
-    for.
+    for. `TestAgainstSupportTriageWithItsThinkPrompt` below leaves it in place.
     """
 
     def setUp(self):
@@ -660,62 +842,10 @@ class TestAgainstSupportTriage(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.root)
 
     def plan(self):
-        return GraphPlan(
-            entry="classify",
-            nodes=[
-                NodePlan(name="classify", writes=["category"], purpose="Classify."),
-                NodePlan(
-                    name="extract",
-                    writes=["order_id", "amount_usd", "sentiment"],
-                    purpose="Extract.",
-                ),
-                NodePlan(
-                    name="priority",
-                    writes=["priority", "reason"],
-                    purpose="Prioritise.",
-                    two_stage=True,
-                ),
-                NodePlan(
-                    name="emit",
-                    writes=["queue", "summary", "escalate"],
-                    purpose="Emit.",
-                ),
-            ],
-            endings=["escalated", "done", "needs_human"],
-            edges=[
-                {"from": "classify", "to": "extract"},
-                {"from": "extract", "to": "priority"},
-                {"from": "priority", "to": "emit"},
-                {"from": "emit", "to": "escalated", "when": {"priority": "p0"}},
-                {"from": "emit", "to": "done"},
-            ],
-        )
+        return support_triage_plan()
 
     def task(self):
-        cases = []
-        with open(os.path.join(self.pack_dir, "evalset.jsonl")) as handle:
-            for line in handle:
-                if line.strip():
-                    cases.append(json.loads(line))
-        fields = [
-            spec("category", enum=["billing", "technical", "account", "other"]),
-            spec("order_id", optional=True),
-            spec("amount_usd", "number", optional=True),
-            spec("sentiment", enum=["calm", "frustrated", "angry"]),
-            spec("priority", enum=["p0", "p1", "p2", "p3"]),
-            # Neither of these is in any `expect`, so both are answered by a placeholder.
-            spec("reason", examples=["The customer is blocked."]),
-            spec("summary", examples=["Customer reports a problem with their order."]),
-            spec("queue", enum=["billing-ops", "eng-support", "identity", "general"]),
-            spec("escalate", "boolean"),
-        ]
-        return TaskSpec(
-            name="support_triage",
-            description="triage a support ticket",
-            inputs=["ticket"],
-            fields=fields,
-            cases=cases,
-        )
+        return support_triage_task(self.pack_dir)
 
     def test_the_generated_script_scores_the_shipped_evalset(self):
         task, plan = self.task(), self.plan()
@@ -740,6 +870,383 @@ class TestAgainstSupportTriage(unittest.TestCase):
             if "no gold case pins" not in problem
         ]
         self.assertEqual(found, [])
+
+
+# ------------------------------------------------------- the think prompt this pack ships
+
+
+class TestAgainstSupportTriageWithItsThinkPrompt(unittest.TestCase):
+    """The same pack, left as it ships — `prompts/priority.think.txt` still in place.
+
+    A two-stage node makes two calls per visit and the pack decides what the first one is
+    given. When the pack writes that prompt itself, the default suffix never appears in
+    it, so the entry keyed on the suffix answers nothing and the think call finds no key
+    at all. That is a 12/12 pack scoring 0/12, and it is invisible to anything that
+    reasons about one call per node.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="jig-script-think-")
+        self.pack_dir = os.path.join(self.root, "support_triage")
+        shutil.copytree(EXAMPLE, self.pack_dir)
+        self.addCleanup(shutil.rmtree, self.root)
+        self.task = support_triage_task(self.pack_dir)
+        self.plan = support_triage_plan()
+        self.prompts, self.think_prompts = {}, {}
+        for node in self.plan.nodes:
+            self.prompts[node.name] = self.read("%s.txt" % node.name)
+            if node.two_stage:
+                self.think_prompts[node.name] = self.read("%s.think.txt" % node.name)
+
+    def read(self, name):
+        with open(os.path.join(self.pack_dir, "prompts", name)) as handle:
+            return handle.read()
+
+    def score(self, script):
+        with open(os.path.join(self.pack_dir, "fakes", "script.json"), "w") as handle:
+            json.dump(script, handle, indent=2)
+        return evaluate(load_pack(self.pack_dir), FakeModel(script))
+
+    def test_a_script_keyed_on_the_default_suffix_scores_nothing_here(self):
+        # The failure the linter has to be able to see, demonstrated first so the check
+        # below is testing something real rather than an imagined fault.
+        report = self.score(script_for(self.task, self.plan))
+        self.assertEqual(report.passed, 0, report.summary())
+        self.assertIn("ModelExhausted", report.summary())
+
+    def test_the_linter_names_the_think_call_no_key_can_answer(self):
+        found = check_script(
+            script_for(self.task, self.plan),
+            self.task,
+            self.plan,
+            self.prompts,
+            self.think_prompts,
+        )
+        self.assertTrue(
+            any("'priority'" in p and "think prompt" in p and "ModelExhausted" in p
+                for p in found),
+            found,
+        )
+
+    def test_the_linter_passes_it_without_the_think_prompt(self):
+        # Same script, same prompts, minus the think template: now the suffix-keyed entry
+        # is the one that answers, and there is nothing to report. Proof that the check
+        # above is about the think prompt and not about the pack.
+        found = self.lint(script_for(self.task, self.plan), think_prompts={})
+        self.assertEqual(found, [])
+
+    def test_given_the_think_prompt_the_generated_script_scores_the_shipped_evalset(self):
+        script = script_for(
+            self.task, self.plan, self.prompts, self.think_prompts
+        )
+        report = self.score(script)
+        self.assertEqual((report.passed, report.total), (12, 12), report.summary())
+        self.assertEqual(self.lint(script), [])
+
+    def test_the_think_key_is_read_off_the_think_template(self):
+        keys = keys_for(self.plan, self.prompts, self.think_prompts)
+        self.assertEqual(keys["priority"][1],
+                         "You are the priority reasoning step of a support-ticket "
+                         "triage workflow.")
+        # And the emit key stays the published marker, which this prompt does carry.
+        self.assertEqual(keys["priority"][0], node_key("priority"))
+
+    def lint(self, script, think_prompts=None):
+        found = check_script(
+            script,
+            self.task,
+            self.plan,
+            self.prompts,
+            self.think_prompts if think_prompts is None else think_prompts,
+        )
+        # `reason` and `summary` are genuinely unpinned in this pack; that report is the
+        # linter working, not a failure.
+        return [p for p in found if "no gold case pins" not in p]
+
+
+# --------------------------------------------------------------- every pack in examples/
+
+
+def _load_case_lines(pack_dir):
+    with open(os.path.join(pack_dir, "evalset.jsonl")) as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+
+def _splice_asserts(pack):
+    """The pack's edges with its `assert` nodes removed, and the entry moved past them.
+
+    A `GraphPlan` holds generate nodes and endings; a pack may also route through nodes
+    that evaluate an expression and cost no model call. An assert node that passes is a
+    pass-through, so `P -> A -> T` is `P -> T` with the two `when` clauses merged, which
+    is the plan a compiler would have produced for the same routing.
+    """
+    generate = {n for n, node in pack.nodes.items() if node.type == "generate"}
+    ending = {n for n, node in pack.nodes.items() if node.type == "end"}
+    edges = [{"from": e.source, "to": e.target, "when": e.when} for e in pack.edges]
+    entry = pack.entry
+    while entry not in generate and entry not in ending:
+        entry = [edge["to"] for edge in edges if edge["from"] == entry][0]
+    for _ in range(len(pack.nodes)):
+        spliced = []
+        for edge in edges:
+            if edge["to"] in generate or edge["to"] in ending:
+                spliced.append(edge)
+                continue
+            for follow in [e for e in edges if e["from"] == edge["to"]]:
+                when = dict(edge.get("when") or {})
+                when.update(follow.get("when") or {})
+                spliced.append(
+                    {"from": edge["from"], "to": follow["to"], "when": when or None}
+                )
+        edges = [edge for edge in spliced if edge["from"] in generate]
+    return entry, edges
+
+
+# `invoice_extract` routes on four `assert` nodes whose expressions are arithmetic over
+# committed state (`abs(subtotal + tax_amount - total_amount) < 0.01`). A `GraphPlan`
+# `when` clause is an equality on one key, so the expressions cannot be carried across;
+# these edges name the value that makes each check fail instead, which reproduces the same
+# routing over this gold set. It is the plan's shape that matters here, not its prose.
+INVOICE_EDGES = [
+    {"from": "header", "to": "amounts"},
+    {"from": "amounts", "to": "due"},
+    {"from": "due", "to": "flag_totals", "when": {"total_amount": 118.0}},
+    {"from": "due", "to": "flag_tax", "when": {"tax_amount": 160.0}},
+    {"from": "due", "to": "flag_currency", "when": {"currency": "PKR"}},
+    {"from": "due", "to": "flag_overdue", "when": {"due_date": "2026-05-01"}},
+    {"from": "due", "to": "review"},
+    {"from": "review", "to": "flagged", "when": {"needs_review": True}},
+    {"from": "review", "to": "accepted"},
+    {"from": "flag_totals", "to": "flagged"},
+    {"from": "flag_tax", "to": "flagged"},
+    {"from": "flag_currency", "to": "flagged"},
+    {"from": "flag_overdue", "to": "flagged"},
+]
+PACK_EDGES = {"invoice_extract": INVOICE_EDGES}
+
+
+def compile_inputs(name):
+    """Everything stage 4 needs to regenerate one shipped pack's offline model.
+
+    The `TaskSpec` is `analyze` over the pack's own gold cases, and the `GraphPlan` is
+    read off its `graph.yaml` and its grammars — one `NodePlan` per generate node, writing
+    exactly the fields that node's grammar declares. Two adjustments, both because the
+    pack's grammars are hand-written and stay that way while only the script is replaced:
+
+    * a field the pack's own grammar closes with an enum takes that enum, since that is
+      what the answer will be validated against. Only when every node that writes the
+      field agrees: one `FieldSpec` cannot hold two different closed sets.
+    * a field no gold case ever mentions is invisible to `analyze`, so its spec comes off
+      the grammar too. `review_note`, `rationale`, `fit_reason` and `summary` are all of
+      this kind — free text the evalset does not score.
+    """
+    pack_dir = os.path.join(EXAMPLES, name)
+    pack = load_pack(pack_dir)
+    task = analyze(pack.manifest.get("description", ""), _load_case_lines(pack_dir), name)
+
+    nodes, prompts, think_prompts = [], {}, {}
+    for node_name, node in pack.nodes.items():
+        if node.type != "generate":
+            continue
+        properties = (node.grammar or {}).get("properties") or {}
+        nodes.append(NodePlan(name=node_name, writes=list(properties),
+                              purpose="Do the %s step." % node_name,
+                              two_stage=node.two_stage))
+        prompts[node_name] = node.prompt
+        if node.think_prompt:
+            think_prompts[node_name] = node.think_prompt
+    entry, edges = _splice_asserts(pack)
+    plan = GraphPlan(
+        entry=entry,
+        nodes=nodes,
+        endings=[n for n, node in pack.nodes.items() if node.type == "end"],
+        edges=PACK_EDGES.get(name, edges),
+    )
+
+    declared = {}
+    for node_name, node in pack.nodes.items():
+        for field, schema in ((node.grammar or {}).get("properties") or {}).items():
+            declared.setdefault(field, []).append(json.dumps(schema, sort_keys=True))
+    agreed = {field: json.loads(shapes[0]) for field, shapes in declared.items()
+              if len(set(shapes)) == 1}
+
+    fields = []
+    for field in task.fields:
+        schema = agreed.get(field.name) or {}
+        if schema.get("enum") and list(schema["enum"]) != list(field.enum or []):
+            field = FieldSpec(name=field.name, type=field.type, enum=list(schema["enum"]),
+                              optional=field.optional, examples=field.examples)
+        fields.append(field)
+    known = {field.name for field in fields}
+    for field, schema in agreed.items():
+        if field in known:
+            continue
+        kind = schema.get("type", "string")
+        if isinstance(kind, list):                      # {"type": ["string", "null"]}
+            kind = [item for item in kind if item != "null"][0]
+        fields.append(FieldSpec(name=field, type=kind, enum=schema.get("enum"),
+                                optional=True))
+    task = TaskSpec(name=task.name, description=task.description, inputs=task.inputs,
+                    fields=fields, cases=task.cases)
+    return pack_dir, task, plan, prompts, think_prompts
+
+
+class ShippedPackCase(unittest.TestCase):
+    """Regenerate one pack's offline model and score the pack with it.
+
+    This is the only evidence that matters for this stage: not that the script looks
+    right, but that substituting it for the one the pack ships leaves the evalset where
+    it was.
+    """
+
+    pack = None
+
+    def compile(self):
+        return compile_inputs(self.pack)
+
+    def generated(self):
+        _, task, plan, prompts, think_prompts = self.compile()
+        return script_for(task, plan, prompts, think_prompts)
+
+    def score(self, script):
+        pack_dir, _, _, _, _ = self.compile()
+        root = tempfile.mkdtemp(prefix="jig-pack-")
+        self.addCleanup(shutil.rmtree, root)
+        dest = os.path.join(root, self.pack)
+        shutil.copytree(pack_dir, dest)
+        with open(os.path.join(dest, "fakes", "script.json"), "w") as handle:
+            json.dump(script, handle, indent=2)
+        return evaluate(load_pack(dest), FakeModel(script))
+
+    def lint(self, script):
+        _, task, plan, prompts, think_prompts = self.compile()
+        return [
+            problem
+            for problem in check_script(script, task, plan, prompts, think_prompts)
+            # A field no gold case pins is reported by design: nothing tests it. It is
+            # information about the evalset, not a fault in the script.
+            if "no gold case pins" not in problem
+        ]
+
+    def shipped(self):
+        pack_dir, _, _, _, _ = self.compile()
+        with open(os.path.join(pack_dir, "fakes", "script.json")) as handle:
+            return json.load(handle)
+
+    def assert_full_marks(self):
+        script = self.generated()
+        report = self.score(script)
+        self.assertEqual((report.passed, report.total),
+                         (report.total, report.total), report.summary())
+        self.assertEqual(self.lint(script), [])
+
+    def assert_shipped_script_lints_clean(self):
+        self.assertEqual(self.lint(self.shipped()), [])
+
+
+class TestSupportTriagePack(ShippedPackCase):
+    pack = "support_triage"
+
+    def test_the_generated_script_scores_full_marks(self):
+        self.assert_full_marks()
+
+    def test_the_shipped_script_lints_clean(self):
+        self.assert_shipped_script_lints_clean()
+
+
+class TestIncidentTriagePack(ShippedPackCase):
+    pack = "incident_triage"
+
+    def test_the_generated_script_scores_full_marks(self):
+        self.assert_full_marks()
+
+    def test_the_shipped_script_lints_clean(self):
+        # This pack keys its script on the alert id, so not one of its keys occurs in a
+        # prompt *template* — only in a rendered prompt. A linter that read keys off the
+        # templates called every node of it unscripted.
+        self.assert_shipped_script_lints_clean()
+
+
+class TestInvoiceExtractPack(ShippedPackCase):
+    pack = "invoice_extract"
+
+    def test_the_generated_script_scores_full_marks(self):
+        self.assert_full_marks()
+
+    def test_the_shipped_script_lints_clean(self):
+        # Five nodes here write `review_reason`, one per terminal reason, and four of them
+        # are scripted with a plain string. Both are correct, and both used to be reported.
+        self.assertEqual(check_script(self.shipped(), *self.compile()[1:]), [])
+
+
+class TestLeadQualifyPack(ShippedPackCase):
+    pack = "lead_qualify"
+
+    def test_the_generated_script_scores_full_marks(self):
+        self.assert_full_marks()
+
+    def test_the_shipped_script_lints_clean(self):
+        self.assert_shipped_script_lints_clean()
+
+
+class TestMeetingActionsPack(ShippedPackCase):
+    """The pack this stage cannot script, and why — recorded rather than glossed over.
+
+    `decisions` is a list of objects that no gold case mentions at all, and the node that
+    writes it asserts `decision_count == len(decisions)` against a `decision_count` every
+    case does pin. There is no value a compiler can invent that satisfies an equation
+    whose other side the evalset never states, so this pack's evalset cannot be scored
+    from its own gold answers. The array placeholder is still worth getting right: `""`
+    for a list field is rejected by the grammar at the node that writes it, which is a
+    different and much less legible failure.
+    """
+
+    pack = "meeting_actions"
+
+    def test_the_unpinned_array_fields_are_arrays(self):
+        script = self.generated()
+        actions = json.loads(script[node_key("actions")][1])
+        self.assertIsInstance(actions["action_items"], list)
+        decisions = json.loads(script[node_key("decisions")][0])
+        self.assertEqual(decisions["decisions"], [])
+
+    def test_the_linter_names_the_field_that_makes_it_unscriptable(self):
+        _, task, plan, prompts, think_prompts = self.compile()
+        found = check_script(self.generated(), task, plan, prompts, think_prompts)
+        self.assertTrue(
+            any("'decisions'" in p and "no gold case pins" in p for p in found), found
+        )
+
+    def test_the_shipped_script_lints_clean(self):
+        self.assert_shipped_script_lints_clean()
+
+
+class TestContentModerationPack(ShippedPackCase):
+    """The other pack this stage cannot script, for a different reason.
+
+    `signal` is the field the pack's first branch reads, and no gold case pins it. Every
+    case therefore walks the same branch of the plan, so the queues are built for a
+    routing the pack does not have — and `check_script` says exactly that rather than
+    pretending otherwise. Nothing here is fixable from `jig/build/script.py`: the evalset
+    would have to state the field its own graph branches on.
+    """
+
+    pack = "content_moderation"
+
+    def test_the_branch_field_is_unpinned(self):
+        _, task, _, _, _ = self.compile()
+        pinned = set()
+        for case_ in task.cases:
+            pinned.update(case_["expect"])
+        self.assertNotIn("signal", pinned)
+
+    def test_the_linter_reports_the_nodes_the_plan_can_never_reach(self):
+        _, task, plan, prompts, think_prompts = self.compile()
+        found = check_script(self.shipped(), task, plan, prompts, think_prompts)
+        self.assertTrue(
+            any("'classify'" in p and "reached by no gold case" in p for p in found),
+            found,
+        )
 
 
 if __name__ == "__main__":
