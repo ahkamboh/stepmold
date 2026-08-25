@@ -47,7 +47,7 @@ class AlreadyRefunded(RuntimeError):
     """
 
 
-# The store. Eleven orders, one per evalset case that gets past `classify`; R-9999 is
+# The store. Eleven orders, one per evalset case; R-9999 is
 # deliberately absent, which is the case that exercises the `lookup` node's `on_fail`.
 SEED_ORDERS = {
     "R-1001": {"total": 49.99, "status": "delivered", "days_since_delivery": 3},

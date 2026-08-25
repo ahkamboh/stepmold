@@ -4,7 +4,7 @@ Run it:
 
     python3 examples/refund_desk/gate_demo.py
 
-`approve` is the node the refund hangs off. This script runs it twice against the same
+`approve` is the node the refund hangs off. This script runs it three times against the same
 order and the same graph, changing one thing: whether the model's independent draws agree.
 
     draws agree      -> approve commits -> refund -> done         ledger: 1 entry

@@ -3,9 +3,18 @@
 `tests/test_example.py` proves the shipped pack *decides*. This one proves `refund_desk`
 decides and then *does*, and holds the two properties that make doing safe:
 
-* **exactly once** — a run killed between the refund tool returning and the walk leaving
-  its node is resumed, and the money moves one time. Asserted on the host's own ledger,
-  because committed state records what a call returned and never that it happened.
+* **exactly once, in the window the code actually protects** — a run killed after the
+  call was *written down* and before the walk left its node is resumed, and the money moves
+  one time. Asserted on the host's own ledger, because committed state records what a call
+  returned and never that it happened.
+
+  The qualifier is load-bearing and was added because a reviewer falsified the sentence
+  without it. The record lands after the call returns, so a process killed inside that gap
+  — call done, row not yet durable — resumes and calls again. jig cannot close that window
+  from this side of the boundary: a tool that has already sent an email cannot be un-sent
+  by anything jig writes afterwards. A tool whose repetition is harmless should say so with
+  `idempotent=True`; one whose repetition is not should be written to be idempotent on its
+  own key.
 * **gated first** — the node that approves the refund is upstream of the node that issues
   it, so draws that disagree take `on_unsure` and nothing is issued at all.
 

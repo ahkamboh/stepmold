@@ -4,7 +4,7 @@ entry: classify
 model: fake:fakes/script.json
 inputs: [message, order_id]
 description: >-
-  The pack that acts. Six nodes: classify, look the order up with a tool, assess
+  The pack that acts. Seven nodes: classify, look the order up with a tool, assess
   the claim, decide, and — only when the decision holds up — issue the refund
   with a second tool.
 

@@ -136,7 +136,7 @@ never that it happened. The ledger counts calls, which is why it is the assertio
 
 ## What does not work
 
-The most useful part of this file. Every line below is pinned by a test in
+The most useful part of this file. Most lines below are pinned by a test in tests/test_example_refund.py, so they cannot rot into a false claim. The exception is noted where it appears.
 `tests/test_example_refund.py`, so it cannot rot into a false claim.
 
 **`samples:` and `agree:` cannot be written in graph.yaml.** This is the big one, and it is why the gate below is demonstrated by a script rather than by a line in this pack's graph.
@@ -228,7 +228,7 @@ refund_desk: 2/12 cases passed
 Exit status 1. The two that "pass" are the question and the complaint, which never reach a
 tool node. `--tools` exists on `run` and `eval` only.
 
-**`jig validate` has no `--tools` flag**, so the load-time tool checks — is this name
+**`jig validate` now takes `--tools`**, so the load-time tool checks — is this name
 registered, and can its `reads` be satisfied by this graph — never run from the command
 line. `jig.pack.check_tools` is reachable only as `load_pack(path, tools=registry)` from
 Python. A clean `jig validate` on a pack with tool nodes says nothing about its wiring.
