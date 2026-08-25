@@ -701,3 +701,97 @@ class ValidateReportsTheToolCheck(unittest.TestCase):
              "--tools", "examples/refund_desk/tools.py:registry"],
             capture_output=True, text=True, cwd=str(root))
         self.assertIn("0 tools checked", proc.stdout + proc.stderr)
+
+
+class RedactorCoversTheSeparatorsVendorsActuallyUse(unittest.TestCase):
+    """A key must not reach a log, whichever separator its vendor chose.
+
+    The pattern used to require a hyphen after the prefix. Groq issues `gsk_...` and
+    GitHub issues `ghp_...`, so the two prefixes most likely to appear in a real 401 body
+    were the two it could not match — and README promises that no key reaches a log
+    through any call site. Found by audit, not by a test, which is why this exists.
+    """
+
+    LIVE_SHAPES = [
+        ("groq", "gsk_NOTAREALKEY8Zt4Qn1Rb7Wm2Kd9Pf3Xj6"),
+        ("github-pat", "ghp_NOTAREALKEYb2C3d4E5f6G7h8I9j0K1l2"),
+        ("github-oauth", "gho_NOTAREALKEYb2C3d4E5f6G7h8I9j0K1l2"),
+        ("github-server", "ghs_NOTAREALKEYb2C3d4E5f6G7h8I9j0K1l2"),
+        ("anthropic", "sk-ant-api03-NOTAREALKEY12345678"),
+        ("openai-project", "sk-proj-NOTAREALKEY123456789012"),
+        ("cerebras", "csk-NOTAREALKEY1234567890abcdef"),
+        ("xai", "xai-NOTAREALKEY1234567890"),
+        ("slack-bot", "xoxb-NOTAREALKEY-1234567890"),
+        ("slack-user", "xoxp-NOTAREALKEY-1234567890"),
+        ("aws", "AKIA_NOTAREALKEY1234"),
+    ]
+
+    def test_no_vendor_key_shape_survives_redaction(self):
+        from jig.log import redact
+        leaked = []
+        for vendor, key in self.LIVE_SHAPES:
+            if key in redact("upstream rejected %s, retrying" % key):
+                leaked.append(vendor)
+        self.assertEqual([], leaked, "these key shapes reached the log: %s" % leaked)
+
+    def test_it_does_not_redact_ordinary_text(self):
+        from jig.log import redact
+        line = "node classify took 12ms, kind=complaint, order_id=A-1001"
+        self.assertEqual(line, redact(line))
+
+    def test_a_key_inside_a_larger_message_is_still_caught(self):
+        from jig.log import redact
+        out = redact('{"error":{"message":"Incorrect key: gsk_NOTAREALKEY8Zt4Qn1Rb7Wm2Kd"}}')
+        self.assertNotIn("gsk_NOTAREALKEY", out)
+        self.assertIn("<redacted>", out)
+
+
+class CompileRefusesAnOccupiedDestinationBeforeSpendingAnything(unittest.TestCase):
+    """A compile that cannot install what it builds must not build it.
+
+    `_install` refuses to clobber an existing pack. That refusal used to be raised inside
+    the attempt loop's try, where `except BuildError` caught it, recorded it as a failed
+    attempt, fed the filesystem error to the *planner* as though a decomposition were
+    wrong, and re-planned — paying for `induce` and `write_prompts` again on every
+    remaining attempt. With the default of three attempts, forgetting `--overwrite` cost
+    three full compiles against a frontier model and then reported "could not compile a
+    pack that satisfies its own examples", which was false: every attempt had scored full
+    marks. Found by audit.
+    """
+
+    def setUp(self):
+        import tempfile, pathlib
+        self.root = pathlib.Path(tempfile.mkdtemp(prefix="jig-install-test-"))
+        (self.root / "out").mkdir()
+        (self.root / "out" / "keep.txt").write_text("a hand-tuned pack lives here\n")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _model_that_must_never_be_called(self):
+        def model(*args, **kwargs):
+            raise AssertionError(
+                "the planner was called; the destination check did not run first")
+        return model
+
+    def test_it_refuses_before_the_model_is_consulted(self):
+        from jig.build.compile import compile_pack
+        from jig.build.spec import BuildError
+        cases = [{"input": {"text": "hi"}, "expect": {"verdict": "allow"}}]
+        with self.assertRaises(BuildError) as caught:
+            compile_pack(str(self.root / "out"), "Moderate content.", cases,
+                         self._model_that_must_never_be_called(), overwrite=False)
+        self.assertIn("--overwrite", str(caught.exception))
+
+    def test_the_existing_pack_is_left_alone(self):
+        from jig.build.compile import compile_pack
+        from jig.build.spec import BuildError
+        cases = [{"input": {"text": "hi"}, "expect": {"verdict": "allow"}}]
+        try:
+            compile_pack(str(self.root / "out"), "Moderate content.", cases,
+                         self._model_that_must_never_be_called(), overwrite=False)
+        except BuildError:
+            pass
+        self.assertEqual("a hand-tuned pack lives here\n",
+                         (self.root / "out" / "keep.txt").read_text())

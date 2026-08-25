@@ -137,6 +137,12 @@ def compile_pack(directory, description, cases, model, name=None,
     say = on_event or (lambda message: None)
     name = name or os.path.basename(os.path.abspath(directory).rstrip(os.sep)) or "pack"
 
+    # Before anything is paid for. _install refuses to clobber an existing pack, and that
+    # refusal used to arrive after every attempt had run — inside the try, where it was
+    # caught as a failed attempt, re-planned against, and charged for again. A compile that
+    # cannot install what it builds has no business building it.
+    _check_destination(directory, overwrite)
+
     say("analyzing %d gold case(s)" % len(cases))
     task = analyze(description, cases, name)
     say("  %d field(s), %d input(s), %d enum(s) inferred"
@@ -149,6 +155,7 @@ def compile_pack(directory, description, cases, model, name=None,
 
     for number in range(1, attempts + 1):
         attempt = Attempt(number=number)
+        installed = False
         scratch = tempfile.mkdtemp(prefix="jig-build-")
         try:
             say("attempt %d: planning" % number)
@@ -174,11 +181,17 @@ def compile_pack(directory, description, cases, model, name=None,
             say("  %s" % attempt)
 
             if attempt.clean:
+                installed = True
                 final = _install(emitted, directory, overwrite)
                 return CompileResult(ok=True, directory=final, attempts=history,
                                      task=task, plan=plan, report=report)
             feedback = _feedback(report)
         except BuildError as exc:
+            if installed:
+                # The pack compiled and scored full marks; only putting it in place
+                # failed. Re-planning cannot fix a filesystem, and telling the planner
+                # about it would ask a model to repair a decomposition that was right.
+                raise
             attempt.error = str(exc)
             history.append(attempt)
             say("  %s" % attempt)
@@ -239,8 +252,12 @@ def _guided(model, feedback):
     return _Guided()
 
 
-def _install(emitted, directory, overwrite):
-    """Move a verified pack into place, refusing to clobber unless told to."""
+def _check_destination(directory, overwrite):
+    """Raise if the output directory is occupied and we were not told to replace it.
+
+    Called once before planning as well as from `_install`, because the cost of learning
+    this late is measured in frontier-model calls.
+    """
     target = os.path.abspath(directory)
     if os.path.exists(target) and os.listdir(target) and not overwrite:
         raise BuildError(
@@ -248,6 +265,12 @@ def _install(emitted, directory, overwrite):
             "compile that silently destroyed a hand-tuned pack would be a bad neighbour."
             % target
         )
+    return target
+
+
+def _install(emitted, directory, overwrite):
+    """Move a verified pack into place, refusing to clobber unless told to."""
+    target = _check_destination(directory, overwrite)
     if os.path.exists(target):
         shutil.rmtree(target)
     parent = os.path.dirname(target)

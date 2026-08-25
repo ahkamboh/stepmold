@@ -347,7 +347,7 @@
     <p class="lead rv">No GPU, no API key, no network. Then point it at any OpenAI-compatible server — llama.cpp-server, vLLM, SGLang, or a hosted API. Or let <code>jig build</code> write one for you from a task description and a dozen gold examples.</p>
     <div class="term rv">
       <div class="termbar"><i></i><i></i><i></i><span>bash</span></div>
-<pre><span class="p">$</span> pip install jig
+<pre><span class="p">$</span> pip install git+https://github.com/ahkamboh/jig
 <span class="p">$</span> git clone https://github.com/ahkamboh/jig &amp;&amp; cd jig
 <span class="p">$</span> python3 -m jig eval examples/support_triage
 <span class="ok">support_triage: 12/12 cases passed</span>
@@ -387,13 +387,13 @@
     <div class="honest rv">
       <h3>The compiler works, and is unproven</h3>
       <p><code>jig build</code> exists: give it a task description and gold examples and it writes the workflow, then scores the result against those same examples and re-plans if it falls short. It has recompiled a shipped workflow from its own gold cases into a <i>different, finer</i> six-step decomposition that scores 12/12 and answers correctly against a live model — finding its four enums with no model involved.</p>
-      <p><b>That is regeneration, not creation.</b> Compiling a workflow nobody has built before has not been demonstrated, and the task description in that run was written by someone who already knew the answer. Two of the six example workflows also cannot be regenerated at all, because a plan cannot yet express a conditional check or a failure edge.</p>
+      <p><b>That is regeneration, not creation.</b> Compiling a workflow nobody has built before has not been demonstrated, and the task description in that run was written by someone who already knew the answer. Three of the seven example workflows also cannot be regenerated at all: two because a plan cannot yet express a conditional check or a failure edge, and the refund workflow because the compiler has no notion of an action step.</p>
       <p>It has separately not been shown that a small model matches a frontier model on a real workflow. That needs gold labels which are ground truth and a frontier baseline on the same cases. Both are open, and <a href="https://github.com/ahkamboh/jig/blob/main/docs/BENCHMARKS.md">the benchmarks page says so</a> rather than hiding it.</p>
     </div>
 
     <div class="honest rv">
       <h3>It can act, and nothing here acts yet</h3>
-      <p>Tool steps are built and tested: a workflow can name an action, the host decides per run whether to allow it, and the call is recorded before it is committed so a resumed run replays it. <b>None of the six shipped example workflows uses one.</b> All of them decide and none of them act, so the worked end-to-end example you would copy does not exist yet — only the runnable ones in the documentation.</p>
+      <p>Tool steps are built and tested: a workflow can name an action, the host decides per run whether to allow it, and the call is recorded before it is committed so a resumed run replays it. <b>One shipped example workflow uses one: <code>examples/refund_desk</code>.</b> It looks an order up through a host-registered action, decides, and either issues the refund through a second action or routes to a human. The other six decide without acting.</p>
       <p>The confidence gate is built and tested the same way, and reaches less far than it looks. <b>It has no workflow-file surface:</b> the two keys that turn it on are not keys a <code>graph.yaml</code> accepts, and a file carrying them is refused when the pack loads. Today the gate is reachable from Python only. The unsure edge validates and routes, but nothing in a workflow file can make a step unsure, so from a file that edge cannot be taken.</p>
       <p><b>And nobody has measured what agreement buys.</b> There is no number here for how much a gate raises accuracy inside the automated bucket, or how much of the escalated bucket it moves, against a real model. The mechanism is tested; its worth on a real workflow is an open question, and <a href="https://github.com/ahkamboh/jig/blob/main/docs/confidence.md">the confidence page</a> says how to answer it on yours rather than guessing here.</p>
     </div>

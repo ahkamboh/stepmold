@@ -90,7 +90,13 @@ CLIP = 200
 # `jig.backends.openai_compat` when logging arrived — the backend still imports them, and
 # there is still exactly one of them.
 BEARER = re.compile(r"(?i)(bearer\s+)[^\s\"',]+")
-KEY_SHAPED = re.compile(r"\b(?:c?sk|gsk|xai|xoxb|ghp)-[A-Za-z0-9_-]{8,}")
+# The separator is part of the vendor's format, not a detail: Groq issues `gsk_...` and
+# GitHub issues `ghp_...`, so a pattern that only accepted a hyphen matched neither of the
+# two prefixes most likely to show up in a real 401 body. Both separators, and the GitHub
+# token family in full, because `ghp_` is only one of five.
+KEY_SHAPED = re.compile(
+    r"\b(?:c?sk|gsk|xai|xox[abpsr]|gh[pousr]|AKIA|ASIA)[-_][A-Za-z0-9_-]{8,}"
+)
 
 #: LogRecord attributes the formatters read. Prefixed because `extra=` writes straight
 #: onto the record and a collision with a stdlib attribute raises at emit time.

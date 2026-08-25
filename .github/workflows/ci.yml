@@ -140,7 +140,10 @@ jobs:
           # SAY it is fake — FAKE, NOTAREAL, CANARY or DO-NOT-LEAK somewhere in the string.
           # That way a real key pasted by accident is still caught, because a real key does
           # not announce itself, while a test fixture is self-documenting to a reader too.
-          if grep -rEn "(c?sk|gsk|xai|xoxb|ghp)-[A-Za-z0-9_-]{20,}" \
+          # Both separators, for the same reason jig/log.py:KEY_SHAPED takes both: Groq
+          # writes gsk_ and GitHub writes ghp_, so a hyphen-only guard was blind to the
+          # two shapes most likely to be pasted in by accident.
+          if grep -rEn "\\b(c?sk|gsk|xai|xox[abpsr]|gh[pousr]|AKIA|ASIA)[-_][A-Za-z0-9_-]{20,}" \
                --exclude-dir=.git --exclude-dir=.github . \
                | grep -viE "FAKE|NOTAREAL|CANARY|DO-NOT-LEAK|KEY_SHAPED|redact|SECRET|example|<redacted>"; then
             echo "a credential-shaped string is present that does not declare itself fake."

@@ -12,7 +12,7 @@ Measured on a 50-node workflow at a 10% per-step error rate: **96.5% end-to-end 
 against 2.0% for the same model with the same prompts and no verification.**
 
 ```bash
-pip install jig
+pip install git+https://github.com/ahkamboh/jig
 jig run mypack --input '{"ticket": "I was charged twice"}'
 ```
 
@@ -98,13 +98,16 @@ wrong choice for bounded steps. Full table and method in
 ## Install
 
 ```bash
-pip install jig
+pip install git+https://github.com/ahkamboh/jig
 ```
 
 Python 3.9 or newer. No other dependencies, ever — CI fails the build if the dependency
 list is not empty.
 
-From source:
+**Not yet on PyPI.** `pip install jig` fetches an unrelated Python 2 project of the same
+name, so install from the repository until this one is published under a name that is free.
+
+From a clone, with nothing installed at all:
 
 ```bash
 git clone https://github.com/ahkamboh/jig
@@ -114,9 +117,9 @@ python3 -m jig --help
 
 ## Quickstart
 
-The repository ships six worked packs. Each runs offline against a scripted model, so this
-needs no GPU, no API key and no network. From a clone, use `python3 -m jig`; after
-`pip install jig` the `jig` command does the same thing from anywhere.
+The repository ships seven worked packs. Each runs offline against a scripted model, so this
+needs no GPU, no API key and no network. From a clone, use `python3 -m jig`; once
+installed the bare `jig` command does the same thing from anywhere.
 
 ```console
 $ python3 -m jig validate examples/support_triage
@@ -258,9 +261,11 @@ resumed run replays it rather than repeating it; and a node can be drawn several
 accepted only on agreement, with disagreement routed to `on_unsure`. Both are tested. What
 has not been shown:
 
-- **No example pack in this repository uses a tool.** All six decide and none of them act,
-  so the worked, end-to-end pack you would copy does not exist yet — the runnable examples
-  are in the docs.
+- **One example pack uses a tool: `examples/refund_desk`.** It classifies a message, looks
+  the order up through a host-registered tool, decides, and either issues the refund
+  through a second tool or routes to a human. Run it with
+  `python3 -m jig eval examples/refund_desk --tools examples/refund_desk/tools.py:registry`.
+  The other six decide without acting.
 - **The gate has no pack-file surface.** `samples:` and `agree:` are not keys `graph.yaml`
   accepts; a pack carrying them is refused at load, and the gate is reachable only from
   Python. `on_unsure:` validates and routes, but nothing in a pack file can make a node
@@ -293,8 +298,9 @@ for the two judgement nodes unprompted.
 **What it has not been shown to do:** compile a workflow nobody has built before. The test
 above is regeneration, and the task description was written by someone who knew the answer.
 
-**Also open:** two of the six example packs cannot yet be regenerated, because a plan cannot
-express an `assert` node or an `on_fail` edge — and whether a small model matches a frontier
+**Also open:** three of the seven example packs cannot yet be regenerated — two because a
+plan cannot express an `assert` node or an `on_fail` edge, and `refund_desk` because the
+compiler has no notion of a `tool` node at all — and whether a small model matches a frontier
 model on a real workflow, which needs gold labels that are ground truth and a frontier
 baseline on the same cases.
 
@@ -304,7 +310,7 @@ baseline on the same cases.
 $ python3 -m pytest -q
 ```
 
-1530 tests, no network, no GPU. The suite runs with no dependencies installed — including no pytest, via a stdlib shim. CI
+Around 1,500 tests, no network, no GPU. The suite runs with no dependencies installed — including no pytest, via a stdlib shim. CI
 runs it on Python 3.9 through 3.13, checks that `jig/` imports nothing outside the standard
 library, and builds and installs the wheel into a clean environment.
 
