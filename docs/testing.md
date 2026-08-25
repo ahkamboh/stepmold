@@ -213,8 +213,8 @@ CPython 3.14; the frame list varies by version). First two and last, the rest el
 $ printf '"x"' > ticket_triage/fakes/str.json
 $ python3 -m jig eval ticket_triage --model fake:fakes/str.json
 Traceback (most recent call last):
-  File "<frozen runpy>", line 203, in _run_module_as_main
-[19 lines elided, through jig/cli.py:326 in _fake_model and jig/model.py:71 in __post_init__]
+[the frames elided — they run through jig/cli.py:_fake_model and jig/model.py:__post_init__,
+ and each Python version formats them differently]
 TypeError: FakeModel script must be a list of responses or a dict keyed by prompt substring, not str
 ```
 
@@ -649,11 +649,8 @@ traceback, ending:
 ```
 $ python3 -m jig run ticket_triage --model fake:fakes/missing.json --input '{"ticket_id": "T-3", "text": "?????"}'
 Traceback (most recent call last):
-[frames elided]
-  File "/.../jig/model.py", line 103, in _keyed
-    raise ModelExhausted(
-        "FakeModel has no scripted response matching prompt: %r" % prompt
-    )
+[the frames elided — the last is jig/model.py in _keyed, and each Python version formats
+ the body differently]
 jig.model.ModelExhausted: FakeModel has no scripted response matching prompt: 'Task: priority\nTicket: T-3\n\nGiven the topic, say whether this needs a human now (urgent) or not (normal).\n\nTopic: bug\nText: ?????\n'
 ```
 
