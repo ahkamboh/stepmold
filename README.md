@@ -197,6 +197,7 @@ reroutes a workflow fails its tests instead of passing them.
 | [Graph and routing](docs/graph.md)            | Node types, edges, `when:`, `on_fail`, state and provenance       |
 | [Expressions](docs/expressions.md)            | The `assert` language: what it supports and what it refuses       |
 | [Testing packs](docs/testing.md)              | Evalsets, scripted models, and scoring offline                    |
+| [Compiling a pack](docs/building.md)          | `jig build`: the spec format, the loop, and what it cannot do yet |
 | [Architecture](docs/ARCHITECTURE.md)          | Why it is built this way                                          |
 | [Benchmarks](docs/BENCHMARKS.md)              | Every measurement, with the command that produced it              |
 
@@ -226,14 +227,32 @@ constrained generation, two-stage think-then-answer, verify-before-commit, the r
 `on_fail` routing, SQLite checkpointing and resume, the evalset runner with per-node blame,
 the CLI, an OpenAI-compatible backend, and structured logging.
 
-**Not built:** `jig build` — the compiler. jig's design is that a frontier model authors a
-pack once from a task description and examples, and a small model then runs it forever.
-Today you write the pack yourself: roughly 700 lines of graph, prompts, grammars and gold
-cases per workflow. The runtime half is complete; the authoring half is manual.
+**Built, and newer:** `jig build` — the compiler. A frontier model authors a pack once from
+a task description and gold examples; a small model then runs it forever. Two of its four
+stages use no model at all: schema induction and the offline test model are arithmetic over
+the examples.
 
-**Not yet proven:** whether a small model matches a frontier model on a real workflow. That
-needs an evalset whose labels are ground truth, and a frontier baseline on the same cases.
-Both are open.
+```console
+$ jig build ./myspec -o ./mypack --model 'openai:https://host/v1#a-big-model'
+```
+
+The loop is what makes it a compiler rather than a generator: it emits a pack, runs
+`jig eval` against it, and if the pack does not score full marks on its own gold cases it
+re-plans with the failing node named. It never edits the evalset — that is the contract —
+and a failed attempt never overwrites a working pack. See [Compiling a pack](docs/building.md).
+
+**What that has been shown to do:** recompile `examples/support_triage` from its own gold
+cases into a *different* six-node decomposition that scores 12/12 and answers correctly
+against a live model. It found the four enums with no model involved, and chose `two_stage`
+for the two judgement nodes unprompted.
+
+**What it has not been shown to do:** compile a workflow nobody has built before. The test
+above is regeneration, and the task description was written by someone who knew the answer.
+
+**Also open:** two of the six example packs cannot yet be regenerated, because a plan cannot
+express an `assert` node or an `on_fail` edge — and whether a small model matches a frontier
+model on a real workflow, which needs gold labels that are ground truth and a frontier
+baseline on the same cases.
 
 ## Running the tests
 

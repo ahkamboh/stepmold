@@ -342,7 +342,7 @@
   <div class="wrap">
     <p class="kicker rv">Try it</p>
     <h2 class="rv">Six worked workflows, all offline.</h2>
-    <p class="lead rv">No GPU, no API key, no network. Then point it at any OpenAI-compatible server — llama.cpp-server, vLLM, SGLang, or a hosted API.</p>
+    <p class="lead rv">No GPU, no API key, no network. Then point it at any OpenAI-compatible server — llama.cpp-server, vLLM, SGLang, or a hosted API. Or let <code>jig build</code> write one for you from a task description and a dozen gold examples.</p>
     <div class="term rv">
       <div class="termbar"><i></i><i></i><i></i><span>bash</span></div>
 <pre><span class="p">$</span> pip install jig
@@ -352,7 +352,12 @@
 
 <span class="c"># then against a real model</span>
 <span class="p">$</span> python3 -m jig eval examples/support_triage \
-    --model <span class="ok">'openai:http://localhost:8000/v1#qwen3-8b'</span></pre>
+    --model <span class="ok">'openai:http://localhost:8000/v1#qwen3-8b'</span>
+
+<span class="c"># or compile a new one from a task description + gold examples</span>
+<span class="p">$</span> python3 -m jig build ./myspec -o ./mypack \
+    --model <span class="ok">'openai:https://host/v1#a-big-model'</span>
+<span class="ok">attempt 2: 12/12 cases</span></pre>
     </div>
   </div>
 </section>
@@ -375,9 +380,10 @@
     <p class="kicker rv">Honesty</p>
     <h2 class="rv">What is not built.</h2>
     <div class="honest rv">
-      <h3>The compiler does not exist yet</h3>
-      <p>jig's design is that a frontier model authors a workflow once from a task description and examples, and a small model then runs it forever. Today you write the workflow yourself — roughly 700 lines of graph, prompts, schemas and gold cases. <b>The runtime half is complete; the authoring half is manual.</b></p>
-      <p>It has also not been shown that a small model matches a frontier model on a real workflow. That needs gold labels which are ground truth and a frontier baseline on the same cases. Both are open, and <a href="https://github.com/ahkamboh/jig/blob/main/docs/BENCHMARKS.md">the benchmarks page says so</a> rather than hiding it.</p>
+      <h3>The compiler works, and is unproven</h3>
+      <p><code>jig build</code> exists: give it a task description and gold examples and it writes the workflow, then scores the result against those same examples and re-plans if it falls short. It has recompiled a shipped workflow from its own gold cases into a <i>different, finer</i> six-step decomposition that scores 12/12 and answers correctly against a live model — finding its four enums with no model involved.</p>
+      <p><b>That is regeneration, not creation.</b> Compiling a workflow nobody has built before has not been demonstrated, and the task description in that run was written by someone who already knew the answer. Two of the six example workflows also cannot be regenerated at all, because a plan cannot yet express a conditional check or a failure edge.</p>
+      <p>It has separately not been shown that a small model matches a frontier model on a real workflow. That needs gold labels which are ground truth and a frontier baseline on the same cases. Both are open, and <a href="https://github.com/ahkamboh/jig/blob/main/docs/BENCHMARKS.md">the benchmarks page says so</a> rather than hiding it.</p>
     </div>
   </div>
 </section>
