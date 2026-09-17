@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use stepmold in your work, please cite it."
+title: "stepmold: compile an agent once with a frontier model, run it forever on a small one"
+type: software
+authors:
+  - family-names: Kamboh
+    given-names: Ali Hamza
+version: 0.0.1
+date-released: 2026-08-25
+repository-code: "https://github.com/ahkamboh/stepmold"
+license: MIT
+keywords:
+  - large language models
+  - agents
+  - small language models
+  - constrained decoding
+  - workflow compilation
